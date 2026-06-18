@@ -954,6 +954,7 @@ export function ShiftView({
   const [setupNeeded, setSetupNeeded] = useState(false);
   const [selected, setSelected] = useState<ShiftEmployee | null>(null);
   const [nowMin, setNowMin] = useState(currentShiftNowMin());
+  const [idleAlerts, setIdleAlerts] = useState<{name: string, time: number}[]>([]);
 
   const viewerProfile = useMemo(
     () => profiles.find(p => p.name.trim().toLowerCase() === userName.trim().toLowerCase()),
@@ -1036,27 +1037,50 @@ export function ShiftView({
   }, [shiftEmployees, selected?.name]);
 
   const prevIdleSet = useRef<Set<string>>(new Set());
+  const isFirstRender = useRef(true);
 
   useEffect(() => {
-    let newlyIdle = false;
+    let newlyIdleNames: string[] = [];
     const currentIdleSet = new Set<string>();
 
     for (const emp of shiftEmployees) {
       if (emp.status === "idle") {
         currentIdleSet.add(emp.name);
         if (!prevIdleSet.current.has(emp.name)) {
-          newlyIdle = true;
+          newlyIdleNames.push(emp.name);
         }
       }
     }
 
-    // Play a beep if someone just became idle
-    if (newlyIdle) {
+    // Only play a beep if it's NOT the very first render (page load)
+    if (newlyIdleNames.length > 0 && !isFirstRender.current) {
       playBeep();
+      setIdleAlerts(prev => {
+        const newAlerts = newlyIdleNames.map(name => ({ name, time: Date.now() }));
+        return [...prev, ...newAlerts];
+      });
     }
 
+    // Auto-remove alerts if they are no longer idle
+    setIdleAlerts(prev => prev.filter(a => currentIdleSet.has(a.name)));
+
     prevIdleSet.current = currentIdleSet;
+    isFirstRender.current = false;
   }, [shiftEmployees]);
+
+  // Repeated beep every 30s for active alerts
+  useEffect(() => {
+    if (idleAlerts.length > 0) {
+      const id = setInterval(() => {
+        playBeep();
+      }, 30000);
+      return () => clearInterval(id);
+    }
+  }, [idleAlerts]);
+
+  const dismissAlert = (name: string) => {
+    setIdleAlerts(prev => prev.filter(a => a.name !== name));
+  };
 
   const shiftAiInsights = useMemo(() => buildShiftInsights(shiftEmployees), [shiftEmployees]);
 
@@ -1091,7 +1115,27 @@ export function ShiftView({
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative">
+      {/* Idle Alerts Popup */}
+      {idleAlerts.length > 0 && (
+        <div className="fixed top-6 right-6 z-50 flex flex-col gap-3">
+          {idleAlerts.map(alert => (
+            <div key={alert.name} className="flex items-center gap-4 bg-[#1e0f15] border border-red-500/40 text-red-200 px-5 py-4 rounded-2xl shadow-[0_10px_40px_-10px_rgba(239,68,68,0.4)] backdrop-blur-xl animate-in fade-in slide-in-from-top-4">
+              <div className="bg-red-500/20 p-2 rounded-full">
+                <AlertTriangle className="w-5 h-5 text-red-400 animate-pulse" />
+              </div>
+              <div>
+                <div className="font-bold text-sm font-['Plus_Jakarta_Sans']">{alert.name} is Not at Desk!</div>
+                <div className="text-[11px] text-red-300/80 font-['Geist_Mono'] mt-0.5">Alert triggered just now</div>
+              </div>
+              <button onClick={() => dismissAlert(alert.name)} className="ml-2 p-1.5 hover:bg-white/10 rounded-lg transition-colors border border-transparent hover:border-white/5">
+                <X className="w-4 h-4 text-red-400/80" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white font-['Plus_Jakarta_Sans']">Shift Tracker</h1>

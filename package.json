@@ -8,8 +8,8 @@
     "build": "vite build",
     "dev": "vite",
     "typecheck": "tsc --noEmit",
-    "clean:win": "powershell -Command \"Stop-Process -Name '*BASE*' -Force -ErrorAction SilentlyContinue; Remove-Item -Path 'release' -Recurse -Force -ErrorAction SilentlyContinue; exit 0\"",
-    "package:win": "npm run build && electron-builder --win",
+    "clean:win": "powershell -Command \"Stop-Process -Name '*BASE*' -Force -ErrorAction SilentlyContinue; Remove-Item -Path 'build-release' -Recurse -Force -ErrorAction SilentlyContinue; exit 0\"",
+    "package:win": "npm run clean:win && npm run build && electron-builder --win",
     "package:mac": "npm run build && electron-builder --mac"
   },
   "build": {
