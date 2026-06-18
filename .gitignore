@@ -1,7 +1,8 @@
-node_modules
-dist
-dist-electron
-release
+node_modules/
+dist/
+dist-electron/
+build-release/
+release/
 .env
 .env.local
 .env.*.local

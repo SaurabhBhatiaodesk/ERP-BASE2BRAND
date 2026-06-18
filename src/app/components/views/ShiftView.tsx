@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import {
   Brain, AlertTriangle, Star, ArrowUpRight, Calendar,
   CheckSquare, Monitor, Globe, Timer, Clock, Zap, Activity,
@@ -36,6 +36,7 @@ import {
   STAGE_ORDER,
   type ShiftActiveTask,
 } from "@/lib/taskStageTime";
+import { playBeep } from "@/lib/audio";
 import { useEmployeeVisualHistory } from "./useEmployeeVisualHistory";
 
 export type ActivityKind = "working" | "break" | "idle" | "meeting" | "login" | "offline";
@@ -1033,6 +1034,29 @@ export function ShiftView({
     const updated = shiftEmployees.find(e => e.name === selected.name);
     if (updated) setSelected(updated);
   }, [shiftEmployees, selected?.name]);
+
+  const prevIdleSet = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    let newlyIdle = false;
+    const currentIdleSet = new Set<string>();
+
+    for (const emp of shiftEmployees) {
+      if (emp.status === "idle") {
+        currentIdleSet.add(emp.name);
+        if (!prevIdleSet.current.has(emp.name)) {
+          newlyIdle = true;
+        }
+      }
+    }
+
+    // Play a beep if someone just became idle
+    if (newlyIdle) {
+      playBeep();
+    }
+
+    prevIdleSet.current = currentIdleSet;
+  }, [shiftEmployees]);
 
   const shiftAiInsights = useMemo(() => buildShiftInsights(shiftEmployees), [shiftEmployees]);
 

@@ -2149,6 +2149,30 @@ export async function fetchTodayOfficeSession(
     if (isMissingClockSessionsTable(error)) return null;
     throw error;
   }
+  if (data) {
+    const clockInDate = new Date(data.clock_in);
+    const now = new Date();
+    // Check if the session is from a previous calendar day AND it's 1 AM or later
+    if (
+      (clockInDate.getFullYear() !== now.getFullYear() ||
+      clockInDate.getMonth() !== now.getMonth() ||
+      clockInDate.getDate() !== now.getDate()) &&
+      now.getHours() >= 1
+    ) {
+      // It's from a previous day! Auto-close it at 23:59:59 of that day.
+      const endOfDay = new Date(clockInDate);
+      endOfDay.setHours(23, 59, 59, 999);
+      await clockOutEmployee({
+        sessionId: data.id,
+        employeeName: data.employee_name,
+        employeeId: data.employee_id,
+        reason: "end_day",
+        notes: "Auto-closed at midnight",
+        forceTimeMs: endOfDay.getTime(),
+      });
+      return null;
+    }
+  }
   return data ? mapClockSession(data) : null;
 }
 
@@ -2317,6 +2341,7 @@ export async function clockOutEmployee(input: {
   reason?: ClockOutReason | string;
   projectId?: string;
   notes?: string;
+  forceTimeMs?: number;
 }): Promise<{ session: ClockSessionRecord; hours: number }> {
   const { data: session, error: fetchError } = await supabase
     .from("clock_sessions")
@@ -2327,7 +2352,7 @@ export async function clockOutEmployee(input: {
 
   const reason = input.reason || "end_day";
   const endDay = reason === "end_day";
-  const clockOutMs = Date.now();
+  const clockOutMs = input.forceTimeMs || Date.now();
   const segmentStart = session.session_start || session.clock_in;
   const segmentHours = calculateSessionHours(segmentStart, clockOutMs);
   const totalHours =

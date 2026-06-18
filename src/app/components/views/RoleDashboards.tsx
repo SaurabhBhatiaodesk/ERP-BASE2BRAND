@@ -365,9 +365,23 @@ export function EmployeeDashboard({
 
   useEffect(() => {
     if (!activeClock) return;
-    const id = setInterval(() => setTick(t => t + 1), 1000);
+    const id = setInterval(() => {
+      setTick(t => t + 1);
+
+      // Auto-close check at 1 AM
+      const clockInDate = new Date(activeClock.clockIn);
+      const now = new Date();
+      if (
+        (clockInDate.getDate() !== now.getDate() ||
+         clockInDate.getMonth() !== now.getMonth() ||
+         clockInDate.getFullYear() !== now.getFullYear()) &&
+        now.getHours() >= 1
+      ) {
+        refreshClockState();
+      }
+    }, 1000);
     return () => clearInterval(id);
-  }, [activeClock]);
+  }, [activeClock, refreshClockState]);
 
   const assigneeName = myProfile?.name || userName;
 
@@ -407,7 +421,17 @@ export function EmployeeDashboard({
   if (activeClock) {
     const base = Math.round((activeClock.hours || 0) * 3600);
     const start = activeClock.sessionStart || activeClock.clockIn;
-    const live = Math.max(0, Math.floor((Date.now() - new Date(start).getTime()) / 1000));
+      
+    const startDate = new Date(start);
+    const endOfDay = new Date(startDate);
+    endOfDay.setHours(23, 59, 59, 999);
+      
+    let endMs = Date.now();
+    if (endMs > endOfDay.getTime()) {
+      endMs = endOfDay.getTime();
+    }
+      
+    const live = Math.max(0, Math.floor((endMs - startDate.getTime()) / 1000));
     totalSeconds = base + live;
   }
   void tick;
