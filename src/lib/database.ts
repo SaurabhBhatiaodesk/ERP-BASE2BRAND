@@ -2241,6 +2241,7 @@ export async function fetchActiveClockSession(
     throw error;
   }
   clockSessionsTableReady = true;
+  if (!data) return null;
   const session = mapClockSession(data);
   const segmentsMap = await fetchSegmentsForSessions([session.id]);
   session.segments = segmentsMap.get(session.id) || [];
@@ -2330,17 +2331,22 @@ export async function clockInEmployee(input: {
       })
       .eq("id", todayRow.id)
       .select("*")
-      .single();
+      .maybeSingle(); // Use maybeSingle to prevent PGRST116 if not found
+    
     if (error) handleClockSessionsError(error);
-    await insertClockSegment({
-      sessionId: todayRow.id,
-      kind: "working",
-      label: "Office attendance",
-      startedAtMs: nowMs,
-    });
-    clockSessionsTableReady = true;
-    await resumeEmployeeTaskTimers(input.employeeName, input.employeeId);
-    return mapClockSession(data);
+    
+    if (data) {
+      await insertClockSegment({
+        sessionId: todayRow.id,
+        kind: "working",
+        label: "Office attendance",
+        startedAtMs: nowMs,
+      });
+      clockSessionsTableReady = true;
+      await resumeEmployeeTaskTimers(input.employeeName, input.employeeId);
+      return mapClockSession(data);
+    }
+    // If data is null, it means the row was deleted or RLS blocked it. Fall through to insert a new one.
   }
 
   const { data, error } = await supabase
@@ -2357,6 +2363,8 @@ export async function clockInEmployee(input: {
     .select("*")
     .single();
   if (error) handleClockSessionsError(error);
+  if (!data) throw new Error("Failed to create clock session (no data returned).");
+  
   clockSessionsTableReady = true;
   await insertClockSegment({
     sessionId: data.id,
