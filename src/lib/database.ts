@@ -2009,12 +2009,25 @@ function mapClockSegment(row: {
 
 async function closeOpenClockSegment(sessionId: string, endedAtMs: number) {
   if (!(await probeClockSegments())) return;
-  const endedAt = new Date(endedAtMs).toISOString();
+  
+  // First get the open segment to ensure we don't set ended_at < started_at
+  const { data: openSegment } = await supabase
+    .from("clock_session_segments")
+    .select("*")
+    .eq("session_id", sessionId)
+    .is("ended_at", null)
+    .maybeSingle();
+    
+  if (!openSegment) return;
+  
+  const startMs = new Date(openSegment.started_at).getTime();
+  const safeEndedAtMs = Math.max(startMs, endedAtMs);
+  const endedAt = new Date(safeEndedAtMs).toISOString();
+
   await supabase
     .from("clock_session_segments")
     .update({ ended_at: endedAt })
-    .eq("session_id", sessionId)
-    .is("ended_at", null);
+    .eq("id", openSegment.id);
 }
 
 async function insertClockSegment(input: {
@@ -2193,7 +2206,11 @@ export async function fetchTodayOfficeSession(
       return null;
     }
   }
-  return data ? mapClockSession(data) : null;
+  if (!data) return null;
+  const session = mapClockSession(data);
+  const segmentsMap = await fetchSegmentsForSessions([session.id]);
+  session.segments = segmentsMap.get(session.id) || [];
+  return session;
 }
 
 export async function fetchActiveClockSession(
@@ -2224,7 +2241,10 @@ export async function fetchActiveClockSession(
     throw error;
   }
   clockSessionsTableReady = true;
-  return data ? mapClockSession(data) : null;
+  const session = mapClockSession(data);
+  const segmentsMap = await fetchSegmentsForSessions([session.id]);
+  session.segments = segmentsMap.get(session.id) || [];
+  return session;
 }
 
 export async function pauseEmployeeTaskTimers(employeeName: string, employeeId?: string) {

@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { supabase } from "@/lib/supabase";
-import { fetchActiveClockSession, clockOutEmployee, clockInEmployee, EmployeeProfile } from "@/lib/database";
+import { fetchActiveClockSession, fetchTodayOfficeSession, clockOutEmployee, clockInEmployee, EmployeeProfile } from "@/lib/database";
 
 export function useElectronIdleTracker(userEmail: string, userProfile?: EmployeeProfile | null) {
   const [idleSeconds, setIdleSeconds] = useState(0);
@@ -49,6 +49,12 @@ export function useElectronIdleTracker(userEmail: string, userProfile?: Employee
       if (timeSinceActive > 180) {
         const session = await fetchActiveClockSession(profile.name, profile.id);
         if (session && session.status === "active") {
+          const sessionStart = new Date(session.sessionStart || session.clockIn).getTime();
+          // Do not retroactively pause if the session was started AFTER the last active time
+          // (e.g. they just logged in)
+          if (sessionStart > lastActive) {
+            return;
+          }
           await clockOutEmployee({
             sessionId: session.id,
             employeeName: profile.name,
@@ -108,7 +114,7 @@ export function useElectronIdleTracker(userEmail: string, userProfile?: Employee
             
           // 2. Check if we need to auto-resume from a forced idle state
           if (profile) {
-            const session = await fetchActiveClockSession(profile.name, profile.id);
+            const session = await fetchTodayOfficeSession(profile.name, profile.id);
             if (session && session.status === "paused") {
               const segments = session.segments || [];
               const lastSegment = segments.slice(-1)[0];
