@@ -62,9 +62,10 @@ export function segmentsToTimeline(
     (a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
   );
   for (const seg of sorted) {
+    const isIdle = seg.kind === "break" && (seg.label.toLowerCase().includes("idle") || seg.label === "System Idle");
     blocks.push({
-      kind: seg.kind,
-      label: seg.label,
+      kind: isIdle ? "idle" : seg.kind,
+      label: isIdle ? "Idle" : seg.label,
       start: isoToTimelineMinutes(seg.startedAt),
       end: seg.endedAt ? isoToTimelineMinutes(seg.endedAt) : null,
     });
@@ -110,7 +111,7 @@ function fillSmallGapsOnly(blocks: TimelineBlock[], nowMin: number): TimelineBlo
         prev.end = block.start;
       }
     } else if (block.start > cursor + 1) {
-      result.push({ kind: "idle", label: "Gap", start: cursor, end: block.start });
+      result.push({ kind: "idle", label: "Idle", start: cursor, end: block.start });
     }
     result.push({ ...block });
     cursor = block.end ?? nowMin;
@@ -291,6 +292,18 @@ export function buildShiftEmployee(input: {
     idleMins = Math.floor((Date.now() - new Date(lastActiveAt).getTime()) / 60000);
     if (idleMins > 2) {
       currentStatus = "idle";
+      const lastBlock = timeline[timeline.length - 1];
+      if (lastBlock && lastBlock.kind === "working" && lastBlock.end === null) {
+        const idleStartMin = isoToTimelineMinutes(lastActiveAt);
+        const finalIdleStart = Math.max(idleStartMin, lastBlock.start);
+        lastBlock.end = finalIdleStart;
+        timeline.push({
+          kind: "idle",
+          label: "Idle",
+          start: finalIdleStart,
+          end: null
+        });
+      }
     }
   }
 

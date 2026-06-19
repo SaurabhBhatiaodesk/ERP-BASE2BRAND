@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import {
   UserCheck, Award, Bell, Monitor, Globe, AlertTriangle, Zap,
   Clock, Activity, Brain, DollarSign, Users, Send, Plus,
-  ChevronLeft, X,
+  ChevronLeft, X, Layers, MessageSquare
 } from "lucide-react";
 import { Avatar, Badge } from "../ui";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
@@ -197,32 +197,29 @@ export function SettingsPage() {
   );
 }
 
-const notificationsList = [
-  { id: 1, color: "text-amber-400", bg: "bg-amber-500/10", title: "Dev team at 140% capacity", body: "Sprint #14 has 38 points assigned but team velocity is 27. 3 tasks at risk of slipping.", time: "5 min ago", read: false, category: "Alert" },
-  { id: 2, color: "text-indigo-400", bg: "bg-indigo-500/10", title: "TechCorp deal idle for 3 days", body: "No activity on the ₹18.4L proposal since May 18. Recommended action: schedule a follow-up call.", time: "1 hour ago", read: false, category: "CRM" },
-  { id: 3, color: "text-emerald-400", bg: "bg-emerald-500/10", title: "Kavya Nair closed ₹8.2L deal", body: "GreenLeaf Organics final milestone payment received. Project marked complete.", time: "2 hours ago", read: false, category: "Revenue" },
-  { id: 4, color: "text-red-400", bg: "bg-red-500/10", title: "Sprint #14 has 3 blockers", body: "Payment gateway, auth middleware, and DB migration are blocking 6 downstream tasks.", time: "3 hours ago", read: true, category: "Tasks" },
-  { id: 5, color: "text-violet-400", bg: "bg-violet-500/10", title: "Rahul Gupta late login — 4th time", body: "Employee started work at 11:48 AM today. Consider a 1:1 check-in.", time: "5 hours ago", read: true, category: "HR" },
-  { id: 6, color: "text-indigo-400", bg: "bg-indigo-500/10", title: "AI Weekly Summary Ready", body: "Your weekly performance briefing for May 18–24 is ready. Revenue up 22%, avg productivity 86.4%.", time: "Yesterday", read: true, category: "AI" },
-  { id: 7, color: "text-emerald-400", bg: "bg-emerald-500/10", title: "INV-009 payment overdue", body: "FinEdge Capital invoice for ₹1.5L was due May 20. Send a reminder.", time: "Yesterday", read: true, category: "Revenue" },
-  { id: 8, color: "text-blue-400", bg: "bg-blue-500/10", title: "New hire request approved", body: "DevOps Engineer role approved by CEO. Recruiter has been notified to begin sourcing.", time: "2 days ago", read: true, category: "HR" },
-];
+// Dummy data removed as NotificationsCenterView now uses real data from App.tsx
 
-const notifIcons: Record<string, React.FC<{ size?: number; className?: string }>> = {
-  Alert: AlertTriangle,
-  CRM: Zap,
-  Revenue: DollarSign,
-  Tasks: Activity,
-  HR: Clock,
-  AI: Brain,
-};
-
-export function NotificationsCenterView() {
+export function NotificationsCenterView({
+  notifications,
+  markAsRead,
+  markAllAsRead,
+  onNotificationClick
+}: {
+  notifications: any[];
+  markAsRead: (id: string) => void;
+  markAllAsRead: () => void;
+  onNotificationClick: (n: any) => void;
+}) {
   const [filter, setFilter] = useState("All");
-  const [notifications, setNotifications] = useState(notificationsList);
-  const categories = ["All", "Alert", "CRM", "Revenue", "Tasks", "HR", "AI"];
-  const unread = notifications.filter(n => !n.read).length;
-  const filtered = filter === "All" ? notifications : notifications.filter(n => n.category === filter);
+  const categories = ["All", "project_assigned", "chat_message"];
+  const unread = notifications.filter(n => !n.is_read).length;
+  const filtered = filter === "All" ? notifications : notifications.filter(n => n.type === filter);
+
+  const getCategoryLabel = (type: string) => {
+    if (type === "project_assigned") return "Project";
+    if (type === "chat_message") return "Chat";
+    return type;
+  };
 
   return (
     <div className="space-y-5">
@@ -231,7 +228,7 @@ export function NotificationsCenterView() {
           <h2 className="text-base font-bold text-white font-['Plus_Jakarta_Sans']">Notifications</h2>
           <p className="text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mt-0.5">{unread} unread · {notifications.length} total</p>
         </div>
-        <button onClick={() => setNotifications(prev => prev.map(n => ({ ...n, read: true })))}
+        <button onClick={markAllAsRead}
           className="text-xs text-indigo-400 border border-indigo-500/20 px-3 py-1.5 rounded-lg hover:bg-indigo-500/10 transition-colors font-['Plus_Jakarta_Sans']">
           Mark all as read
         </button>
@@ -241,29 +238,33 @@ export function NotificationsCenterView() {
         {categories.map(c => (
           <button key={c} onClick={() => setFilter(c)}
             className={`px-3 py-1.5 rounded-lg text-xs font-['Plus_Jakarta_Sans'] border transition-all ${filter === c ? "bg-indigo-600/15 border-indigo-500/30 text-white" : "border-[rgba(99,102,241,0.12)] text-[#6b7fa8] hover:text-[#a8b5d1]"}`}>
-            {c}
+            {c === "All" ? "All" : getCategoryLabel(c)}
           </button>
         ))}
       </div>
 
       <div className="space-y-2">
-        {filtered.map(n => {
-          const IconComp = notifIcons[n.category] ?? Bell;
+        {filtered.length === 0 ? (
+          <div className="text-center p-8 text-[#6b7fa8] text-sm">No notifications found.</div>
+        ) : filtered.map(n => {
+          const IconComp = n.type === "project_assigned" ? Layers : (n.type === "chat_message" ? MessageSquare : Bell);
           return (
-            <div key={n.id} onClick={() => setNotifications(prev => prev.map(x => x.id === n.id ? { ...x, read: true } : x))}
-              className={`flex items-start gap-4 p-4 rounded-xl border cursor-pointer transition-all hover:border-indigo-500/20 ${n.read ? "bg-[#0d1326] border-[rgba(99,102,241,0.08)] opacity-60" : "bg-[#0d1326] border-[rgba(99,102,241,0.18)]"}`}>
-              <div className={`w-9 h-9 rounded-xl ${n.bg} flex items-center justify-center shrink-0 mt-0.5`}>
-                <IconComp size={16} className={n.color} />
+            <div key={n.id} onClick={() => { if (!n.is_read) markAsRead(n.id); onNotificationClick(n); }}
+              className={`flex items-start gap-4 p-4 rounded-xl border cursor-pointer transition-all hover:border-indigo-500/20 ${n.is_read ? "bg-[#0d1326] border-[rgba(99,102,241,0.08)] opacity-60" : "bg-[#0d1326] border-[rgba(99,102,241,0.18)]"}`}>
+              <div className={`w-9 h-9 rounded-xl ${n.is_read ? "bg-gray-500/10" : "bg-indigo-500/10"} flex items-center justify-center shrink-0 mt-0.5`}>
+                <IconComp size={16} className={n.is_read ? "text-gray-400" : "text-indigo-400"} />
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-start justify-between gap-2">
-                  <p className={`text-xs font-semibold font-['Plus_Jakarta_Sans'] ${n.read ? "text-[#a8b5d1]" : "text-white"}`}>{n.title}</p>
-                  <span className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8] shrink-0">{n.time}</span>
+                  <p className={`text-xs font-semibold font-['Plus_Jakarta_Sans'] ${n.is_read ? "text-[#a8b5d1]" : "text-white"}`}>{n.title}</p>
+                  <span className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8] shrink-0">
+                    {new Date(n.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                  </span>
                 </div>
-                <p className="text-[11px] text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mt-1 leading-relaxed">{n.body}</p>
+                <p className="text-[11px] text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mt-1 leading-relaxed">{n.message}</p>
                 <div className="flex items-center gap-2 mt-2">
-                  <span className="text-[9px] font-['Geist_Mono'] text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded-full">{n.category}</span>
-                  {!n.read && <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full" />}
+                  <span className="text-[9px] font-['Geist_Mono'] text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded-full">{getCategoryLabel(n.type)}</span>
+                  {!n.is_read && <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full" />}
                 </div>
               </div>
             </div>

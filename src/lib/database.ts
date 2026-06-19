@@ -820,6 +820,7 @@ export function mapEmployeeProfile(row: DbEmployeeProfile): EmployeeProfile {
     skills: row.skills || [],
     bio: row.bio,
     weeklyHours: row.weekly_hours || [],
+    last_active_at: row.last_active_at || null,
     recentTasks: [],
     attendance: row.attendance,
     leaves: row.leaves,
@@ -830,7 +831,6 @@ export function mapEmployeeProfile(row: DbEmployeeProfile): EmployeeProfile {
     profileImageUrl: row.profile_image_url || "",
     avatar: row.avatar || initialsFromName(row.name),
     shiftStart: row.shift_start?.trim() || "10:00",
-    last_active_at: row.last_active_at || null,
   };
 }
 
@@ -1622,6 +1622,11 @@ export async function assignProjectTeam(
   const teamForDb = buildTeamForDb(allMemberIds, profiles);
   const leadName = profileNameById(profiles, leadId) || lead || "Unassigned";
 
+  // Fetch old state to diff and notify
+  const { data: oldProj } = await supabase.from("projects").select("name, team_ids").eq("id", projectId).single();
+  const oldTeamIds = new Set<string>(oldProj?.team_ids || []);
+  const newAssignments = allMemberIds.filter(id => id && !oldTeamIds.has(id));
+
   const payload: {
     team: ProjectTeamMember[];
     lead: string;
@@ -1656,7 +1661,21 @@ export async function assignProjectTeam(
     }
   }
 
-  const { data: allProjects } = await supabase.from("projects").select("id,name,team,lead");
+  // Send Notifications
+  if (newAssignments.length > 0) {
+    const projName = oldProj?.name || "a project";
+    for (const newId of newAssignments) {
+      await insertNotification({
+        recipientId: newId as string,
+        title: "Project Assigned",
+        message: `You have been assigned to project: ${projName}`,
+        type: "project_assigned",
+        referenceId: projectId
+      });
+    }
+  }
+
+  const { data: allProjects } = await supabase.from("projects").select("id,name,team,lead,team_ids,lead_id");
   if (!allProjects) return;
 
   if (await probeProjectRelations()) {
@@ -1902,7 +1921,7 @@ export async function updateProjectTask(input: {
 
 export type ClockSessionStatus = "active" | "paused" | "completed";
 
-export type ClockSessionSegmentKind = "working" | "break" | "meeting";
+export type ClockSessionSegmentKind = "working" | "break" | "meeting" | "idle";
 
 export type ClockSessionSegment = {
   id: string;
@@ -2047,6 +2066,7 @@ function breakKindFromReason(reason: ClockOutReason | string): ClockSessionSegme
 
 function breakLabelFromReason(reason: ClockOutReason | string) {
   if (reason === "end_day") return "End of day";
+  if (reason === "idle") return "System Idle";
   const opt = CLOCK_OUT_OPTIONS.find(o => o.id === reason);
   return opt ? opt.label : String(reason);
 }
@@ -3264,6 +3284,32 @@ export async function sendChatMessage(input: {
     .select("*")
     .single();
   if (error) throw error;
+
+  // Insert notifications for other channel members
+  try {
+    const { data: members } = await supabase
+      .from("chat_channel_members")
+      .select("user_id")
+      .eq("channel_id", input.channelId);
+    
+    if (members) {
+      for (const member of members) {
+        if (member.user_id !== input.senderId) {
+          await insertNotification({
+            recipientId: member.user_id,
+            senderId: input.senderId || undefined,
+            title: `New Message from ${input.senderName}`,
+            message: messageType === "text" ? text : `Sent a ${messageType}`,
+            type: "chat_message",
+            referenceId: input.channelId
+          });
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Failed to send chat notifications:", err);
+  }
+
   return mapChatMessage(data as DbChatMessage);
 }
 
@@ -3458,3 +3504,41 @@ export async function fetchChatUnreadCounts(userId: string): Promise<Record<stri
   }
   return counts;
 }
+
+// ==========================================
+// Notifications
+// ==========================================
+
+export type AppNotification = {
+  id: string;
+  recipient_id: string;
+  sender_id?: string | null;
+  title: string;
+  message: string;
+  type: string;
+  reference_id?: string | null;
+  is_read: boolean;
+  created_at: string;
+};
+
+export async function insertNotification(input: {
+  recipientId: string;
+  title: string;
+  message: string;
+  type: string;
+  senderId?: string;
+  referenceId?: string;
+}) {
+  const { error } = await supabase.from("notifications").insert({
+    recipient_id: input.recipientId,
+    sender_id: input.senderId || null,
+    title: input.title,
+    message: input.message,
+    type: input.type,
+    reference_id: input.referenceId || null,
+  });
+  if (error && error.message && !error.message.includes("does not exist")) {
+    console.error("Insert notification error:", error);
+  }
+}
+

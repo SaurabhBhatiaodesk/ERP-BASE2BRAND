@@ -34,6 +34,11 @@ function createWindow() {
 
 // Ensure app is ready before creating window
 app.whenReady().then(() => {
+  // Required for Windows Toast Notifications to work in the .exe
+  if (process.platform === 'win32') {
+    app.setAppUserModelId('com.base2brand.erp');
+  }
+
   createWindow();
 
   app.on('activate', () => {

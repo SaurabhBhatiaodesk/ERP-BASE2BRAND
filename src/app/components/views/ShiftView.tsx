@@ -13,6 +13,8 @@ import {
   initialsFromName,
   isClockSessionsTableReady,
   type ClockSessionRecord,
+  type AppTask,
+  clockOutEmployee,
 } from "@/lib/database";
 import {
   buildShiftEmployee,
@@ -63,6 +65,7 @@ export type ShiftEmployee = {
   /** ISO timestamp — for live elapsed since clock-in */
   clockInAt: string | null;
   lastActiveAt?: string | null;
+  idleDurationMins?: number;
   currentTask: string;
   currentApp: string;
   currentScreen: string;
@@ -394,10 +397,12 @@ function TaskStageBar({
   task,
   shiftWindow,
   targetDate,
+  nowMin,
 }: {
   task: ShiftActiveTask;
   shiftWindow: { left: number; width: number };
   targetDate?: string;
+  nowMin: number;
 }) {
   const totals = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, targetDate);
   const segments = buildProportionalStageSegments(totals);
@@ -460,7 +465,7 @@ function TaskStageBar({
           <div
             className="absolute top-0.5 bottom-0.5 rounded-sm bg-slate-700/30 border border-dashed border-slate-600/40"
             style={{ left: `${shiftWindow.left}%`, width: `${shiftWindow.width}%` }}
-            title={`${task.title} — no stage time yet`}
+            title={`${task.title} A no stage time yet`}
           />
         )}
       </div>
@@ -486,7 +491,7 @@ function TaskStageBar({
   );
 }
 
-export function StageTimelineBar({ emp, nowMin, targetDate }: { emp: ShiftEmployee; nowMin: number; targetDate?: string; }) {
+export function StageTimelineBar({ emp, nowMin, targetDate }: { emp: ShiftEmployee; nowMin: number; targetDate?: string }) {
   const shiftWindow = shiftWindowOnAxis(emp);
   const hourMarks = Array.from({ length: TIMELINE_AXIS_DURATION / 60 + 1 }, (_, i) => i * 60).slice(1, -1);
   const tasks = emp.trackedTasks.length > 0 ? emp.trackedTasks : [];
@@ -512,7 +517,7 @@ export function StageTimelineBar({ emp, nowMin, targetDate }: { emp: ShiftEmploy
       </div>
       {tasks.length > 0 ? (
         tasks.map(task => (
-          <TaskStageBar key={task.taskId} task={task} shiftWindow={shiftWindow} targetDate={targetDate} />
+          <TaskStageBar key={task.taskId} task={task} shiftWindow={shiftWindow} targetDate={targetDate} nowMin={nowMin} />
         ))
       ) : (
         <div className="relative h-8 bg-[#111828] rounded-lg overflow-hidden">
@@ -557,32 +562,15 @@ export function TimelineBar({ emp, nowMin }: { emp: ShiftEmployee; nowMin: numbe
         return (
           <div
             key={i}
-            className={`absolute top-1 bottom-1 rounded-sm ${meta.bg} ${isOngoing ? "opacity-95 ring-1 ring-white/20" : "opacity-75"} flex items-center justify-center overflow-hidden`}
-            style={{ left: `${s}%`, width: `${Math.max(w, block.kind === "break" || block.kind === "meeting" ? 1.2 : 0.5)}%` }}
-            title={`${block.label}: ${minToLabel(block.start)} → ${block.end ? minToLabel(block.end) : "Now"} (${durLabel})`}
-          >
-            {(block.kind === "break" || block.kind === "meeting") && w > 4 && (
-              <span className="text-[8px] text-white/90 font-['Geist_Mono'] truncate px-0.5">{durLabel}</span>
-            )}
-          </div>
+            className={`absolute top-1 bottom-1 rounded-sm ${meta.bg} ${isOngoing ? "opacity-95 ring-1 ring-white/20" : "opacity-75"} flex items-center justify-center ${block.kind === "idle" ? "" : "overflow-hidden"}`}
+            style={{ left: `${s}%`, width: `${Math.max(w, block.kind === "break" || block.kind === "meeting" || block.kind === "idle" ? 1.2 : 0.5)}%` }}
+            title={`${block.label}: ${minToLabel(block.start)} - ${block.end ? minToLabel(block.end) : "Now"} (${durLabel})`}
+          />
         );
       })}
       <div className="absolute top-0 bottom-0 w-0.5 bg-white/60 z-10"
         style={{ left: `${Math.min((nowMin / TIMELINE_AXIS_DURATION) * 100, 100)}%` }} />
     </div>
-    {pauseBlocks.length > 0 && (
-      <div className="flex flex-wrap gap-1">
-        {pauseBlocks.slice(0, 3).map((b, i) => (
-          <span
-            key={i}
-            className="text-[9px] font-['Geist_Mono'] text-amber-400/90 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded"
-            title={`${minToLabel(b.start)} → ${b.end ? minToLabel(b.end) : "Now"}`}
-          >
-            {b.label} · {formatDurationMinutes(b.durationMin)}
-          </span>
-        ))}
-      </div>
-    )}
     </div>
   );
 }
@@ -748,55 +736,7 @@ export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks }: { emp: S
             </div>
           </div>
         </div>
-
-        {emp.trackedTasks.length > 0 && (
-          <div className="m-6 sm:m-8 mb-0 space-y-4">
-            <p className="text-xs font-['Geist_Mono'] text-amber-400 uppercase tracking-widest font-medium">
-              Task Stage Time ({emp.trackedTasks.length})
-            </p>
-            {emp.trackedTasks.map(task => (
-              <TaskStageDetail key={task.taskId} task={task} compact large />
-            ))}
-          </div>
-        )}
-
-        {pauseBlocks.length > 0 && (
-          <div className="m-6 sm:m-8 mb-0 space-y-3">
-            <p className="text-xs font-['Geist_Mono'] text-amber-400 uppercase tracking-widest font-medium">
-              Breaks & Gaps ({pauseBlocks.length})
-            </p>
-            <div className="space-y-2">
-              {pauseBlocks.map((block, i) => {
-                const meta = kindMeta[block.kind];
-                const endLabel = block.end ? minToLabel(block.end) : "Now";
-                return (
-                  <div
-                    key={i}
-                    className="flex flex-wrap items-center gap-3 py-3 px-4 rounded-xl bg-amber-500/5 border border-amber-500/15"
-                  >
-                    <Coffee size={16} className={`shrink-0 ${meta.color}`} />
-                    <span className={`text-sm font-semibold font-['Plus_Jakarta_Sans'] ${meta.color}`}>
-                      {block.label}
-                    </span>
-                    <span className="text-xs font-['Geist_Mono'] text-[#8fa0c4]">
-                      {minToLabel(block.start)} → {endLabel}
-                    </span>
-                    <span className="ml-auto text-sm font-bold font-['Geist_Mono'] text-amber-300">
-                      {formatDurationMinutes(block.durationMin)} gap
-                    </span>
-                    {block.end === null && (
-                      <span className="text-[10px] font-['Geist_Mono'] text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full">
-                        Ongoing
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 m-6 sm:m-8 mb-0">
+             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 m-6 sm:m-8 mb-0">
           {[
             { label: "Work Time", value: fmtMin(worked), color: "text-indigo-400", icon: Activity },
             { label: "Meetings", value: fmtMin(meetings), color: "text-violet-400", icon: Users },
@@ -811,10 +751,10 @@ export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks }: { emp: S
           ))}
         </div>
 
-        <div className="m-6 sm:m-8">
+        <div className="m-6 sm:m-8 mb-0">
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
             <h3 className="text-base font-semibold text-white font-['Plus_Jakarta_Sans']">
-              Daily Timeline — {emp.shiftStartLabel} → {emp.shiftEndLabel}
+              Daily Timeline · {emp.shiftStartLabel} → {emp.shiftEndLabel}
             </h3>
             <div className="flex items-center flex-wrap gap-3">
               {(["working","meeting","break","idle"] as ActivityKind[]).map(k => (
@@ -883,6 +823,53 @@ export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks }: { emp: S
             })}
           </div>
         </div>
+
+        {emp.trackedTasks.length > 0 && (
+          <div className="m-6 sm:m-8 mb-0 space-y-4">
+            <p className="text-xs font-['Geist_Mono'] text-amber-400 uppercase tracking-widest font-medium">
+              Task Stage Time ({emp.trackedTasks.length})
+            </p>
+            {emp.trackedTasks.map(task => (
+              <TaskStageDetail key={task.taskId} task={task} compact large />
+            ))}
+          </div>
+        )}
+
+        {pauseBlocks.length > 0 && (
+          <div className="m-6 sm:m-8 space-y-3">
+            <p className="text-xs font-['Geist_Mono'] text-amber-400 uppercase tracking-widest font-medium">
+              Breaks & Gaps ({pauseBlocks.length})
+            </p>
+            <div className="space-y-2">
+              {pauseBlocks.map((block, i) => {
+                const meta = kindMeta[block.kind];
+                const endLabel = block.end ? minToLabel(block.end) : "Now";
+                return (
+                  <div
+                    key={i}
+                    className="flex flex-wrap items-center gap-3 py-3 px-4 rounded-xl bg-amber-500/5 border border-amber-500/15"
+                  >
+                    <Coffee size={16} className={`shrink-0 ${meta.color}`} />
+                    <span className={`text-sm font-semibold font-['Plus_Jakarta_Sans'] ${meta.color}`}>
+                      {block.label}
+                    </span>
+                    <span className="text-xs font-['Geist_Mono'] text-[#8fa0c4]">
+                      {minToLabel(block.start)} → {endLabel}
+                    </span>
+                    <span className="ml-auto text-sm font-bold font-['Geist_Mono'] text-amber-300">
+                      {formatDurationMinutes(block.durationMin)} gap
+                    </span>
+                    {block.end === null && (
+                      <span className="text-[10px] font-['Geist_Mono'] text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full">
+                        Ongoing
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
           </>
         )}
 
@@ -954,7 +941,6 @@ export function ShiftView({
   const [setupNeeded, setSetupNeeded] = useState(false);
   const [selected, setSelected] = useState<ShiftEmployee | null>(null);
   const [nowMin, setNowMin] = useState(currentShiftNowMin());
-  const [idleAlerts, setIdleAlerts] = useState<{name: string, time: number}[]>([]);
 
   const viewerProfile = useMemo(
     () => profiles.find(p => p.name.trim().toLowerCase() === userName.trim().toLowerCase()),
@@ -1028,7 +1014,7 @@ export function ShiftView({
         trackedTasksInput: trackedTasks,
       });
     });
-  }, [visibleProfiles, sessionByEmployee, tasks]);
+  }, [visibleProfiles, sessionByEmployee, tasks, nowMin]);
 
   useEffect(() => {
     if (!selected) return;
@@ -1036,51 +1022,44 @@ export function ShiftView({
     if (updated) setSelected(updated);
   }, [shiftEmployees, selected?.name]);
 
+  // Admin Auto-Idle Enforcer: Forcibly save Idle segments to database for employees who appear idle on dashboard
+  useEffect(() => {
+    shiftEmployees.forEach(async (emp) => {
+      if (emp.status === "idle" && emp.idleDurationMins && emp.idleDurationMins >= 3) {
+        const session = sessionByEmployee.get(emp.id) || sessionByEmployee.get(emp.name.trim().toLowerCase()) || sessionByEmployee.get(emp.name.trim().toLowerCase().split(/\s+/)[0]);
+        if (session && session.status === "active") {
+          try {
+            await clockOutEmployee({
+              sessionId: session.id,
+              employeeName: emp.name,
+              employeeId: emp.id,
+              reason: "idle",
+              forceTimeMs: Date.now() - (emp.idleDurationMins * 60000)
+            });
+            console.log(`Admin auto-clocked-out ${emp.name} for being idle`);
+          } catch (e) {
+            console.error("Admin idle enforcer error:", e);
+          }
+        }
+      }
+    });
+  }, [shiftEmployees, sessionByEmployee]);
+
   const prevIdleSet = useRef<Set<string>>(new Set());
   const isFirstRender = useRef(true);
 
   useEffect(() => {
-    let newlyIdleNames: string[] = [];
     const currentIdleSet = new Set<string>();
 
     for (const emp of shiftEmployees) {
       if (emp.status === "idle") {
         currentIdleSet.add(emp.name);
-        if (!prevIdleSet.current.has(emp.name)) {
-          newlyIdleNames.push(emp.name);
-        }
       }
     }
-
-    // Only play a beep if it's NOT the very first render (page load)
-    if (newlyIdleNames.length > 0 && !isFirstRender.current) {
-      playBeep();
-      setIdleAlerts(prev => {
-        const newAlerts = newlyIdleNames.map(name => ({ name, time: Date.now() }));
-        return [...prev, ...newAlerts];
-      });
-    }
-
-    // Auto-remove alerts if they are no longer idle
-    setIdleAlerts(prev => prev.filter(a => currentIdleSet.has(a.name)));
 
     prevIdleSet.current = currentIdleSet;
     isFirstRender.current = false;
   }, [shiftEmployees]);
-
-  // Repeated beep every 30s for active alerts
-  useEffect(() => {
-    if (idleAlerts.length > 0) {
-      const id = setInterval(() => {
-        playBeep();
-      }, 30000);
-      return () => clearInterval(id);
-    }
-  }, [idleAlerts]);
-
-  const dismissAlert = (name: string) => {
-    setIdleAlerts(prev => prev.filter(a => a.name !== name));
-  };
 
   const shiftAiInsights = useMemo(() => buildShiftInsights(shiftEmployees), [shiftEmployees]);
 
@@ -1116,26 +1095,6 @@ export function ShiftView({
 
   return (
     <div className="space-y-6 relative">
-      {/* Idle Alerts Popup */}
-      {idleAlerts.length > 0 && (
-        <div className="fixed top-6 right-6 z-50 flex flex-col gap-3">
-          {idleAlerts.map(alert => (
-            <div key={alert.name} className="flex items-center gap-4 bg-[#1e0f15] border border-red-500/40 text-red-200 px-5 py-4 rounded-2xl shadow-[0_10px_40px_-10px_rgba(239,68,68,0.4)] backdrop-blur-xl animate-in fade-in slide-in-from-top-4">
-              <div className="bg-red-500/20 p-2 rounded-full">
-                <AlertTriangle className="w-5 h-5 text-red-400 animate-pulse" />
-              </div>
-              <div>
-                <div className="font-bold text-sm font-['Plus_Jakarta_Sans']">{alert.name} is Not at Desk!</div>
-                <div className="text-[11px] text-red-300/80 font-['Geist_Mono'] mt-0.5">Alert triggered just now</div>
-              </div>
-              <button onClick={() => dismissAlert(alert.name)} className="ml-2 p-1.5 hover:bg-white/10 rounded-lg transition-colors border border-transparent hover:border-white/5">
-                <X className="w-4 h-4 text-red-400/80" />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white font-['Plus_Jakarta_Sans']">Shift Tracker</h1>
@@ -1300,10 +1259,21 @@ export function ShiftView({
           <table className="w-full">
             <thead>
               <tr className="border-b border-[rgba(99,102,241,0.08)]">
-                {["Employee", "Current Activity", "App / Screen", "Time Active", "Productivity", "Task Stage Time"].map(h => (
+                {["Employee", "Current Activity", "Daily Timeline"].map(h => (
                   <th key={h} className={`text-left font-['Geist_Mono'] text-[#8fa0c4] uppercase tracking-wider ${
-                    h === "Task Stage Time" ? "px-4 py-3.5 text-[11px] min-w-[280px]" : "px-4 py-3 text-[10px]"
-                  }`}>{h}</th>
+                    h === "Daily Timeline" ? "px-4 pt-3 pb-2 text-[11px] w-[50%]" : "px-4 py-3 text-[10px]"
+                  }`}>
+                    {h === "Daily Timeline" ? (
+                      <div className="flex flex-col gap-2 w-full">
+                        <span>{h}</span>
+                        <div className="flex justify-between text-[9px] font-['Geist_Mono'] text-[#4f679b]">
+                          {timelineHourLabels(true).map(t => <span key={t}>{t}</span>)}
+                        </div>
+                      </div>
+                    ) : (
+                      h
+                    )}
+                  </th>
                 ))}
               </tr>
             </thead>
@@ -1332,22 +1302,9 @@ export function ShiftView({
                           : (emp.status === "idle" && (emp.idleDurationMins || 0) > 0 ? `Not at desk for ${emp.idleDurationMins}m` : meta.label)}
                       </span>
                     </td>
-                    <td className="px-4 py-3 max-w-[140px]">
-                      <p className="text-xs text-indigo-300 font-['Geist_Mono'] truncate">{emp.currentApp}</p>
-                      <p className="text-[10px] text-[#6b7fa8] truncate">{emp.currentScreen.split("—")[0]}</p>
-                    </td>
-                    <td className="px-4 py-3 text-xs font-['Geist_Mono'] text-emerald-400">{emp.activeFor}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <div className="w-14 h-1 bg-[#131a35] rounded-full overflow-hidden">
-                          <div className={`h-full rounded-full ${emp.productivity >= 90 ? "bg-emerald-500" : emp.productivity >= 75 ? "bg-indigo-500" : "bg-amber-500"}`}
-                            style={{ width: `${emp.productivity}%` }} />
-                        </div>
-                        <span className={`text-xs font-bold font-['Geist_Mono'] ${emp.productivity >= 90 ? "text-emerald-400" : emp.productivity >= 75 ? "text-indigo-400" : "text-amber-400"}`}>{emp.productivity}%</span>
-                      </div>
-                    </td>
+
                     <td className="px-4 py-4 min-w-[280px] align-top">
-                      <TaskStageList tasks={emp.trackedTasks} max={2} large />
+                      <TimelineBar emp={emp} nowMin={nowMin} />
                     </td>
                   </tr>
                 );

@@ -30,6 +30,8 @@ import { useChatUnreadCounts } from "@/hooks/useChat";
 import { SettingsPage, NotificationsCenterView, BroadcastView, ProjectDetailPage, InvoiceView } from "./components/views/SettingsViews";
 import { AICopilotView } from "./components/views/AICopilotView";
 import { useElectronIdleTracker } from "@/hooks/useElectronIdleTracker";
+import { useNotifications } from "@/hooks/useNotifications";
+import { playBeep } from "@/lib/audio";
 
 type RoleId = "ceo" | "teamlead" | "employee" | "developer" | "designer" | "marketing" | "hr";
 
@@ -305,7 +307,6 @@ export default function App() {
   const [userName, setUserName] = useState("CEO Admin");
   const [userEmail, setUserEmail] = useState("");
   
-  const idleSeconds = useElectronIdleTracker(userEmail);
   const [activeView, setActiveView] = useState("dashboard");
   const [showNotifications, setShowNotifications] = useState(false);
   const [showAI, setShowAI] = useState(false);
@@ -325,11 +326,31 @@ export default function App() {
     () => findProfileForUser(profiles, userName, userEmail),
     [profiles, userName, userEmail]
   );
+  
+  const handleNotificationClick = (n: any) => {
+    if (n.type === "chat_message") {
+      setActiveView("chat");
+    } else if (n.type === "project_assigned") {
+      setActiveView("projects");
+    }
+  };
+
+  const { notifications, unreadCount, markAsRead, markAllAsRead } = useNotifications(currentProfile?.id, handleNotificationClick);
+  const idleSeconds = useElectronIdleTracker(userEmail, currentProfile);
+
   const { data: chatUnread } = useChatUnreadCounts(currentProfile?.id ?? "");
   const chatUnreadTotal = useMemo(
     () => Object.values(chatUnread).reduce((sum, n) => sum + n, 0),
     [chatUnread]
   );
+
+  useEffect(() => {
+    if (idleSeconds > 180 && userRole !== "ceo") {
+      playBeep();
+      const id = setInterval(() => playBeep(), 30000);
+      return () => clearInterval(id);
+    }
+  }, [idleSeconds > 180, userRole]);
 
   const navItems = useMemo(() => {
     const base = roleNavMap[userRole] ?? roleNavMap.ceo;
@@ -590,7 +611,17 @@ export default function App() {
       case "productivity": return <ProductivityTimelineView />;
       case "register": return <RegistrationFormsView initialTab={registerTab} />;
       case "settings": return <SettingsPage />;
-      case "notifications": return <NotificationsCenterView />;
+      case "notifications": return (
+        <NotificationsCenterView 
+          notifications={notifications}
+          markAsRead={markAsRead}
+          markAllAsRead={markAllAsRead}
+          onNotificationClick={(n) => {
+            if (n.type === "chat_message") setActiveView("chat");
+            else if (n.type === "project_assigned") setActiveView("projects");
+          }}
+        />
+      );
       case "broadcast": return <BroadcastView />;
       case "projects": return (
         <ProjectsView
@@ -649,6 +680,17 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-[#06091a] overflow-hidden" style={{ fontFamily: "Inter, sans-serif" }}>
+      {idleSeconds > 180 && userRole !== "ceo" && (
+        <div className="fixed top-6 right-6 z-50 flex items-center gap-4 bg-[#1e0f15] border border-red-500/40 text-red-200 px-5 py-4 rounded-2xl shadow-[0_10px_40px_-10px_rgba(239,68,68,0.4)] backdrop-blur-xl animate-in fade-in slide-in-from-top-4">
+          <div className="bg-red-500/20 p-2 rounded-full">
+            <AlertTriangle className="w-5 h-5 text-red-400 animate-pulse" />
+          </div>
+          <div>
+            <div className="font-bold text-sm font-['Plus_Jakarta_Sans']">You are Not at Desk!</div>
+            <div className="text-[11px] text-red-300/80 font-['Geist_Mono'] mt-0.5">Please resume activity to clock back in.</div>
+          </div>
+        </div>
+      )}
       {/* Mobile overlay */}
       {sidebarOpen && (
         <div className="fixed inset-0 bg-black/60 z-30 lg:hidden" onClick={() => setSidebarOpen(false)} />
@@ -748,29 +790,53 @@ export default function App() {
               <button onClick={() => { if (activeView === "notifications") setShowNotifications(!showNotifications); else { setActiveView("notifications"); setShowNotifications(false); } }}
                 className="relative p-2 hover:bg-white/[0.04] rounded-lg transition-colors text-[#6b7fa8] hover:text-white">
                 <Bell size={16} />
-                <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-red-500 rounded-full" />
+                {unreadCount > 0 && (
+                  <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full border border-[#0d1326]" />
+                )}
               </button>
               {showNotifications && (
-                <div className="absolute right-0 top-10 w-72 lg:w-80 bg-[#0d1326] border border-[rgba(99,102,241,0.2)] rounded-xl shadow-2xl z-50 overflow-hidden">
-                  <div className="p-4 border-b border-[rgba(99,102,241,0.1)] flex items-center justify-between">
-                    <span className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Notifications</span>
+                <div className="absolute right-0 top-10 w-72 lg:w-80 bg-[#0d1326] border border-[rgba(99,102,241,0.2)] rounded-xl shadow-2xl z-50 overflow-hidden flex flex-col max-h-[400px]">
+                  <div className="p-4 border-b border-[rgba(99,102,241,0.1)] flex items-center justify-between shrink-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Notifications</span>
+                      {unreadCount > 0 && (
+                        <span className="bg-indigo-500/20 text-indigo-400 text-[10px] px-1.5 py-0.5 rounded-full font-['Geist_Mono']">{unreadCount} new</span>
+                      )}
+                    </div>
                     <button onClick={() => setShowNotifications(false)}><X size={14} className="text-[#6b7fa8]" /></button>
                   </div>
-                  <div className="divide-y divide-[rgba(99,102,241,0.06)]">
-                    {[
-                      { icon: AlertTriangle, text: "Dev team at 140% capacity", time: "5m", color: "text-amber-400" },
-                      { icon: Zap, text: "TechCorp deal idle for 3 days", time: "1h", color: "text-indigo-400" },
-                      { icon: UserCheck, text: "Kavya closed ₹8.2L deal", time: "2h", color: "text-emerald-400" },
-                      { icon: Activity, text: "Sprint #14 at risk — 3 blockers", time: "3h", color: "text-red-400" },
-                    ].map((n, i) => (
-                      <div key={i} className="flex items-start gap-3 p-4 hover:bg-white/[0.02] transition-colors cursor-pointer">
-                        <n.icon size={14} className={`mt-0.5 ${n.color}`} />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs text-[#e2e8f7]">{n.text}</p>
-                          <p className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8] mt-0.5">{n.time} ago</p>
-                        </div>
+                  <div className="divide-y divide-[rgba(99,102,241,0.06)] overflow-y-auto">
+                    {notifications.length === 0 ? (
+                      <div className="p-6 text-center text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans']">
+                        No notifications yet.
                       </div>
-                    ))}
+                    ) : (
+                      notifications.map((n) => {
+                        const Icon = n.type === "project_assigned" ? Layers : (n.type === "chat_message" ? MessageSquare : Bell);
+                        return (
+                          <div 
+                            key={n.id} 
+                            onClick={() => { 
+                              if (!n.is_read) markAsRead(n.id); 
+                              handleNotificationClick(n);
+                              setShowNotifications(false);
+                            }}
+                            className={`flex items-start gap-3 p-4 transition-colors cursor-pointer ${n.is_read ? "opacity-60 hover:bg-white/[0.02]" : "bg-white/[0.02] hover:bg-white/[0.04]"}`}
+                          >
+                            <div className={`mt-0.5 relative ${n.is_read ? 'text-[#6b7fa8]' : 'text-indigo-400'}`}>
+                              <Icon size={14} />
+                              {!n.is_read && <span className="absolute -top-1 -right-1 w-1.5 h-1.5 bg-indigo-500 rounded-full" />}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className={`text-xs ${n.is_read ? 'text-[#a8b5d1]' : 'text-[#e2e8f7] font-medium'} leading-snug`}>{n.message}</p>
+                              <p className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8] mt-1">
+                                {new Date(n.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </p>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
                   </div>
                 </div>
               )}

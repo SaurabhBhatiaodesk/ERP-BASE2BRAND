@@ -35,7 +35,7 @@ export function useEmployeeVisualHistory(emp: ShiftEmployee, rangeDays: number, 
              daysMap.set(dateStr, s);
           } else if (daysMap.has(dateStr)) {
              const existing = daysMap.get(dateStr)!;
-             existing.segments = [...existing.segments, ...s.segments];
+             existing.segments = [...(existing.segments || []), ...(s.segments || [])];
              if (s.clockOut && (!existing.clockOut || new Date(s.clockOut) > new Date(existing.clockOut))) {
                existing.clockOut = s.clockOut;
              }
@@ -62,7 +62,6 @@ export function useEmployeeVisualHistory(emp: ShiftEmployee, rangeDays: number, 
               avatar: emp.avatar,
               role: emp.role,
               dept: emp.dept,
-              profileImageUrl: emp.profileImageUrl,
               session,
               workTasksInput: activeTasksForDay,
               trackedTasksInput: activeTasksForDay,
