@@ -1023,28 +1023,7 @@ export function ShiftView({
     if (updated) setSelected(updated);
   }, [shiftEmployees, selected?.name]);
 
-  // Admin Auto-Idle Enforcer: Forcibly save Idle segments to database for employees who appear idle on dashboard
-  useEffect(() => {
-    shiftEmployees.forEach(async (emp) => {
-      if (emp.status === "idle" && emp.idleDurationMins && emp.idleDurationMins >= 3) {
-        const session = sessionByEmployee.get(emp.id) || sessionByEmployee.get(emp.name.trim().toLowerCase()) || sessionByEmployee.get(emp.name.trim().toLowerCase().split(/\s+/)[0]);
-        if (session && session.status === "active") {
-          try {
-            await clockOutEmployee({
-              sessionId: session.id,
-              employeeName: emp.name,
-              employeeId: emp.id,
-              reason: "idle",
-              forceTimeMs: Date.now() - (emp.idleDurationMins * 60000)
-            });
-            console.log(`Admin auto-clocked-out ${emp.name} for being idle`);
-          } catch (e) {
-            console.error("Admin idle enforcer error:", e);
-          }
-        }
-      }
-    });
-  }, [shiftEmployees, sessionByEmployee]);
+
 
   const prevIdleSet = useRef<Set<string>>(new Set());
   const isFirstRender = useRef(true);

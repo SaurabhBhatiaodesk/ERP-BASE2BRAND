@@ -19,13 +19,20 @@ function createWindow() {
     },
   });
 
-  if (process.env.VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-    mainWindow.webContents.openDevTools();
-  } else {
-    // In production, load the built index.html
-    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
-  }
+    if (process.env.VITE_DEV_SERVER_URL) {
+      mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
+      mainWindow.webContents.openDevTools();
+    } else {
+      // In production, load the built index.html
+      mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+    }
+
+    // Block Ctrl+W (Windows) and Cmd+W (Mac) from closing the window
+    mainWindow.webContents.on('before-input-event', (event, input) => {
+      if ((input.control || input.meta) && input.key.toLowerCase() === 'w') {
+        event.preventDefault();
+      }
+    });
 
   mainWindow.on('closed', () => {
     mainWindow = null;

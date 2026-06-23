@@ -2010,24 +2010,24 @@ function mapClockSegment(row: {
 async function closeOpenClockSegment(sessionId: string, endedAtMs: number) {
   if (!(await probeClockSegments())) return;
   
-  // First get the open segment to ensure we don't set ended_at < started_at
-  const { data: openSegment } = await supabase
+  const { data: openSegments } = await supabase
     .from("clock_session_segments")
     .select("*")
     .eq("session_id", sessionId)
-    .is("ended_at", null)
-    .maybeSingle();
+    .is("ended_at", null);
     
-  if (!openSegment) return;
+  if (!openSegments || openSegments.length === 0) return;
   
-  const startMs = new Date(openSegment.started_at).getTime();
-  const safeEndedAtMs = Math.max(startMs, endedAtMs);
-  const endedAt = new Date(safeEndedAtMs).toISOString();
+  for (const openSegment of openSegments) {
+    const startMs = new Date(openSegment.started_at).getTime();
+    const safeEndedAtMs = Math.max(startMs, endedAtMs);
+    const endedAt = new Date(safeEndedAtMs).toISOString();
 
-  await supabase
-    .from("clock_session_segments")
-    .update({ ended_at: endedAt })
-    .eq("id", openSegment.id);
+    await supabase
+      .from("clock_session_segments")
+      .update({ ended_at: endedAt })
+      .eq("id", openSegment.id);
+  }
 }
 
 async function insertClockSegment(input: {

@@ -16,8 +16,13 @@
     "appId": "com.base2brand.erp",
     "productName": "Base2Brand ERP",
     "asar": false,
+    "compression": "store",
     "directories": {
       "output": "build-release"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false
     },
     "win": {
       "target": [
