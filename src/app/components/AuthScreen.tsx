@@ -145,6 +145,7 @@ export function AuthScreen({ onLogin }: { onLogin: (role: string, name: string) 
         appRole,
       });
 
+      let alreadyRegistered = false;
       try {
         await signUpWithRole(regEmail, password, appRole, {
           full_name: fullName,
@@ -158,6 +159,7 @@ export function AuthScreen({ onLogin }: { onLogin: (role: string, name: string) 
         if (!msg.includes("already") && !msg.includes("registered") && !msg.includes("exists")) {
           throw signupErr;
         }
+        alreadyRegistered = true;
       }
 
       const { data: { session } } = await supabase.auth.getSession();
@@ -166,9 +168,17 @@ export function AuthScreen({ onLogin }: { onLogin: (role: string, name: string) 
         saveAppSession(role, name);
         onLogin(role, name);
       } else {
-        const { role, name } = await loginWithRole(regEmail, password, { roleHint: appRole });
-        saveAppSession(role, name);
-        onLogin(role, name);
+        try {
+          const { role, name } = await loginWithRole(regEmail, password, { roleHint: appRole });
+          saveAppSession(role, name);
+          onLogin(role, name);
+        } catch (loginErr) {
+          const msg = loginErr instanceof Error ? loginErr.message : "Login failed";
+          if (alreadyRegistered && msg.toLowerCase().includes("invalid login credentials")) {
+            throw new Error("This email is already registered. Please sign in instead, or check your password.");
+          }
+          throw loginErr;
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Signup failed");

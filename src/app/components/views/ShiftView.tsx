@@ -99,19 +99,20 @@ export function hhmm(h: number, m: number) {
 }
 
 export function clockMinutesToLabel(clockMin: number) {
-  return hhmm(Math.floor(clockMin / 60), clockMin % 60);
+  return hhmm(Math.floor(clockMin / 60), Math.floor(clockMin % 60));
 }
 
 export function isoToTimelineMinutes(iso: string) {
   const d = new Date(iso);
-  const clockMin = d.getHours() * 60 + d.getMinutes();
-  return Math.max(0, Math.min(TIMELINE_AXIS_DURATION, clockMin - TIMELINE_AXIS_START));
+  // Use fractional minutes (include seconds) for accuracy in duration display
+  const clockMinFractional = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
+  return Math.max(0, Math.min(TIMELINE_AXIS_DURATION, clockMinFractional - TIMELINE_AXIS_START));
 }
 
 export function currentTimelineNowMin() {
   const now = new Date();
-  const clockMin = now.getHours() * 60 + now.getMinutes();
-  return Math.max(0, Math.min(TIMELINE_AXIS_DURATION, clockMin - TIMELINE_AXIS_START));
+  const clockMinFractional = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
+  return Math.max(0, Math.min(TIMELINE_AXIS_DURATION, clockMinFractional - TIMELINE_AXIS_START));
 }
 
 export function minToLabel(min: number) {
@@ -563,7 +564,7 @@ export function TimelineBar({ emp, nowMin }: { emp: ShiftEmployee; nowMin: numbe
           <div
             key={i}
             className={`absolute top-1 bottom-1 rounded-sm ${meta.bg} ${isOngoing ? "opacity-95 ring-1 ring-white/20" : "opacity-75"} flex items-center justify-center ${block.kind === "idle" ? "" : "overflow-hidden"}`}
-            style={{ left: `${s}%`, width: `${Math.max(w, block.kind === "break" || block.kind === "meeting" || block.kind === "idle" ? 1.2 : 0.5)}%` }}
+            style={{ left: `${s}%`, width: `${w}%`, minWidth: "1px" }}
             title={`${block.label}: ${minToLabel(block.start)} - ${block.end ? minToLabel(block.end) : "Now"} (${durLabel})`}
           />
         );
@@ -597,7 +598,7 @@ export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks }: { emp: S
 
   const pauseBlocks = listPauseBlocks(emp.timeline, effectiveNow);
 
-  const fmtMin = (m: number) => `${Math.floor(m / 60)}h ${m % 60}m`;
+  const fmtMin = formatDurationMinutes;
   const statusMeta = kindMeta[emp.status];
 
   return (
@@ -790,7 +791,7 @@ export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks }: { emp: S
               const meta = kindMeta[block.kind];
               return (
                 <div key={i} className={`absolute top-2 bottom-2 rounded-lg ${meta.bg} ${block.end === null ? "opacity-90" : "opacity-65"} flex items-center justify-center overflow-hidden`}
-                  style={{ left: `${s}%`, width: `${Math.max(w, 0.8)}%` }}
+                  style={{ left: `${s}%`, width: `${w}%`, minWidth: "1px" }}
                   title={`${block.label}\n${minToLabel(block.start)} → ${block.end ? minToLabel(block.end) : "Now"}`}>
                   {w > 8 && <span className="text-[10px] text-white/85 font-['Geist_Mono'] truncate px-1.5">{block.label}</span>}
                 </div>

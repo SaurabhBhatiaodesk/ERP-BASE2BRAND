@@ -1152,11 +1152,13 @@ export function TasksView({
     if (!kanbanColumns.includes(newStatus)) return;
 
     if (newStatus === "in-progress") {
-      const isAnotherInProgress = (dragTasks ?? scopedTasks).some(
-        t => t.status === "in-progress" && t.taskId !== task.taskId && t.assignee === task.assignee && t.projectId === task.projectId
+      const isAnotherInProgress = tasks.some(
+        t => t.status === "in-progress" && t.taskId !== task.taskId && t.assignee === task.assignee
+      ) || (dragTasks || []).some(
+        t => t.status === "in-progress" && t.taskId !== task.taskId && t.assignee === task.assignee
       );
       if (isAnotherInProgress) {
-        alert(`${task.assignee || "This user"} already has a task In Progress in this project. Please complete it first.`);
+        alert(`${task.assignee || "This user"} already has a task In Progress. Please complete it first.`);
         return;
       }
     }
@@ -1294,11 +1296,11 @@ export function TasksView({
     }
 
     if (form.status === "in-progress") {
-      const isAnotherInProgress = scopedTasks.some(
-        t => t.status === "in-progress" && t.taskId !== editingTask?.taskId && t.assignee === form.assignee && t.projectId === form.projectId
+      const isAnotherInProgress = tasks.some(
+        t => t.status === "in-progress" && t.taskId !== editingTask?.taskId && t.assignee === form.assignee
       );
       if (isAnotherInProgress) {
-        setFormError(`${form.assignee || "This user"} already has a task In Progress in this project. Please complete it first.`);
+        setFormError(`${form.assignee || "This user"} already has a task In Progress. Please complete it first.`);
         return;
       }
     }

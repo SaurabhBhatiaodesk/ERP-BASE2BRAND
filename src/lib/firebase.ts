@@ -28,11 +28,17 @@ export const requestFirebaseToken = async (userId: string, vapidKey?: string) =>
       const currentToken = await getToken(messaging, { vapidKey });
       if (currentToken) {
         console.log("FCM Token obtained:", currentToken);
-        // Save to Supabase (assuming an fcm_token column exists in employee_profiles)
-        await supabase
+        // Save to Supabase in web_fcm_token column
+        const { error } = await supabase
           .from("employee_profiles")
-          .update({ fcm_token: currentToken })
+          .update({ web_fcm_token: currentToken })
           .eq("id", userId);
+          
+        if (error) {
+          console.error("Failed to save web_fcm_token to Supabase:", error);
+        } else {
+          console.log("Successfully saved web_fcm_token to Supabase!");
+        }
         return currentToken;
       } else {
         console.log("No registration token available. Request permission to generate one.");

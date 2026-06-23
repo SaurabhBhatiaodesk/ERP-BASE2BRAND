@@ -45,6 +45,14 @@ export function sessionStatusToActivity(session: ClockSessionRecord | null): Act
   if (session.status === "active") return "working";
   if (session.status === "paused") {
     if (session.notes?.toLowerCase().includes("meeting")) return "meeting";
+    // Check last segment kind to see if it was an idle pause vs a manual break
+    const segments = session.segments || [];
+    const lastSeg = [...segments].sort((a, b) =>
+      new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
+    ).slice(-1)[0];
+    if (lastSeg && lastSeg.kind === "idle") return "idle";
+    // Also check notes for "idle" keyword (legacy data)
+    if (session.notes?.toLowerCase().includes("idle") || session.notes?.toLowerCase().includes("system idle")) return "idle";
     return "break";
   }
   if (session.status === "completed") return "offline";
@@ -62,7 +70,8 @@ export function segmentsToTimeline(
     (a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
   );
   for (const seg of sorted) {
-    const isIdle = seg.kind === "break" && (seg.label.toLowerCase().includes("idle") || seg.label === "System Idle");
+    // kind=idle (new) OR kind=break with "idle"/"System Idle" label (legacy data)
+    const isIdle = seg.kind === "idle" || (seg.kind === "break" && (seg.label.toLowerCase().includes("idle") || seg.label === "System Idle"));
     blocks.push({
       kind: isIdle ? "idle" : seg.kind,
       label: isIdle ? "Idle" : seg.label,
@@ -223,8 +232,14 @@ export function calcProductivity(
 
 export function formatDurationMinutes(mins: number) {
   if (mins <= 0) return "0m";
-  const h = Math.floor(mins / 60);
-  const m = mins % 60;
+  // Show seconds when duration is very short (< 1 minute)
+  if (mins < 1) {
+    const secs = Math.round(mins * 60);
+    return secs > 0 ? `${secs}s` : "0m";
+  }
+  const totalMins = Math.floor(mins);
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
   if (h <= 0) return `${m}m`;
   if (m <= 0) return `${h}h`;
   return `${h}h ${m}m`;

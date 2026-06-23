@@ -2044,7 +2044,10 @@ async function insertClockSegment(input: {
     started_at: new Date(input.startedAtMs).toISOString(),
     ended_at: null,
   });
-  if (error && !isMissingClockSegmentsTable(error)) throw error;
+  if (error) {
+    console.error("FAILED TO INSERT SEGMENT:", error);
+    if (!isMissingClockSegmentsTable(error)) throw error;
+  }
 }
 
 async function fetchSegmentsForSessions(
@@ -2074,6 +2077,7 @@ async function fetchSegmentsForSessions(
 }
 
 function breakKindFromReason(reason: ClockOutReason | string): ClockSessionSegmentKind {
+  if (reason === "idle") return "idle";
   return reason === "meeting" ? "meeting" : "break";
 }
 
