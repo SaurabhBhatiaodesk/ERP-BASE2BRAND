@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { AppNotification } from "@/lib/database";
 import { requestFirebaseToken } from "@/lib/firebase";
+import { toast } from "sonner";
 
 export function useNotifications(userId?: string, onNotificationClick?: (n: AppNotification) => void) {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -50,6 +51,11 @@ export function useNotifications(userId?: string, onNotificationClick?: (n: AppN
           const newNotif = payload.new as AppNotification;
           setNotifications(prev => [newNotif, ...prev]);
           setUnreadCount(prev => prev + 1);
+
+          // In-app toast notification
+          toast.info(newNotif.title, {
+            description: newNotif.message,
+          });
 
           // Trigger native browser notification
           if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {

@@ -134,6 +134,19 @@ export type DbEmployeeProfile = {
   created_at?: string;
 };
 
+export type DbLeaveRequest = {
+  id: string;
+  employee_id: string;
+  employee_name: string;
+  leave_type: string;
+  start_date: string;
+  end_date: string;
+  days: number;
+  reason: string;
+  status: "Pending" | "Approved" | "Rejected";
+  created_at: string;
+};
+
 // ─── App types (camelCase for UI) ────────────────────────────────────────────
 
 export type Employee = {
@@ -232,6 +245,19 @@ export type EmployeeProfile = {
   avatar: string;
   /** HH:MM — e.g. 10:00, 11:00, 12:00 */
   shiftStart: string;
+};
+
+export type LeaveRequest = {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  leaveType: string;
+  startDate: string;
+  endDate: string;
+  days: number;
+  reason: string;
+  status: "Pending" | "Approved" | "Rejected";
+  createdAt: string;
 };
 
 export type AppTask = {
@@ -569,6 +595,100 @@ export function formatTaskStatusLabel(status?: string) {
 export function normalizeTaskStatusForStorage(status?: string) {
   return mapTaskStatus(status || "todo");
 }
+
+// ─── Leave Requests ─────────────────────────────────────────────────────────
+
+export async function fetchLeaveRequests(): Promise<LeaveRequest[]> {
+  const { data, error } = await supabase
+    .from("leave_requests")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    if (error.code === "42P01") return []; // Table doesn't exist yet
+    console.error("fetchLeaveRequests error:", error);
+    return [];
+  }
+
+  return (data as DbLeaveRequest[]).map(row => ({
+    id: row.id,
+    employeeId: row.employee_id,
+    employeeName: row.employee_name,
+    leaveType: row.leave_type,
+    startDate: row.start_date,
+    endDate: row.end_date,
+    days: Number(row.days),
+    reason: row.reason,
+    status: row.status,
+    createdAt: row.created_at,
+  }));
+}
+
+export async function submitLeaveRequest(input: Omit<LeaveRequest, "id" | "status" | "createdAt">): Promise<void> {
+  const { error } = await supabase.from("leave_requests").insert({
+    employee_id: input.employeeId,
+    employee_name: input.employeeName,
+    leave_type: input.leaveType,
+    start_date: input.startDate,
+    end_date: input.endDate,
+    days: input.days,
+    reason: input.reason,
+    status: "Pending",
+  });
+  if (error) throw error;
+
+  try {
+    const { data: admins } = await supabase
+      .from("profiles")
+      .select("id")
+      .in("app_role", ["ceo", "hr"]);
+    
+    if (admins) {
+      for (const admin of admins) {
+        await insertNotification({
+          recipientId: admin.id,
+          title: "New Leave Request",
+          message: `${input.employeeName} applied for ${input.days} day(s) of ${input.leaveType}.`,
+          type: "leave",
+          senderId: input.employeeId,
+        });
+      }
+    }
+  } catch (e) {
+    console.error("Failed to notify admins of leave request:", e);
+  }
+}
+
+export async function updateLeaveStatus(id: string, status: "Approved" | "Rejected"): Promise<void> {
+  const { data: leaveData } = await supabase
+    .from("leave_requests")
+    .select("employee_id, employee_name, leave_type")
+    .eq("id", id)
+    .single();
+
+  const { error } = await supabase
+    .from("leave_requests")
+    .update({ status })
+    .eq("id", id);
+  if (error) throw error;
+
+  if (leaveData) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      await insertNotification({
+        recipientId: leaveData.employee_id,
+        title: `Leave ${status}`,
+        message: `Your ${leaveData.leave_type} request has been ${status.toLowerCase()}.`,
+        type: "leave",
+        referenceId: id,
+        senderId: session?.user?.id,
+      });
+    } catch (e) {
+      console.error("Failed to notify employee of leave status:", e);
+    }
+  }
+}
+
 
 function taskHasLoggedTime(task: {
   est?: string | null;
@@ -3116,9 +3236,9 @@ export function mapChatMessage(row: DbChatMessage): ChatMessage {
   }
 
   return {
-    id: row.id,
-    channelId: row.channel_id,
-    senderId: row.sender_id || "",
+    id: row.id.toLowerCase(),
+    channelId: row.channel_id.toLowerCase(),
+    senderId: row.sender_id ? row.sender_id.toLowerCase() : "",
     senderName: row.sender_name,
     content: row.content,
     isBroadcast: row.is_broadcast,

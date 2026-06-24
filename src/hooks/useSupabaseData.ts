@@ -9,6 +9,7 @@ import {
   fetchAttendanceEntries,
   fetchProjectTasks,
   fetchTodayTasksForEmployee,
+  fetchLeaveRequests,
   type Employee,
   type Lead,
   type ClientProfile,
@@ -17,6 +18,7 @@ import {
   type AppTask,
   type TimesheetEntry,
   type AttendanceEntry,
+  type LeaveRequest,
 } from "@/lib/database";
 import { supabase } from "@/lib/supabase";
 
@@ -174,4 +176,42 @@ export function useTimesheets() {
 
 export function useAttendance() {
   return useQuery(fetchAttendanceEntries, [] as AttendanceEntry[]);
+}
+
+export function useLeaveRequests() {
+  const [data, setData] = useState<LeaveRequest[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadData = useCallback(async () => {
+    try {
+      const leaves = await fetchLeaveRequests();
+      setData(leaves);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load leave requests");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+    // Subscribe to realtime updates for leave_requests
+    const channel = supabase.channel("public:leave_requests")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "leave_requests" },
+        () => {
+          loadData();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [loadData]);
+
+  return { data, loading, error, refresh: loadData };
 }

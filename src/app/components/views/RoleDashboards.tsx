@@ -10,7 +10,7 @@ import {
 } from "recharts";
 import { Avatar, Badge } from "../ui";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
-import { useEmployeeProfiles, useProjectTasks, useProjects, useTimesheets } from "@/hooks/useSupabaseData";
+import { useEmployeeProfiles, useProjectTasks, useProjects, useTimesheets, useLeaveRequests } from "@/hooks/useSupabaseData";
 import {
   CLOCK_OUT_OPTIONS,
   CLOCK_SESSIONS_SETUP_MSG,
@@ -20,6 +20,8 @@ import {
   fetchTodayOfficeSession,
   fetchTodayAttendanceSeconds,
   fetchWeekAttendanceHours,
+  submitLeaveRequest,
+  updateLeaveStatus,
   type ClockOutReason,
   filterTasksForUser,
   isClockSessionsTableReady,
@@ -308,6 +310,301 @@ export function TeamLeaderDashboard() {
 
 export type EmployeeNavigateOptions = { projectId?: string };
 
+export function LeavesView({ userName }: { userName?: string }) {
+  const { data: profiles } = useEmployeeProfiles();
+  const { data: leaves, refresh: refreshLeaves, loading } = useLeaveRequests();
+  const [filterStatus, setFilterStatus] = useState<"All" | "Pending" | "Approved" | "Rejected">("All");
+  const [showLeaveMenu, setShowLeaveMenu] = useState(false);
+  const [leaveLoading, setLeaveLoading] = useState(false);
+  const [leaveError, setLeaveError] = useState("");
+  const [leaveData, setLeaveData] = useState({
+    type: "Casual Leave",
+    startDate: "",
+    endDate: "",
+    days: 1,
+    reason: "",
+    startTime: "09:00",
+    endTime: "17:00",
+    halfDayType: "First Half",
+    reportingOfficer: "",
+  });
+
+  const reportingOfficers = useMemo(() => {
+    return profiles.filter(p => {
+      const role = (p.role || "").toLowerCase();
+      return role.includes("ceo") || role.includes("manager") || role.includes("lead") || role.includes("head") || p.app_role === "ceo" || p.app_role === "hr";
+    });
+  }, [profiles]);
+
+  // Set default reporting officer when profiles load
+  useEffect(() => {
+    if (reportingOfficers.length > 0 && !leaveData.reportingOfficer) {
+      setLeaveData(prev => ({ ...prev, reportingOfficer: reportingOfficers[0].name }));
+    }
+  }, [reportingOfficers, leaveData.reportingOfficer]);
+
+  const myProfile = useMemo(
+    () => profiles.find(p => namesMatch(p.name, userName || "")),
+    [profiles, userName]
+  );
+
+  const myLeaves = useMemo(
+    () => leaves.filter(l => l.employeeId === myProfile?.id),
+    [leaves, myProfile?.id]
+  );
+
+  const filteredLeaves = useMemo(() => {
+    return myLeaves.filter(l => filterStatus === "All" || l.status === filterStatus);
+  }, [myLeaves, filterStatus]);
+
+  const handleLeaveSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!myProfile) return;
+    setLeaveLoading(true);
+    setLeaveError("");
+    try {
+      let finalReason = leaveData.reason;
+
+      const formatTime = (time24: string) => {
+        const [h, m] = time24.split(':');
+        let hours = parseInt(h);
+        const ampm = hours >= 12 ? 'PM' : 'AM';
+        hours = hours % 12 || 12;
+        return `${hours.toString().padStart(2, '0')}:${m} ${ampm}`;
+      };
+
+      if (leaveData.type === "Short Leave") {
+        finalReason += `\n(Time: ${formatTime(leaveData.startTime)} - ${formatTime(leaveData.endTime)})`;
+      } else if (leaveData.type === "Half Day") {
+        finalReason += `\n(Type: ${leaveData.halfDayType})`;
+      }
+      finalReason += `\n(Reporting To: ${leaveData.reportingOfficer})`;
+
+      await submitLeaveRequest({
+        employeeId: myProfile.id,
+        employeeName: myProfile.name,
+        leaveType: leaveData.type,
+        startDate: leaveData.startDate,
+        endDate: (leaveData.type === "Short Leave" || leaveData.type === "Half Day") ? leaveData.startDate : leaveData.endDate,
+        days: leaveData.type === "Half Day" ? 0.5 : leaveData.type === "Short Leave" ? 0 : leaveData.days,
+        reason: finalReason,
+      });
+      setShowLeaveMenu(false);
+      setLeaveData({ type: "Casual Leave", startDate: "", endDate: "", days: 1, reason: "", startTime: "09:00", endTime: "17:00", halfDayType: "First Half", reportingOfficer: reportingOfficers[0]?.name || "" });
+      refreshLeaves();
+    } catch (err) {
+      setLeaveError(err instanceof Error ? err.message : "Failed to apply for leave");
+    } finally {
+      setLeaveLoading(false);
+    }
+  };
+
+  if (loading) return <DataLoading label="Loading leave requests..." />;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-bold text-white font-['Plus_Jakarta_Sans']">My Leave Requests</h2>
+        <button
+          type="button"
+          onClick={() => setShowLeaveMenu(true)}
+          className="px-4 py-2 text-sm font-semibold font-['Plus_Jakarta_Sans'] transition-all text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl"
+        >
+          + Apply Leave
+        </button>
+      </div>
+
+      <div className="flex gap-2">
+        {(["All", "Pending", "Approved", "Rejected"] as const).map(s => (
+          <button key={s} onClick={() => setFilterStatus(s)}
+            className={`px-4 py-2 rounded-lg text-xs font-semibold font-['Plus_Jakarta_Sans'] transition-all ${filterStatus === s ? "bg-indigo-600 text-white" : "bg-[#131a35] text-[#6b7fa8] border border-[rgba(99,102,241,0.08)] hover:text-white"}`}>
+            {s}
+          </button>
+        ))}
+      </div>
+
+      <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-5">
+        {filteredLeaves.length === 0 ? (
+          <DataEmpty message={`You have no ${filterStatus !== "All" ? filterStatus.toLowerCase() + " " : ""}leave requests.`} />
+        ) : (
+          <div className="space-y-3">
+            {filteredLeaves.map(l => (
+              <div key={l.id} className="flex items-center gap-4 px-5 py-4 bg-[#131a35] rounded-xl border border-[rgba(99,102,241,0.08)]">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-[#e2e8f7] font-['Plus_Jakarta_Sans']">{l.leaveType}</p>
+                  <p className="text-xs font-['Geist_Mono'] text-[#6b7fa8] mt-1">
+                    {l.days}d from {l.startDate} to {l.endDate}
+                  </p>
+                  {l.reason && <p className="text-xs text-[#6b7fa8]/80 mt-1.5 italic">"{l.reason}"</p>}
+                </div>
+                <Badge variant={l.status === "Approved" ? "green" : l.status === "Pending" ? "yellow" : "red"}>
+                  {l.status}
+                </Badge>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {showLeaveMenu && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={() => !leaveLoading && setShowLeaveMenu(false)}>
+          <div className="w-full max-w-md bg-[#0d1326] border border-[rgba(99,102,241,0.2)] rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[rgba(99,102,241,0.1)]">
+              <h3 className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Apply for Leave</h3>
+              <button type="button" onClick={() => setShowLeaveMenu(false)} className="p-1.5 rounded-lg text-[#6b7fa8] hover:text-white hover:bg-white/5"><X size={16} /></button>
+            </div>
+            <form onSubmit={handleLeaveSubmit} className="p-5 space-y-4">
+              {leaveError && <p className="text-xs text-rose-400">{leaveError}</p>}
+              <div>
+                <label className="block text-xs font-semibold text-[#6b7fa8] mb-1.5">Leave Type</label>
+                <select
+                  value={leaveData.type}
+                  onChange={e => setLeaveData({ ...leaveData, type: e.target.value })}
+                  className="w-full bg-[#131a35] text-white text-sm border border-[rgba(99,102,241,0.12)] rounded-xl px-4 py-2.5 outline-none focus:border-indigo-500/50"
+                >
+                  <option value="Sick Leave">Sick Leave</option>
+                  <option value="Casual Leave">Casual Leave</option>
+                  <option value="Annual Leave">Annual Leave</option>
+                  <option value="WFH">Work From Home (WFH)</option>
+                  <option value="Half Day">Half Day</option>
+                  <option value="Short Leave">Short Leave</option>
+                  <option value="Urgent Leave">Urgent Leave</option>
+                </select>
+              </div>
+              
+              {(leaveData.type === "Short Leave" || leaveData.type === "Half Day") ? (
+                <div>
+                  <label className="block text-xs font-semibold text-[#6b7fa8] mb-1.5">Date *</label>
+                  <input
+                    type="date"
+                    required
+                    value={leaveData.startDate}
+                    onChange={e => setLeaveData({ ...leaveData, startDate: e.target.value })}
+                    className="w-full bg-[#131a35] text-white text-sm border border-[rgba(99,102,241,0.12)] rounded-xl px-4 py-2.5 outline-none focus:border-indigo-500/50"
+                  />
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-[#6b7fa8] mb-1.5">Start Date *</label>
+                      <input
+                        type="date"
+                        required
+                        value={leaveData.startDate}
+                        onChange={e => setLeaveData({ ...leaveData, startDate: e.target.value })}
+                        className="w-full bg-[#131a35] text-white text-sm border border-[rgba(99,102,241,0.12)] rounded-xl px-4 py-2.5 outline-none focus:border-indigo-500/50"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[#6b7fa8] mb-1.5">End Date *</label>
+                      <input
+                        type="date"
+                        required
+                        value={leaveData.endDate}
+                        onChange={e => setLeaveData({ ...leaveData, endDate: e.target.value })}
+                        className="w-full bg-[#131a35] text-white text-sm border border-[rgba(99,102,241,0.12)] rounded-xl px-4 py-2.5 outline-none focus:border-indigo-500/50"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-[#6b7fa8] mb-1.5">Number of Days</label>
+                    <input
+                      type="number"
+                      required
+                      min="1"
+                      value={leaveData.days}
+                      onChange={e => setLeaveData({ ...leaveData, days: parseInt(e.target.value) || 1 })}
+                      className="w-full bg-[#131a35] text-white text-sm border border-[rgba(99,102,241,0.12)] rounded-xl px-4 py-2.5 outline-none focus:border-indigo-500/50"
+                    />
+                  </div>
+                </>
+              )}
+
+              {leaveData.type === "Short Leave" && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#6b7fa8] mb-1.5">Start Time *</label>
+                    <input
+                      type="time"
+                      required
+                      value={leaveData.startTime}
+                      onChange={e => setLeaveData({ ...leaveData, startTime: e.target.value })}
+                      className="w-full bg-[#131a35] text-white text-sm border border-[rgba(99,102,241,0.12)] rounded-xl px-4 py-2.5 outline-none focus:border-indigo-500/50 [color-scheme:dark]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-[#6b7fa8] mb-1.5">End Time *</label>
+                    <input
+                      type="time"
+                      required
+                      value={leaveData.endTime}
+                      onChange={e => setLeaveData({ ...leaveData, endTime: e.target.value })}
+                      className="w-full bg-[#131a35] text-white text-sm border border-[rgba(99,102,241,0.12)] rounded-xl px-4 py-2.5 outline-none focus:border-indigo-500/50 [color-scheme:dark]"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {leaveData.type === "Half Day" && (
+                <div>
+                  <label className="block text-xs font-semibold text-[#6b7fa8] mb-1.5">Half Day Type *</label>
+                  <select
+                    value={leaveData.halfDayType}
+                    onChange={e => setLeaveData({ ...leaveData, halfDayType: e.target.value })}
+                    className="w-full bg-[#131a35] text-white text-sm border border-[rgba(99,102,241,0.12)] rounded-xl px-4 py-2.5 outline-none focus:border-indigo-500/50"
+                  >
+                    <option value="First Half">First Half</option>
+                    <option value="Second Half">Second Half</option>
+                  </select>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold text-[#6b7fa8] mb-1.5">Reporting Officer *</label>
+                <select
+                  required
+                  value={leaveData.reportingOfficer}
+                  onChange={e => setLeaveData({ ...leaveData, reportingOfficer: e.target.value })}
+                  className="w-full bg-[#131a35] text-white text-sm border border-[rgba(99,102,241,0.12)] rounded-xl px-4 py-2.5 outline-none focus:border-indigo-500/50"
+                >
+                  <option value="" disabled>Select Reporting Officer</option>
+                  {reportingOfficers.map(officer => (
+                    <option key={officer.id} value={officer.name}>
+                      {officer.name} ({officer.role})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#6b7fa8] mb-1.5">Reason for Leave *</label>
+                <textarea
+                  required
+                  value={leaveData.reason}
+                  onChange={e => setLeaveData({ ...leaveData, reason: e.target.value })}
+                  placeholder="Explain the detailed reason for this leave request..."
+                  className="w-full bg-[#131a35] text-white text-sm border border-[rgba(99,102,241,0.12)] rounded-xl px-4 py-3 outline-none focus:border-indigo-500/50 resize-none h-28"
+                />
+              </div>
+
+              <div className="pt-2">
+                <button
+                  type="submit"
+                  disabled={leaveLoading}
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm rounded-xl py-3 transition-colors disabled:opacity-50"
+                >
+                  {leaveLoading ? "Submitting..." : "Submit Leave Request"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function EmployeeDashboard({
   userName = "",
   onNavigate,
@@ -557,26 +854,30 @@ export function EmployeeDashboard({
               <p className="text-[10px] text-rose-400 mt-1 font-['Plus_Jakarta_Sans'] max-w-[200px]">{clockError}</p>
             )}
           </div>
-          {activeClock ? (
-            <button
-              type="button"
-              onClick={() => setShowClockOutMenu(true)}
-              disabled={clockLoading}
-              className="px-5 py-2.5 rounded-xl text-sm font-semibold font-['Plus_Jakarta_Sans'] transition-all disabled:opacity-60 bg-amber-500/20 border border-amber-500/30 text-amber-300 hover:bg-amber-500/30"
-            >
-              {clockLoading ? "Saving..." : "Step Out"}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={handleClockIn}
-              disabled={clockLoading}
-              className="px-5 py-2.5 rounded-xl text-sm font-semibold font-['Plus_Jakarta_Sans'] transition-all disabled:opacity-60 bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30"
-            >
-              {clockLoading ? "Saving..." : onBreak ? "Resume Work" : "Clock In"}
-            </button>
-          )}
+          <div className="flex flex-col gap-2">
+            {activeClock ? (
+              <button
+                type="button"
+                onClick={() => setShowClockOutMenu(true)}
+                disabled={clockLoading}
+                className="px-5 py-2.5 rounded-xl text-sm font-semibold font-['Plus_Jakarta_Sans'] transition-all disabled:opacity-60 bg-amber-500/20 border border-amber-500/30 text-amber-300 hover:bg-amber-500/30"
+              >
+                {clockLoading ? "Saving..." : "Step Out"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleClockIn}
+                disabled={clockLoading}
+                className="px-5 py-2.5 rounded-xl text-sm font-semibold font-['Plus_Jakarta_Sans'] transition-all disabled:opacity-60 bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30"
+              >
+                {clockLoading ? "Saving..." : onBreak ? "Resume Work" : "Clock In"}
+              </button>
+            )}
+          </div>
         </div>
+
+
 
         {showClockOutMenu && activeClock && (
           <div
@@ -1168,12 +1469,32 @@ export function RevenueKPIView() {
 
 export function HRMSView() {
   const [tab, setTab] = useState("overview");
-  const leaves = [
-    { name: "Rahul Gupta", type: "Sick Leave", days: 2, from: "May 26", status: "Pending" },
-    { name: "Sneha Reddy", type: "Casual Leave", days: 1, from: "May 27", status: "Approved" },
-    { name: "Arjun Mehta", type: "Annual Leave", days: 5, from: "Jun 2", status: "Pending" },
-    { name: "Priya Sharma", type: "WFH", days: 3, from: "May 28", status: "Approved" },
-  ];
+  const { data: dbLeaves, refresh: refreshDbLeaves } = useLeaveRequests();
+  const [leaveFilterStatus, setLeaveFilterStatus] = useState<"All" | "Pending" | "Approved" | "Rejected">("All");
+  const [viewingLeave, setViewingLeave] = useState<typeof dbLeaves[0] | null>(null);
+  const { data: profiles } = useEmployeeProfiles();
+
+  const totalEmployees = profiles.length;
+  const todayStr = new Date().toISOString().split("T")[0];
+  const onLeaveToday = dbLeaves.filter(l => 
+    l.status === "Approved" && 
+    l.startDate <= todayStr && 
+    l.endDate >= todayStr
+  ).length;
+
+  const filteredDbLeaves = useMemo(() => {
+    return dbLeaves.filter(l => leaveFilterStatus === "All" || l.status === leaveFilterStatus);
+  }, [dbLeaves, leaveFilterStatus]);
+
+  const handleUpdateLeave = async (id: string, status: "Approved" | "Rejected") => {
+    try {
+      await updateLeaveStatus(id, status);
+      refreshDbLeaves();
+    } catch (e) {
+      console.error("Failed to update leave:", e);
+    }
+  };
+
   const appraisals = [
     { name: "Kavya Nair", dept: "Design", current: "L3", recommended: "L4", hike: "22%", status: "Approved" },
     { name: "Arjun Mehta", dept: "Dev", current: "L4", recommended: "L5", hike: "18%", status: "Pending" },
@@ -1201,7 +1522,7 @@ export function HRMSView() {
         <div className="grid lg:grid-cols-2 gap-6">
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
-              {[{ label: "Total Employees", value: "35" }, { label: "On Leave Today", value: "2" }, { label: "Open Positions", value: "4" }, { label: "Avg Tenure", value: "2.4y" }].map(s => (
+              {[{ label: "Total Employees", value: totalEmployees.toString() }, { label: "On Leave Today", value: onLeaveToday.toString() }, { label: "Open Positions", value: "4" }, { label: "Avg Tenure", value: "2.4y" }].map(s => (
                 <div key={s.label} className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-4">
                   <p className="text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mb-1">{s.label}</p>
                   <p className="text-2xl font-bold text-white font-['Plus_Jakarta_Sans']">{s.value}</p>
@@ -1234,25 +1555,48 @@ export function HRMSView() {
       )}
       {tab === "leave" && (
         <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-5">
-          <h3 className="text-sm font-semibold text-white mb-4 font-['Plus_Jakarta_Sans']">Leave Requests</h3>
-          <div className="space-y-2">
-            {leaves.map(l => (
-              <div key={l.name} className="flex items-center gap-4 px-4 py-3 bg-[#131a35] rounded-lg border border-[rgba(99,102,241,0.08)]">
-                <Avatar initials={l.name.slice(0,2)} size="sm" color="bg-gradient-to-br from-indigo-600 to-violet-600" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs text-[#e2e8f7] font-['Plus_Jakarta_Sans']">{l.name}</p>
-                  <p className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8]">{l.type} · {l.days}d from {l.from}</p>
-                </div>
-                <Badge variant={l.status === "Approved" ? "green" : l.status === "Pending" ? "yellow" : "blue"}>{l.status}</Badge>
-                {l.status === "Pending" && (
-                  <div className="flex gap-2">
-                    <button className="text-[10px] font-['Geist_Mono'] text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-lg hover:bg-emerald-500/10 transition-colors">Approve</button>
-                    <button className="text-[10px] font-['Geist_Mono'] text-red-400 border border-red-500/30 px-2.5 py-1 rounded-lg hover:bg-red-500/10 transition-colors">Reject</button>
-                  </div>
-                )}
-              </div>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Leave Requests</h3>
+            <div className="flex items-center gap-3">
+              <button onClick={refreshDbLeaves} className="text-xs text-[#6b7fa8] hover:text-white transition-colors">Refresh</button>
+            </div>
+          </div>
+          
+          <div className="flex gap-2 mb-4">
+            {(["All", "Pending", "Approved", "Rejected"] as const).map(s => (
+              <button key={s} onClick={() => setLeaveFilterStatus(s)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-['Plus_Jakarta_Sans'] transition-all ${leaveFilterStatus === s ? "bg-[#1e2746] text-white border border-[rgba(99,102,241,0.3)]" : "bg-[#131a35] text-[#6b7fa8] border border-[rgba(99,102,241,0.08)] hover:text-white"}`}>
+                {s}
+              </button>
             ))}
           </div>
+
+          {filteredDbLeaves.length === 0 ? (
+            <DataEmpty message={`No ${leaveFilterStatus !== "All" ? leaveFilterStatus.toLowerCase() + " " : ""}leave requests found.`} />
+          ) : (
+            <div className="space-y-2">
+              {filteredDbLeaves.map(l => (
+                <div key={l.id} className="flex items-center gap-4 px-4 py-3 bg-[#131a35] rounded-lg border border-[rgba(99,102,241,0.08)]">
+                  <Avatar initials={l.employeeName.slice(0,2)} size="sm" color="bg-gradient-to-br from-indigo-600 to-violet-600" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-[#e2e8f7] font-['Plus_Jakarta_Sans']">{l.employeeName}</p>
+                    <p className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8]">{l.leaveType} · {l.days}d from {l.startDate} to {l.endDate}</p>
+                    {l.reason && <p className="text-[10px] text-[#6b7fa8]/80 mt-0.5 italic">"{l.reason}"</p>}
+                  </div>
+                  <Badge variant={l.status === "Approved" ? "green" : l.status === "Pending" ? "yellow" : "red"}>{l.status}</Badge>
+                  <div className="flex items-center gap-2">
+                    {l.status === "Pending" && (
+                      <div className="flex gap-2">
+                        <button onClick={() => void handleUpdateLeave(l.id, "Approved")} className="text-[10px] font-['Geist_Mono'] text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-lg hover:bg-emerald-500/10 transition-colors">Approve</button>
+                        <button onClick={() => void handleUpdateLeave(l.id, "Rejected")} className="text-[10px] font-['Geist_Mono'] text-red-400 border border-red-500/30 px-2.5 py-1 rounded-lg hover:bg-red-500/10 transition-colors">Reject</button>
+                      </div>
+                    )}
+                    <button onClick={() => setViewingLeave(l)} className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8] border border-[rgba(99,102,241,0.2)] px-2.5 py-1 rounded-lg hover:text-white hover:bg-white/5 transition-colors">View</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
       {tab === "appraisals" && (
@@ -1286,6 +1630,60 @@ export function HRMSView() {
                 <Badge variant={h.stage === "Offer Stage" ? "green" : h.stage.includes("Technical") ? "blue" : "yellow"}>{h.stage}</Badge>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {viewingLeave && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={() => setViewingLeave(null)}>
+          <div className="w-full max-w-md bg-[#0d1326] border border-[rgba(99,102,241,0.2)] rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[rgba(99,102,241,0.1)]">
+              <h3 className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Leave Request Details</h3>
+              <button type="button" onClick={() => setViewingLeave(null)} className="p-1.5 rounded-lg text-[#6b7fa8] hover:text-white hover:bg-white/5"><X size={16} /></button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <p className="text-xs text-[#6b7fa8] mb-1">Employee</p>
+                <p className="text-sm text-white font-semibold">{viewingLeave.employeeName}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs text-[#6b7fa8] mb-1">Leave Type</p>
+                  <p className="text-sm text-white">{viewingLeave.leaveType}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-[#6b7fa8] mb-1">Status</p>
+                  <Badge variant={viewingLeave.status === "Approved" ? "green" : viewingLeave.status === "Pending" ? "yellow" : "red"}>{viewingLeave.status}</Badge>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs text-[#6b7fa8] mb-1">Start Date</p>
+                  <p className="text-sm text-white">{viewingLeave.startDate}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-[#6b7fa8] mb-1">End Date</p>
+                  <p className="text-sm text-white">{viewingLeave.endDate}</p>
+                </div>
+              </div>
+              <div>
+                <p className="text-xs text-[#6b7fa8] mb-1">Duration</p>
+                <p className="text-sm text-white">{viewingLeave.days} Day(s)</p>
+              </div>
+              <div>
+                <p className="text-xs text-[#6b7fa8] mb-1">Detailed Reason</p>
+                <div className="bg-[#131a35] rounded-xl p-3 border border-[rgba(99,102,241,0.08)]">
+                  <p className="text-sm text-[#e2e8f7] whitespace-pre-wrap">{viewingLeave.reason || "No reason provided."}</p>
+                </div>
+              </div>
+              
+              {viewingLeave.status === "Pending" && (
+                <div className="flex gap-3 pt-2">
+                  <button onClick={() => { void handleUpdateLeave(viewingLeave.id, "Approved"); setViewingLeave(null); }} className="flex-1 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 py-2.5 rounded-xl text-sm font-semibold transition-colors">Approve</button>
+                  <button onClick={() => { void handleUpdateLeave(viewingLeave.id, "Rejected"); setViewingLeave(null); }} className="flex-1 bg-red-500/10 text-red-400 hover:bg-red-500/20 py-2.5 rounded-xl text-sm font-semibold transition-colors">Reject</button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

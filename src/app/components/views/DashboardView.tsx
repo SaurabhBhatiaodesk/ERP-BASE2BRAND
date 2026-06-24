@@ -11,8 +11,8 @@ import {
 import { StatCard, Avatar, Badge, CustomTooltip } from "../ui";
 import { DataLoading, DataError } from "../ui/DataStatus";
 import { revenueData, pieData, aiInsights, activityFeed } from "../../data";
-import { useEmployees, useEmployeeProfiles, useProjects } from "@/hooks/useSupabaseData";
-import { addProjectTask } from "@/lib/database";
+import { useEmployees, useEmployeeProfiles, useProjects, useLeaveRequests } from "@/hooks/useSupabaseData";
+import { addProjectTask, updateLeaveStatus } from "@/lib/database";
 import { saveQuickAction } from "@/lib/quickActions";
 
 function formatIso(d = new Date()) {
@@ -23,6 +23,7 @@ export function CEODashboard() {
   const { data: employees, loading: empLoading, error: empError } = useEmployees();
   const { data: profiles, loading: profLoading } = useEmployeeProfiles();
   const { data: projects, loading: projLoading } = useProjects();
+  const { data: leaves, refresh: refreshLeaves } = useLeaveRequests();
   const uid = useId().replace(/:/g, "");
   const [showQA, setShowQA] = useState(false);
   const [qaModal, setQaModal] = useState<string | null>(null);
@@ -448,7 +449,7 @@ export function CEODashboard() {
       </div>
 
       {/* Bottom Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
         <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-5">
           <div className="flex items-center gap-2 mb-4">
             <div className="p-1.5 bg-violet-600/15 rounded-lg">
@@ -517,6 +518,35 @@ export function CEODashboard() {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+
+        <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-5 flex flex-col max-h-[300px]">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Leave Requests</h3>
+            <button onClick={refreshLeaves} className="text-[10px] font-['Geist_Mono'] text-indigo-400 hover:text-indigo-300 transition-colors">Refresh</button>
+          </div>
+          <div className="space-y-3 overflow-y-auto pr-2 custom-scrollbar flex-1">
+            {leaves.filter(l => l.status === "Pending").length === 0 ? (
+              <p className="text-xs text-[#6b7fa8]">No pending requests.</p>
+            ) : (
+              leaves.filter(l => l.status === "Pending").map((l) => (
+                <div key={l.id} className="flex flex-col gap-2 p-3 bg-[#131a35] border border-[rgba(99,102,241,0.08)] rounded-xl">
+                  <div className="flex items-center gap-3">
+                    <Avatar initials={l.employeeName.slice(0, 2)} size="sm" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-white truncate font-['Plus_Jakarta_Sans']">{l.employeeName}</p>
+                      <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono']">{l.leaveType} · {l.days}d</p>
+                    </div>
+                  </div>
+                  {l.reason && <p className="text-[10px] text-[#6b7fa8] italic">"{l.reason}"</p>}
+                  <div className="flex gap-2 mt-1">
+                    <button onClick={async () => { await updateLeaveStatus(l.id, "Approved"); refreshLeaves(); }} className="flex-1 text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 py-1.5 rounded-lg transition-colors">Approve</button>
+                    <button onClick={async () => { await updateLeaveStatus(l.id, "Rejected"); refreshLeaves(); }} className="flex-1 text-[10px] font-semibold text-rose-400 bg-rose-500/10 hover:bg-rose-500/20 py-1.5 rounded-lg transition-colors">Reject</button>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>

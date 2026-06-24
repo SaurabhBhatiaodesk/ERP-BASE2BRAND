@@ -160,6 +160,14 @@ export function useChatMessages(channelId: string | null) {
     setData(prev => {
       const idx = prev.findIndex(m => m.id === tempId);
       if (idx === -1) return prev.some(m => m.id === message.id) ? prev : [...prev, message];
+      
+      // Check if realtime already added the final message
+      const existingIdx = prev.findIndex(m => m.id === message.id);
+      if (existingIdx !== -1 && existingIdx !== idx) {
+        // Realtime won the race, remove the optimistic temp message
+        return prev.filter(m => m.id !== tempId);
+      }
+
       const next = [...prev];
       next[idx] = message;
       return next;

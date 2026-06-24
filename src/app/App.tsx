@@ -17,12 +17,13 @@ import { CEODashboard } from "./components/views/DashboardView";
 import { CRMView, TasksView } from "./components/views/CRMTasksViews";
 import { HRView, AnalyticsView, ChatView } from "./components/views/HRAnalyticsChatViews";
 import { ShiftView } from "./components/views/ShiftView";
-import { TeamLeaderDashboard, EmployeeDashboard, DevDashboard, DesignDashboard, MarketingDashboard, RevenueKPIView, HRMSView } from "./components/views/RoleDashboards";
+import { TeamLeaderDashboard, EmployeeDashboard, DevDashboard, DesignDashboard, MarketingDashboard, RevenueKPIView, HRMSView, LeavesView } from "./components/views/RoleDashboards";
 import { AuthScreen, roleColorMap, roleLabelMap } from "./components/AuthScreen";
 import { EmployeeProfilePage, ClientDetailPage, ProductivityTimelineView, RegistrationFormsView } from "./components/views/ProfileViews";
 import { TimesheetView } from "./components/views/TimesheetView";
 import { ProjectsView } from "./components/views/ProjectsView";
 import { ProjectWorkspaceView } from "./components/views/ProjectWorkspaceView";
+import { Toaster } from "./components/ui/sonner";
 import { findProfileForUser, isPersonalTaskRole } from "@/lib/database";
 import { useEmployeeProfiles } from "@/hooks/useSupabaseData";
 import { Avatar } from "./components/ui";
@@ -67,6 +68,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
   ],
   teamlead: [
     { id: "employee", label: "Dashboard", icon: LayoutDashboard },
+    { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "projects", label: "Projects", icon: Layers },
     { id: "tasks", label: "Tasks", icon: CheckSquare, badge: 2 },
     { id: "shifts", label: "Shift Tracker", icon: Timer },
@@ -74,18 +76,21 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
   ],
   employee: [
     { id: "employee", label: "Dashboard", icon: LayoutDashboard },
+    { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "projects", label: "Projects & Work", icon: Layers },
     { id: "timesheet", label: "Time Reports", icon: Clock },
     { id: "chat", label: "Chat", icon: MessageSquare, badge: 2 },
   ],
   developer: [
     { id: "employee", label: "Dashboard", icon: LayoutDashboard },
+    { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "projects", label: "Projects & Work", icon: Layers },
     { id: "timesheet", label: "Time Reports", icon: Clock },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
   designer: [
     { id: "employee", label: "Dashboard", icon: LayoutDashboard },
+    { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "designer", label: "Design Hub", icon: Star },
     { id: "projects", label: "Projects & Work", icon: Layers },
     { id: "timesheet", label: "Time Reports", icon: Clock },
@@ -93,6 +98,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
   ],
   marketing: [
     { id: "employee", label: "Dashboard", icon: LayoutDashboard },
+    { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "marketing", label: "Marketing Hub", icon: TrendingUp },
     { id: "crm", label: "CRM", icon: Briefcase, badge: 3 },
     { id: "analytics", label: "Analytics", icon: BarChart3 },
@@ -116,7 +122,7 @@ const viewTitles: Record<string, string> = {
   revenue: "Revenue & KPI", hrms: "HRMS",
   profiles: "Employee Profiles", clientdetail: "Client Profiles",
   timesheet: "Time Reports", productivity: "AI Productivity", register: "Register & Add",
-  projects: "Projects & Work",
+  projects: "Projects & Work", leaves: "Apply Leave",
   settings: "Settings", notifications: "Notifications",
   broadcast: "Broadcast", projectworkspace: "Project", projectdetail: "Project Details", invoices: "Invoices & Billing",
   copilot: "AI Copilot",
@@ -313,6 +319,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [registerTab, setRegisterTab] = useState<"employee" | "client" | "project" | "assign">("employee");
   const [taskNav, setTaskNav] = useState<{ taskId?: string; status?: string; projectId?: string } | null>(null);
+  const [chatNav, setChatNav] = useState<{ channelId?: string } | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [timesheetNav, setTimesheetNav] = useState<{ projectId?: string; tab?: "office" | "project" } | null>(null);
   const [showHeaderMenu, setShowHeaderMenu] = useState(false);
@@ -329,6 +336,7 @@ export default function App() {
   
   const handleNotificationClick = (n: any) => {
     if (n.type === "chat_message") {
+      setChatNav({ channelId: n.reference_id });
       setActiveView("chat");
     } else if (n.type === "project_assigned") {
       setActiveView("projects");
@@ -562,7 +570,15 @@ export default function App() {
         />
       );
       case "analytics": return <AnalyticsView />;
-      case "chat": return <ChatView userName={userName} userEmail={userEmail} userRole={userRole} />;
+      case "chat": return (
+        <ChatView 
+          userName={userName} 
+          userEmail={userEmail} 
+          userRole={userRole} 
+          initialChannelId={chatNav?.channelId}
+          onNavConsumed={() => setChatNav(null)}
+        />
+      );
       case "teamlead": return <TeamLeaderDashboard />;
       case "employee": return (
         <EmployeeDashboard
@@ -577,6 +593,7 @@ export default function App() {
           }}
         />
       );
+      case "leaves": return <LeavesView userName={userName} />;
       case "developer": return (
         <DevDashboard
           userName={userName}
@@ -911,6 +928,9 @@ export default function App() {
 
       {/* AI Assistant panel */}
       {showAI && <AIAssistantPanel onClose={() => setShowAI(false)} />}
+      
+      {/* Toast Notifications */}
+      <Toaster position="bottom-right" richColors theme="dark" />
 
       {/* AI Floating Button */}
       <div className="fixed bottom-6 right-6 z-40">

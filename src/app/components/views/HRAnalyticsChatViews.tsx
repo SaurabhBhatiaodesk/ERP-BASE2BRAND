@@ -453,10 +453,14 @@ export function ChatView({
   userName = "",
   userEmail = "",
   userRole = "employee",
+  initialChannelId,
+  onNavConsumed,
 }: {
   userName?: string;
   userEmail?: string;
   userRole?: string;
+  initialChannelId?: string;
+  onNavConsumed?: () => void;
 }) {
   const { data: profiles } = useEmployeeProfiles();
   const currentUser = useMemo(
@@ -486,6 +490,12 @@ export function ChatView({
   const [creating, setCreating] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const sendingRef = useRef(false);
+  const currentMsgRef = useRef(msg);
+
+  useEffect(() => {
+    currentMsgRef.current = msg;
+  }, [msg]);
 
   const chatChannels = useMemo(
     () => channels.filter(c => c.channelType === "dm" || c.channelType === "group"),
@@ -498,9 +508,22 @@ export function ChatView({
   );
 
   const activeChannel = useMemo(
-    () => chatChannels.find(c => c.id === activeChannelId) ?? tabChannels[0] ?? null,
-    [chatChannels, activeChannelId, tabChannels]
+    () => tabChannels.find(c => c.id === activeChannelId) ?? tabChannels[0] ?? null,
+    [tabChannels, activeChannelId]
   );
+
+  useEffect(() => {
+    if (initialChannelId && chatChannels.length > 0) {
+      const ch = chatChannels.find(c => c.id === initialChannelId);
+      if (ch) {
+        if (ch.channelType === "dm" || ch.channelType === "group") {
+          setActiveTab(ch.channelType);
+        }
+        setActiveChannelId(ch.id);
+        if (onNavConsumed) onNavConsumed();
+      }
+    }
+  }, [initialChannelId, chatChannels, onNavConsumed]);
 
   const {
     data: messages,
@@ -531,15 +554,7 @@ export function ChatView({
     );
   }, [activeChannel, currentUser, profiles]);
 
-  useEffect(() => {
-    if (tabChannels.length > 0) {
-      const stillVisible = tabChannels.some(c => c.id === activeChannelId);
-      if (!stillVisible) setActiveChannelId(tabChannels[0].id);
-    } else {
-      setActiveChannelId(null);
-    }
-  }, [tabChannels, activeChannelId]);
-
+  // Removed aggressive activeChannelId overwrite to allow optimistic UI and tab switching state retention
   useEffect(() => {
     if (!activeChannel?.id || !currentUser?.id) return;
     markChatChannelRead(activeChannel.id, currentUser.id)
@@ -555,14 +570,39 @@ export function ChatView({
   }, [messages.length, activeChannel?.id]);
 
   const filteredMessages = useMemo(() => {
+    // 1. Filter by search query
+    let result = messages;
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return messages;
-    return messages.filter(
-      m =>
-        m.content.toLowerCase().includes(q) ||
-        m.senderName.toLowerCase().includes(q) ||
-        m.fileName.toLowerCase().includes(q)
-    );
+    if (q) {
+      result = messages.filter(
+        m =>
+          m.content.toLowerCase().includes(q) ||
+          m.senderName.toLowerCase().includes(q) ||
+          m.fileName.toLowerCase().includes(q)
+      );
+    }
+    
+    // 2. Aggressive deduplication by ID and by short-time-frame identical text 
+    const uniqueMap = new Map<string, ChatMessage>();
+    const contentMap = new Map<string, ChatMessage>();
+    
+    for (const m of result) {
+      if (uniqueMap.has(m.id)) continue;
+      
+      if (!m.id.startsWith("temp-") && m.content.trim()) {
+        const contentKey = `${m.senderId}-${m.content.trim().toLowerCase()}`;
+        const existing = contentMap.get(contentKey);
+        if (existing && !existing.id.startsWith("temp-")) {
+          const timeDiff = Math.abs(new Date(m.createdAt).getTime() - new Date(existing.createdAt).getTime());
+          if (timeDiff < 5000) continue; // within 5 seconds, identical text from same sender is considered a duplicate
+        }
+        contentMap.set(contentKey, m);
+      }
+      
+      uniqueMap.set(m.id, m);
+    }
+    
+    return Array.from(uniqueMap.values());
   }, [messages, searchQuery]);
 
   const totalUnread = useMemo(
@@ -579,8 +619,12 @@ export function ChatView({
   }, [chatChannels, unreadCounts]);
 
   async function handleSend() {
-    if (!activeChannel || !currentUser || !msg.trim()) return;
-    const text = msg.trim();
+    const text = currentMsgRef.current.trim();
+    if (sendingRef.current || !activeChannel || !currentUser || !text) return;
+    sendingRef.current = true;
+    currentMsgRef.current = ""; // synchronously clear so rapid consecutive calls see empty text
+    setMsg("");
+    
     const outgoing = resolveOutgoingMessage(text);
     const optimistic = buildOptimisticMessage(activeChannel.id, currentUser, {
       content: outgoing.content,
@@ -592,7 +636,6 @@ export function ChatView({
     });
     setSending(true);
     setSendError("");
-    setMsg("");
     appendMessage(optimistic);
     try {
       const sent = await sendChatMessage({
@@ -609,9 +652,11 @@ export function ChatView({
       refreshUnread({ silent: true });
     } catch (err) {
       patchMessage(optimistic.id, { clientStatus: "failed" });
+      currentMsgRef.current = text;
       setMsg(text);
       setSendError(err instanceof Error ? err.message : "Failed to send message");
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   }
@@ -666,6 +711,7 @@ export function ChatView({
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
+      if (e.repeat) return; // block held down key repeat
       handleSend();
     }
   }
@@ -957,7 +1003,7 @@ export function ChatView({
                 </p>
               </div>
             )}
-            {filteredMessages.map(m => {
+            {filteredMessages.map((m) => {
               const isOwn = Boolean(
                 currentUser &&
                   ((m.senderId && m.senderId === currentUser.id) ||

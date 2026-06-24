@@ -110,11 +110,22 @@ export function AuthScreen({ onLogin }: { onLogin: (role: string, name: string) 
     setLoading(true);
     setError("");
 
+    // Request notification permission immediately on user interaction
+    if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+
     try {
       const roleHint = selectedRole && selectedRole !== "" ? (selectedRole as AppRoleId) : undefined;
-      const { role, name } = await loginWithRole(email, password, { roleHint });
+      const { role, name, profile } = await loginWithRole(email, password, { roleHint });
       saveAppSession(role, name);
       onLogin(role, name);
+
+      if (profile?.id) {
+        import("@/lib/firebase").then(({ requestFirebaseToken }) => {
+          requestFirebaseToken(profile.id, "BFsN6ecy2D12X0vjN6zIt8BtV50Q4uGhmk9Dd3mZElGvXzRqxP5ROx1ZK5adB_YYbTU57H_h7CijF4QXF9hxKyk").catch(console.error);
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
@@ -131,6 +142,11 @@ export function AuthScreen({ onLogin }: { onLogin: (role: string, name: string) 
 
     setLoading(true);
     setError("");
+
+    // Request notification permission immediately on user interaction
+    if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
 
     const appRole = (selectedRole || "employee") as AppRoleId;
 
@@ -164,14 +180,24 @@ export function AuthScreen({ onLogin }: { onLogin: (role: string, name: string) 
 
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user) {
-        const { role, name } = await resolveLoginUser(session.user);
+        const { role, name, profile } = await resolveLoginUser(session.user);
         saveAppSession(role, name);
         onLogin(role, name);
+        if (profile?.id) {
+          import("@/lib/firebase").then(({ requestFirebaseToken }) => {
+            requestFirebaseToken(profile.id, "BFsN6ecy2D12X0vjN6zIt8BtV50Q4uGhmk9Dd3mZElGvXzRqxP5ROx1ZK5adB_YYbTU57H_h7CijF4QXF9hxKyk").catch(console.error);
+          });
+        }
       } else {
         try {
-          const { role, name } = await loginWithRole(regEmail, password, { roleHint: appRole });
+          const { role, name, profile } = await loginWithRole(regEmail, password, { roleHint: appRole });
           saveAppSession(role, name);
           onLogin(role, name);
+          if (profile?.id) {
+            import("@/lib/firebase").then(({ requestFirebaseToken }) => {
+              requestFirebaseToken(profile.id, "BFsN6ecy2D12X0vjN6zIt8BtV50Q4uGhmk9Dd3mZElGvXzRqxP5ROx1ZK5adB_YYbTU57H_h7CijF4QXF9hxKyk").catch(console.error);
+            });
+          }
         } catch (loginErr) {
           const msg = loginErr instanceof Error ? loginErr.message : "Login failed";
           if (alreadyRegistered && msg.toLowerCase().includes("invalid login credentials")) {
