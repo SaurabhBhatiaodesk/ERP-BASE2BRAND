@@ -345,12 +345,35 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (idleSeconds > 180 && userRole !== "ceo") {
-      playBeep();
-      const id = setInterval(() => playBeep(), 30000);
-      return () => clearInterval(id);
+    let id: ReturnType<typeof setInterval>;
+    let cancelled = false;
+
+    async function checkAndBeep() {
+      if (idleSeconds > 180 && userRole !== "ceo" && currentProfile) {
+        const { fetchActiveClockSession } = await import("@/lib/database");
+        const session = await fetchActiveClockSession(currentProfile.name, currentProfile.id);
+        if (cancelled) return;
+        
+        if (session && session.status === "active") {
+          playBeep();
+          id = setInterval(async () => {
+            const s = await fetchActiveClockSession(currentProfile.name, currentProfile.id);
+            if (s && s.status === "active" && !cancelled) {
+              playBeep();
+            } else if (!s || s.status !== "active") {
+              clearInterval(id);
+            }
+          }, 30000);
+        }
+      }
     }
-  }, [idleSeconds > 180, userRole]);
+
+    checkAndBeep();
+    return () => {
+      cancelled = true;
+      if (id) clearInterval(id);
+    };
+  }, [idleSeconds > 180, userRole, currentProfile]);
 
   const navItems = useMemo(() => {
     const base = roleNavMap[userRole] ?? roleNavMap.ceo;

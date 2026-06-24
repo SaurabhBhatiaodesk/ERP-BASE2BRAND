@@ -226,7 +226,7 @@ export function TimesheetView({
         p.team.some(m => m.toLowerCase() === emp.name.toLowerCase()) ||
         p.lead.toLowerCase() === emp.name.toLowerCase()
     );
-    return mine.length > 0 ? mine : projects;
+    return mine;
   }, [projects, activeEmployee]);
 
   const filteredEntries = useMemo(() => {

@@ -210,7 +210,7 @@ export function ProjectsView({
     if (isAdminRole(userRole)) return projects;
     if (!userName) return projects;
     const mine = getEmployeeProjects(projects, userName, currentProfile?.id);
-    return mine.length > 0 ? mine : projects;
+    return mine;
   }, [projects, userRole, userName, currentProfile?.id]);
 
   const openTasksByProject = useMemo(() => {
