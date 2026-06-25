@@ -3,7 +3,7 @@ import { DndProvider, useDrag, useDrop } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
 import {
   Plus, Filter, Building2, Clock, MoreHorizontal, Layers, CheckSquare,
-  Calendar, GitBranch, Users, Save, X, Timer
+  Calendar, GitBranch, Users, Save, X, Timer, Search
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
@@ -587,22 +587,25 @@ function KanbanColumn({
   onAddCard,
   onMoveTask,
   onTaskClick,
+  getColId,
 }: {
-  col: TaskColumn;
+  col: any;
   label: string;
   tasks: AppTask[];
-  onAddCard?: (status: TaskColumn) => void;
-  onMoveTask: (task: AppTask, status: TaskColumn) => void;
+  onAddCard?: (col: any) => void;
+  onMoveTask: (task: AppTask, col: any) => void;
   onTaskClick?: (task: AppTask) => void;
+  getColId?: (t: AppTask) => string;
 }) {
-  const colTasks = tasks.filter(t => t.status === col);
+  const getCol = getColId || ((t: AppTask) => t.status);
+  const colTasks = tasks.filter(t => getCol(t) === col);
 
   const [{ isOver }, drop] = useDrop(
     () => ({
       accept: KANBAN_TASK,
       drop: (item: { taskId: string }) => {
         const dropped = tasks.find(t => t.taskId === item.taskId);
-        if (dropped && dropped.status !== col) onMoveTask(dropped, col);
+        if (dropped && getCol(dropped) !== col) onMoveTask(dropped, col);
       },
       collect: monitor => ({ isOver: monitor.isOver({ shallow: true }) }),
     }),
@@ -612,7 +615,7 @@ function KanbanColumn({
   return (
     <div className="flex flex-col bg-[#080c1f] border border-[rgba(99,102,241,0.1)] rounded-xl overflow-hidden min-h-0">
       <div className="p-3.5 border-b border-[rgba(99,102,241,0.08)] flex items-center justify-between shrink-0">
-        <span className={`text-xs font-semibold font-['Plus_Jakarta_Sans'] ${COL_COLORS[col]}`}>{label}</span>
+        <span className={`text-xs font-semibold font-['Plus_Jakarta_Sans'] ${COL_COLORS[col as TaskColumn] || "text-[#a8b5d1]"}`}>{label}</span>
         <span className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8] bg-[#131a35] px-1.5 py-0.5 rounded-md">{colTasks.length}</span>
       </div>
       <div
@@ -643,15 +646,17 @@ export function KanbanView({
   onAddCard,
   onMoveTask,
   onTaskClick,
+  getColId,
 }: {
   tasks: AppTask[];
-  columns: TaskColumn[];
-  getColumnLabel?: (col: TaskColumn) => string;
-  onAddCard?: (status: TaskColumn) => void;
-  onMoveTask: (task: AppTask, status: TaskColumn) => void;
+  columns: any[];
+  getColumnLabel?: (col: any) => string;
+  onAddCard?: (col: any) => void;
+  onMoveTask: (task: AppTask, col: any) => void;
   onTaskClick?: (task: AppTask) => void;
+  getColId?: (t: AppTask) => string;
 }) {
-  const labelFor = getColumnLabel ?? (col => COL_LABELS[col]);
+  const labelFor = getColumnLabel ?? (col => COL_LABELS[col as TaskColumn] || col);
   const gridClass = KANBAN_GRID_COLS[columns.length] || "grid-cols-4";
   const wideBoard = columns.length >= 5;
 
@@ -672,6 +677,7 @@ export function KanbanView({
             onAddCard={onAddCard}
             onMoveTask={onMoveTask}
             onTaskClick={onTaskClick}
+            getColId={getColId}
           />
         ))}
       </div>
@@ -1032,6 +1038,7 @@ export function TasksView({
   const { data: projects } = useProjects();
   const { data: profiles } = useEmployeeProfiles();
   const [view, setView] = useState<TaskView>("kanban");
+  const [kanbanGrouping, setKanbanGrouping] = useState<"status" | "assignee">("status");
   const [dragTasks, setDragTasks] = useState<AppTask[] | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editingTask, setEditingTask] = useState<AppTask | null>(null);
@@ -1147,7 +1154,34 @@ export function TasksView({
     if (!stillPending) setDragTasks(null);
   }, [scopedTasks, dragTasks]);
 
-  const handleMoveTask = useCallback(async (task: AppTask, newStatus: TaskColumn) => {
+  const handleMoveTask = useCallback(async (task: AppTask, newCol: any) => {
+    if (kanbanGrouping === "assignee") {
+      const newAssignee = newCol;
+      if (task.assignee === newAssignee) return;
+      const p = assignees.find(a => a.name === newAssignee);
+      if (!p) return;
+
+      setDragTasks(prev => {
+        const base = prev ?? scopedTasks;
+        return base.map(t => (t.taskId === task.taskId ? { ...t, assignee: newAssignee, assigneeId: p.id } : t));
+      });
+      try {
+        await updateProjectTaskStatus({
+          projectId: task.projectId,
+          taskId: task.taskId,
+          title: task.title,
+          assignee: newAssignee,
+          assigneeId: p.id,
+          movedById: currentProfile?.id,
+        } as any);
+        refresh();
+      } catch {
+        setDragTasks(null);
+      }
+      return;
+    }
+
+    const newStatus = newCol as TaskColumn;
     if (task.status === newStatus) return;
     if (!kanbanColumns.includes(newStatus)) return;
 
@@ -1179,7 +1213,7 @@ export function TasksView({
     } catch {
       setDragTasks(null);
     }
-  }, [scopedTasks, dragTasks, refresh, kanbanColumns, currentProfile?.id]);
+  }, [scopedTasks, dragTasks, refresh, kanbanColumns, currentProfile?.id, kanbanGrouping, assignees]);
 
   const formStatusOptions = useMemo(
     () => getTaskStatusOptionsForRole(userRole, editingTask?.status),
@@ -1374,7 +1408,17 @@ export function TasksView({
             {filteredTasks.length} task{filteredTasks.length === 1 ? "" : "s"} in this project
           </p>
         )}
-        <div className="flex items-center gap-2 ml-auto">
+        <div className="flex items-center gap-3 ml-auto">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[#6b7fa8]" size={14} />
+            <input
+              type="text"
+              placeholder="Search tasks..."
+              value={filters.search}
+              onChange={e => setFilters({ ...filters, search: e.target.value })}
+              className="bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-lg pl-9 pr-3 py-1.5 text-xs text-white placeholder-[#6b7fa8] focus:outline-none focus:border-indigo-500/50 w-48 transition-colors"
+            />
+          </div>
           <div className="relative" ref={filterRef}>
             <button
               type="button"
@@ -1487,19 +1531,38 @@ export function TasksView({
         </div>
       </div>
 
-      <div className="flex items-center gap-1 bg-[#080c1f] border border-[rgba(99,102,241,0.1)] rounded-xl p-1 w-fit">
-        {viewOptions.map(v => (
-          <button key={v.id} onClick={() => setView(v.id)}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-['Plus_Jakarta_Sans'] transition-all ${view === v.id ? "bg-indigo-600 text-white shadow-sm" : "text-[#6b7fa8] hover:text-[#a8b5d1] hover:bg-white/[0.03]"}`}>
-            <v.icon size={13} /> {v.label}
-          </button>
-        ))}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-1 bg-[#080c1f] border border-[rgba(99,102,241,0.1)] rounded-xl p-1 w-fit">
+          {viewOptions.map(v => (
+            <button key={v.id} onClick={() => setView(v.id)}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-['Plus_Jakarta_Sans'] transition-all ${view === v.id ? "bg-indigo-600 text-white shadow-sm" : "text-[#6b7fa8] hover:text-[#a8b5d1] hover:bg-white/[0.03]"}`}>
+              <v.icon size={13} /> {v.label}
+            </button>
+          ))}
+        </div>
+
+        {view === "kanban" && !personalView && (userRole === "manager" || userRole === "teamlead" || userRole === "admin") && (
+          <div className="flex items-center gap-1 bg-[#080c1f] border border-[rgba(99,102,241,0.1)] rounded-xl p-1">
+            <span className="text-[10px] text-[#6b7fa8] font-['Plus_Jakarta_Sans'] px-2 uppercase tracking-wider">Group By</span>
+            <button onClick={() => setKanbanGrouping("status")} className={`px-3 py-1.5 rounded-lg text-[11px] font-['Plus_Jakarta_Sans'] font-semibold transition-all ${kanbanGrouping === "status" ? "bg-indigo-600/20 text-indigo-300" : "text-[#6b7fa8] hover:text-white"}`}>Status</button>
+            <button onClick={() => setKanbanGrouping("assignee")} className={`px-3 py-1.5 rounded-lg text-[11px] font-['Plus_Jakarta_Sans'] font-semibold transition-all ${kanbanGrouping === "assignee" ? "bg-indigo-600/20 text-indigo-300" : "text-[#6b7fa8] hover:text-white"}`}>Employee</button>
+          </div>
+        )}
       </div>
 
       {view === "kanban"   && (
         showFilterEmpty
           ? <DataEmpty message="No tasks match your filters." />
-          : (
+          : kanbanGrouping === "assignee" ? (
+            <KanbanView
+              tasks={filteredTasks}
+              columns={taskAssignees}
+              getColumnLabel={(col: any) => col}
+              getColId={(t: AppTask) => t.assignee}
+              onMoveTask={handleMoveTask}
+              onTaskClick={openEditTask}
+            />
+          ) : (
             <KanbanView
               tasks={filteredTasks}
               columns={kanbanColumns}

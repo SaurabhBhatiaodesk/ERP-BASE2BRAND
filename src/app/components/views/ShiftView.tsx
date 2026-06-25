@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState, useRef } from "react"
 import {
   Brain, AlertTriangle, Star, ArrowUpRight, Calendar,
   CheckSquare, Monitor, Globe, Timer, Clock, Zap, Activity,
-  Users, WifiOff, Coffee, MapPin, X
+  Users, WifiOff, Coffee, MapPin, X, ChevronLeft, ChevronRight, Search
 } from "lucide-react";
 import { Avatar } from "../ui";
 import { DataEmpty, DataError, DataLoading } from "../ui/DataStatus";
@@ -448,13 +448,13 @@ function TaskStageBar({
                   style={{ width: `${seg.percent}%`, minWidth: seg.percent > 0 ? "4px" : undefined }}
                   title={`${task.title} · ${seg.label}: ${formatStageDuration(seg.seconds)}`}
                 >
-                  {seg.percent >= 14 && (
-                    <span className="text-[7px] text-white/95 font-['Geist_Mono'] truncate px-0.5 font-semibold leading-none">
+                  {seg.percent >= 16 && (
+                    <span className="text-[9px] text-white font-['Geist_Mono'] truncate px-1 font-bold leading-none drop-shadow-md tracking-wide">
                       {formatStageDuration(seg.seconds)}
                     </span>
                   )}
-                  {seg.percent >= 18 && (
-                    <span className="text-[6px] text-white/75 font-['Geist_Mono'] truncate px-0.5 leading-none mt-px">
+                  {seg.percent >= 20 && (
+                    <span className="text-[8px] text-white/95 font-['Geist_Mono'] truncate px-1 font-medium leading-none mt-0.5 drop-shadow-md tracking-wider uppercase">
                       {seg.label}
                     </span>
                   )}
@@ -477,11 +477,11 @@ function TaskStageBar({
           return (
             <span
               key={entry.status}
-              className={`inline-flex items-center gap-1 text-[8px] font-['Geist_Mono'] ${
+              className={`inline-flex items-center gap-1.5 text-[10px] font-medium font-['Geist_Mono'] tracking-wide ${
                 meta?.color ? `${meta.color} ${entry.isCurrent ? "" : "opacity-80"}` : "text-[#8fa0c4]"
               }`}
             >
-              <span className={`w-1.5 h-1.5 rounded-sm shrink-0 ${meta?.bg ?? "bg-slate-500"}`} />
+              <span className={`w-2 h-2 rounded-[3px] shrink-0 ${meta?.bg ?? "bg-slate-500"}`} />
               {entry.label} {formatStageDuration(entry.seconds)}
               {entry.isCurrent ? (task.statusEnteredAt === "paused" ? " · paused" : " · live") : ""}
             </span>
@@ -493,31 +493,48 @@ function TaskStageBar({
 }
 
 export function StageTimelineBar({ emp, nowMin, targetDate }: { emp: ShiftEmployee; nowMin: number; targetDate?: string }) {
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 5;
+
   const shiftWindow = shiftWindowOnAxis(emp);
   const hourMarks = Array.from({ length: TIMELINE_AXIS_DURATION / 60 + 1 }, (_, i) => i * 60).slice(1, -1);
-  const tasks = emp.trackedTasks.length > 0 ? emp.trackedTasks : [];
+  
+  const sortedTasks = useMemo(() => {
+    const list = [...(emp.trackedTasks || [])];
+    return list.sort((a, b) => {
+      const aProg = a.status === "in_progress" || a.status === "progress";
+      const bProg = b.status === "in_progress" || b.status === "progress";
+      if (aProg && !bProg) return -1;
+      if (!aProg && bProg) return 1;
+      return 0;
+    });
+  }, [emp.trackedTasks]);
+
+  const totalPages = Math.ceil(sortedTasks.length / PAGE_SIZE);
+  const visibleTasks = sortedTasks.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
-    <div className="relative space-y-2.5 min-w-0">
-      <div className="absolute inset-0 pointer-events-none rounded-lg overflow-hidden">
-        {hourMarks.map(m => (
+    <div className="flex flex-col gap-2 relative min-w-0 h-full justify-center">
+      <div className="relative space-y-2.5 min-w-0">
+        <div className="absolute inset-0 pointer-events-none rounded-lg overflow-hidden">
+          {hourMarks.map(m => (
+            <div
+              key={m}
+              className="absolute top-0 bottom-0 w-px bg-white/[0.04]"
+              style={{ left: `${(m / TIMELINE_AXIS_DURATION) * 100}%` }}
+            />
+          ))}
           <div
-            key={m}
-            className="absolute top-0 bottom-0 w-px bg-white/[0.04]"
-            style={{ left: `${(m / TIMELINE_AXIS_DURATION) * 100}%` }}
+            className="absolute top-0 bottom-0 bg-indigo-500/[0.04] border-x border-indigo-400/10"
+            style={{ left: `${shiftWindow.left}%`, width: `${shiftWindow.width}%` }}
           />
-        ))}
-        <div
-          className="absolute top-0 bottom-0 bg-indigo-500/[0.04] border-x border-indigo-400/10"
-          style={{ left: `${shiftWindow.left}%`, width: `${shiftWindow.width}%` }}
-        />
-        <div
-          className="absolute top-0 bottom-0 w-0.5 bg-white/50 z-10"
-          style={{ left: `${Math.min((nowMin / TIMELINE_AXIS_DURATION) * 100, 100)}%` }}
-        />
-      </div>
-      {tasks.length > 0 ? (
-        tasks.map(task => (
+          <div
+            className="absolute top-0 bottom-0 w-0.5 bg-white/50 z-10"
+            style={{ left: `${Math.min((nowMin / TIMELINE_AXIS_DURATION) * 100, 100)}%` }}
+          />
+        </div>
+        {visibleTasks.length > 0 ? (
+          visibleTasks.map(task => (
           <TaskStageBar key={task.taskId} task={task} shiftWindow={shiftWindow} targetDate={targetDate} nowMin={nowMin} />
         ))
       ) : (
@@ -527,6 +544,29 @@ export function StageTimelineBar({ emp, nowMin, targetDate }: { emp: ShiftEmploy
             style={{ left: `${shiftWindow.left}%`, width: `${shiftWindow.width}%` }}
             title="No tasks assigned"
           />
+          </div>
+        )}
+      </div>
+
+      {totalPages > 1 && (
+        <div className="flex justify-start items-center gap-2 mt-2">
+          <button 
+            disabled={page === 1} 
+            onClick={(e) => { e.stopPropagation(); setPage(p => p - 1); }}
+            className="p-1 rounded bg-white/5 hover:bg-white/10 text-[#8fa0c4] hover:text-white disabled:opacity-30 disabled:hover:bg-white/5 transition-colors"
+          >
+            <ChevronLeft size={14} />
+          </button>
+          <span className="text-[10px] font-['Geist_Mono'] text-[#8fa0c4]">
+            {page} / {totalPages}
+          </span>
+          <button 
+            disabled={page === totalPages} 
+            onClick={(e) => { e.stopPropagation(); setPage(p => p + 1); }}
+            className="p-1 rounded bg-white/5 hover:bg-white/10 text-[#8fa0c4] hover:text-white disabled:opacity-30 disabled:hover:bg-white/5 transition-colors"
+          >
+            <ChevronRight size={14} />
+          </button>
         </div>
       )}
     </div>
@@ -536,7 +576,7 @@ export function StageTimelineBar({ emp, nowMin, targetDate }: { emp: ShiftEmploy
 export function TimelineBar({ emp, nowMin }: { emp: ShiftEmployee; nowMin: number }) {
   const shiftWindow = shiftWindowOnAxis(emp);
   const shiftEndAxis = emp.shiftEndMin - TIMELINE_AXIS_START;
-  const effectiveNow = Math.min(nowMin, shiftEndAxis);
+  const effectiveNow = Math.min(nowMin, TIMELINE_AXIS_DURATION);
   const hourMarks = Array.from({ length: TIMELINE_AXIS_DURATION / 60 + 1 }, (_, i) => i * 60).slice(1, -1);
   const pauseBlocks = listPauseBlocks(emp.timeline, effectiveNow);
 
@@ -588,7 +628,7 @@ export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks }: { emp: S
 
   const shiftStartAxis = Math.max(0, emp.shiftStartMin - TIMELINE_AXIS_START);
   const shiftEndAxis = emp.shiftEndMin - TIMELINE_AXIS_START;
-  const effectiveNow = Math.min(nowMin, shiftEndAxis);
+  const effectiveNow = Math.min(nowMin, TIMELINE_AXIS_DURATION);
   const window = { start: shiftStartAxis, end: effectiveNow };
 
   const worked = timelineDuration(emp.timeline, "working", effectiveNow, window);
@@ -801,28 +841,6 @@ export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks }: { emp: S
               style={{ left: `${Math.min((effectiveNow / TIMELINE_AXIS_DURATION) * 100, 100)}%` }} />
           </div>
 
-          <div className="mt-5 space-y-2">
-            {emp.timeline.map((block, i) => {
-              const meta = kindMeta[block.kind];
-              const endMin = block.end ?? effectiveNow;
-              const dur = block.kind !== "login" ? Math.max(0, endMin - block.start) : 0;
-              return (
-                <div key={i} className="flex items-center gap-4 py-2.5 px-4 rounded-xl hover:bg-white/[0.03] transition-colors group">
-                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${meta.dot} ${block.end === null ? "animate-pulse" : ""}`} />
-                  <span className="text-sm font-['Geist_Mono'] text-[#8fa0c4] w-32 shrink-0">{minToLabel(block.start)}</span>
-                  <span className={`text-sm font-semibold font-['Plus_Jakarta_Sans'] ${meta.color}`}>{block.label}</span>
-                  {block.kind !== "login" && (
-                    <span className="text-xs font-['Geist_Mono'] text-[#6b7fa8]">
-                      {formatDurationMinutes(dur)}
-                    </span>
-                  )}
-                  {block.end === null
-                    ? <span className="ml-auto text-xs font-['Geist_Mono'] text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full">Ongoing</span>
-                    : <span className="ml-auto text-xs font-['Geist_Mono'] text-[#8fa0c4]">→ {minToLabel(block.end)}</span>}
-                </div>
-              );
-            })}
-          </div>
         </div>
 
         {emp.trackedTasks.length > 0 && (
@@ -942,6 +960,8 @@ export function ShiftView({
   const [setupNeeded, setSetupNeeded] = useState(false);
   const [selected, setSelected] = useState<ShiftEmployee | null>(null);
   const [nowMin, setNowMin] = useState(currentShiftNowMin());
+  const [viewMode, setViewMode] = useState<"timeline" | "grid">("timeline");
+  const [searchQuery, setSearchQuery] = useState("");
 
   const viewerProfile = useMemo(
     () => profiles.find(p => p.name.trim().toLowerCase() === userName.trim().toLowerCase()),
@@ -992,7 +1012,7 @@ export function ShiftView({
   }, [profiles, userRole, viewerProfile?.dept]);
 
   const shiftEmployees = useMemo(() => {
-    return visibleProfiles.map(profile => {
+    let list = visibleProfiles.map(profile => {
       const session =
         sessionByEmployee.get(profile.id) ||
         sessionByEmployee.get(profile.name.trim().toLowerCase()) ||
@@ -1015,7 +1035,14 @@ export function ShiftView({
         trackedTasksInput: trackedTasks,
       });
     });
-  }, [visibleProfiles, sessionByEmployee, tasks, nowMin]);
+    
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      return list.filter(emp => emp.name.toLowerCase().includes(q) || emp.dept.toLowerCase().includes(q));
+    }
+    
+    return list;
+  }, [visibleProfiles, sessionByEmployee, tasks, nowMin, searchQuery]);
 
   useEffect(() => {
     if (!selected) return;
@@ -1088,6 +1115,16 @@ export function ShiftView({
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[#6b7fa8]" size={14} />
+            <input
+              type="text"
+              placeholder="Search employee..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-lg pl-9 pr-3 py-1.5 text-xs text-white placeholder-[#6b7fa8] focus:outline-none focus:border-indigo-500/50 w-48 transition-colors"
+            />
+          </div>
           <div className="flex items-center gap-1.5 text-[10px] font-['Geist_Mono'] px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
             <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
             <span className="text-emerald-400">Live Tracking Active</span>
@@ -1126,51 +1163,69 @@ export function ShiftView({
           </div>
         ))}
       </div>
+      <div className="flex bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-lg p-1 w-fit mb-4 mt-2">
+        <button
+          onClick={() => setViewMode("timeline")}
+          className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-colors ${viewMode === "timeline" ? "bg-[rgba(99,102,241,0.15)] text-indigo-400" : "text-[#6b7fa8] hover:text-white"}`}
+        >
+          Team Shift Timeline
+        </button>
+        <button
+          onClick={() => setViewMode("grid")}
+          className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-colors ${viewMode === "grid" ? "bg-[rgba(99,102,241,0.15)] text-indigo-400" : "text-[#6b7fa8] hover:text-white"}`}
+        >
+          Live Tracking Grid
+        </button>
+      </div>
 
-      <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl overflow-hidden">
-        <div className="flex items-center justify-between p-5 border-b border-[rgba(99,102,241,0.1)]">
-          <h3 className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Team Shift Timeline</h3>
-          <div className="flex items-center gap-3 text-[10px] font-['Geist_Mono']">
-            {STAGE_ORDER.map(status => {
-              const meta = stageMeta[status];
-              return (
-                <span key={status} className={`flex items-center gap-1.5 ${meta.color}`}>
-                  <span className={`w-2.5 h-2.5 rounded-sm ${meta.bg} opacity-80`} /> {meta.label}
-                </span>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="flex border-b border-[rgba(99,102,241,0.08)] bg-[#080c1f]">
-          <div className="w-52 shrink-0 px-5 py-2 text-[10px] font-['Geist_Mono'] text-[#6b7fa8]">Employee</div>
-          <div className="flex-1 relative px-3 py-2">
-            <div className="flex justify-between text-[10px] font-['Geist_Mono'] text-[#6b7fa8]">
-              {timelineHourLabels().map(t => <span key={t}>{t}</span>)}
+      {viewMode === "timeline" ? (
+        <div className="space-y-4">
+        <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl overflow-hidden">
+          <div className="flex items-center justify-between p-5">
+            <h3 className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Team Shift Timeline</h3>
+            <div className="flex items-center gap-3 text-[10px] font-['Geist_Mono']">
+              {STAGE_ORDER.map(status => {
+                const meta = stageMeta[status];
+                return (
+                  <span key={status} className={`flex items-center gap-1.5 ${meta.color}`}>
+                    <span className={`w-2.5 h-2.5 rounded-sm ${meta.bg} opacity-80`} /> {meta.label}
+                  </span>
+                );
+              })}
             </div>
           </div>
-          <div className="w-36 shrink-0 px-4 py-2 text-[10px] font-['Geist_Mono'] text-[#6b7fa8]">Productivity</div>
+
+          <div className="flex border-t border-[rgba(99,102,241,0.08)] bg-[#080c1f]">
+            <div className="w-52 shrink-0 px-5 py-2 text-[10px] font-['Geist_Mono'] text-[#6b7fa8]">Employee</div>
+            <div className="flex-1 relative px-3 py-2">
+              <div className="flex justify-between text-[10px] font-['Geist_Mono'] text-[#6b7fa8]">
+                {timelineHourLabels().map(t => <span key={t}>{t}</span>)}
+              </div>
+            </div>
+            <div className="w-36 shrink-0 px-4 py-2 text-[10px] font-['Geist_Mono'] text-[#6b7fa8]">Productivity</div>
+          </div>
         </div>
 
         {shiftEmployees.length === 0 ? (
-          <div className="p-8">
+          <div className="p-8 bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl">
             <DataEmpty message="No team members found for shift tracking." />
           </div>
         ) : (
-        shiftEmployees.map((emp, i) => {
+          <div className="flex flex-col gap-3">
+          {shiftEmployees.map((emp, i) => {
           const meta = kindMeta[emp.status];
           const photo = (emp as ShiftEmployee & { profileImageUrl?: string }).profileImageUrl;
           const shiftEndAxis = emp.shiftEndMin - TIMELINE_AXIS_START;
-          const effectiveNow = Math.min(nowMin, shiftEndAxis);
+          const effectiveNow = Math.min(nowMin, TIMELINE_AXIS_DURATION);
           const currentPause = emp.timeline.find(
             b => (b.kind === "break" || b.kind === "meeting") && b.end === null
           );
           const completedPauses = listPauseBlocks(emp.timeline, effectiveNow).filter(b => b.end !== null);
           return (
             <div key={i}
-              className="flex items-stretch border-b border-[rgba(99,102,241,0.06)] hover:bg-white/[0.015] transition-colors cursor-pointer group"
+              className="flex items-stretch bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl hover:border-indigo-500/30 hover:shadow-[0_4px_20px_-4px_rgba(99,102,241,0.1)] transition-all cursor-pointer group overflow-hidden"
               onClick={() => setSelected(emp)}>
-              <div className="w-52 shrink-0 px-5 py-3.5 flex items-center gap-2.5">
+              <div className="w-52 shrink-0 px-5 py-4 flex items-center gap-2.5 border-r border-[rgba(99,102,241,0.06)] bg-[#0a0f1d]">
                 <Avatar initials={emp.avatar} size="sm" src={photo} />
                 <div className="min-w-0">
                   <p className="text-xs font-semibold text-white truncate font-['Plus_Jakarta_Sans'] group-hover:text-indigo-300 transition-colors">{emp.name}</p>
@@ -1182,10 +1237,13 @@ export function ShiftView({
                       </span>
                     </div>
                     {emp.status !== "offline" && formatClockInLive(emp.clockInAt) ? (
-                      <span className="text-[10px] font-['Geist_Mono'] text-emerald-400/95 flex items-center gap-1">
-                        <Timer size={9} className="shrink-0" />
-                        {formatClockInLive(emp.clockInAt)}
-                      </span>
+                      <div className="text-[10px] font-['Geist_Mono'] text-emerald-400/95 flex items-start gap-1.5 mt-0.5">
+                        <Timer size={10} className="shrink-0 mt-px" />
+                        <div className="flex flex-col">
+                          <span>{formatClockInLive(emp.clockInAt)?.split(' · ')[0]}</span>
+                          <span className="font-semibold">{emp.activeFor}</span>
+                        </div>
+                      </div>
                     ) : (
                       <span className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8]">
                         Shift {emp.shiftStartLabel}–{emp.shiftEndLabel}
@@ -1205,11 +1263,11 @@ export function ShiftView({
                 </div>
               </div>
 
-              <div className="flex-1 px-3 py-3.5">
+              <div className="flex-1 px-4 py-4">
                 <StageTimelineBar emp={emp} nowMin={nowMin} />
               </div>
 
-              <div className="w-36 shrink-0 px-4 py-3.5">
+              <div className="w-36 shrink-0 px-4 py-4 border-l border-[rgba(99,102,241,0.06)] bg-[#0a0f1d] flex flex-col justify-center">
                 <div className="flex items-center gap-2 mb-1">
                   <div className="flex-1 h-1 bg-[#131a35] rounded-full overflow-hidden">
                     <div className={`h-full rounded-full ${emp.productivity >= 90 ? "bg-emerald-500" : emp.productivity >= 75 ? "bg-indigo-500" : "bg-amber-500"}`}
@@ -1226,103 +1284,71 @@ export function ShiftView({
               </div>
             </div>
           );
-        })
-        )}
-      </div>
-
-      <div className="grid grid-cols-3 gap-4">
-        <div className="col-span-2 bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl overflow-hidden">
-          <div className="p-5 border-b border-[rgba(99,102,241,0.1)]">
-            <h3 className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Live Tracking Grid</h3>
-            <p className="text-[#6b7fa8] text-xs font-['Geist_Mono'] mt-0.5">Click any row to open detailed timeline</p>
+        })}
           </div>
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-[rgba(99,102,241,0.08)]">
-                {["Employee", "Current Activity", "Daily Timeline"].map(h => (
-                  <th key={h} className={`text-left font-['Geist_Mono'] text-[#8fa0c4] uppercase tracking-wider ${
-                    h === "Daily Timeline" ? "px-4 pt-3 pb-2 text-[11px] w-[50%]" : "px-4 py-3 text-[10px]"
-                  }`}>
-                    {h === "Daily Timeline" ? (
-                      <div className="flex flex-col gap-2 w-full">
-                        <span>{h}</span>
-                        <div className="flex justify-between text-[9px] font-['Geist_Mono'] text-[#4f679b]">
-                          {timelineHourLabels(true).map(t => <span key={t}>{t}</span>)}
-                        </div>
-                      </div>
-                    ) : (
-                      h
-                    )}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {shiftEmployees.map((emp, i) => {
-                const meta = kindMeta[emp.status];
-                const photo = (emp as ShiftEmployee & { profileImageUrl?: string }).profileImageUrl;
-                return (
-                  <tr key={i} className="border-b border-[rgba(99,102,241,0.06)] hover:bg-white/[0.02] transition-colors cursor-pointer"
-                    onClick={() => setSelected(emp)}>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <Avatar initials={emp.avatar} size="sm" src={photo} />
-                        <div>
-                          <p className="text-xs font-semibold text-white font-['Plus_Jakarta_Sans']">{emp.name.split(" ")[0]}</p>
-                          <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono']">{emp.dept}</p>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`flex items-center gap-1.5 text-xs font-['Geist_Mono'] ${meta.color}`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${meta.dot} ${emp.status === "working" ? "animate-pulse" : ""}`} />
+        )}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl overflow-hidden">
+            <div className="p-5">
+              <h3 className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Live Tracking Grid</h3>
+              <p className="text-[#6b7fa8] text-xs font-['Geist_Mono'] mt-0.5">Click any card to open detailed timeline</p>
+            </div>
+            
+            <div className="flex border-t border-[rgba(99,102,241,0.08)] bg-[#080c1f]">
+              <div className="w-48 shrink-0 px-5 py-3 text-[10px] font-['Geist_Mono'] text-[#8fa0c4] uppercase tracking-wider">Employee</div>
+              <div className="w-56 shrink-0 px-4 py-3 text-[10px] font-['Geist_Mono'] text-[#8fa0c4] uppercase tracking-wider">Current Activity</div>
+              <div className="w-36 shrink-0 px-4 py-3 text-[10px] font-['Geist_Mono'] text-[#8fa0c4] uppercase tracking-wider">Total Attendance</div>
+              <div className="flex-1 px-4 pt-3 pb-2 flex flex-col gap-2">
+                <span className="text-[10px] font-['Geist_Mono'] text-[#8fa0c4] uppercase tracking-wider">Daily Timeline</span>
+                <div className="flex justify-between text-[9px] font-['Geist_Mono'] text-[#4f679b]">
+                  {timelineHourLabels(true).map(t => <span key={t}>{t}</span>)}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3">
+            {shiftEmployees.map((emp, i) => {
+              const meta = kindMeta[emp.status];
+              const photo = (emp as ShiftEmployee & { profileImageUrl?: string }).profileImageUrl;
+              return (
+                <div key={i} className="flex items-center bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl hover:border-indigo-500/30 hover:shadow-[0_4px_20px_-4px_rgba(99,102,241,0.1)] transition-all cursor-pointer overflow-hidden group"
+                  onClick={() => setSelected(emp)}>
+                  <div className="w-48 shrink-0 px-5 py-4 flex items-center gap-3 border-r border-[rgba(99,102,241,0.06)] bg-[#0a0f1d]">
+                    <Avatar initials={emp.avatar} size="sm" src={photo} />
+                    <div>
+                      <p className="text-xs font-semibold text-white font-['Plus_Jakarta_Sans'] group-hover:text-indigo-300 transition-colors">{emp.name.split(" ")[0]}</p>
+                      <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono']">{emp.dept}</p>
+                    </div>
+                  </div>
+
+                  <div className="w-56 shrink-0 px-4 py-4 border-r border-[rgba(99,102,241,0.06)] flex items-center">
+                    <div className={`flex items-start gap-1.5 text-xs font-['Geist_Mono'] ${meta.color}`}>
+                      <span className={`shrink-0 w-1.5 h-1.5 mt-1 rounded-full ${meta.dot} ${emp.status === "working" ? "animate-pulse" : ""}`} />
+                      <span className="whitespace-normal line-clamp-2 leading-relaxed" title={emp.status === "working" ? (emp.workTasks[0]?.title || (emp.trackedTasks.length > 0 ? "Clocked in — task not started" : "Clocked in")) : (emp.status === "idle" && (emp.idleDurationMins || 0) > 0 ? `Not at desk for ${emp.idleDurationMins}m` : meta.label)}>
                         {emp.status === "working"
                           ? (emp.workTasks[0]?.title
                             || (emp.trackedTasks.length > 0 ? "Clocked in — task not started" : "Clocked in"))
                           : (emp.status === "idle" && (emp.idleDurationMins || 0) > 0 ? `Not at desk for ${emp.idleDurationMins}m` : meta.label)}
                       </span>
-                    </td>
-
-                    <td className="px-4 py-4 min-w-[280px] align-top">
-                      <TimelineBar emp={emp} nowMin={nowMin} />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="p-1.5 bg-violet-600/15 rounded-lg"><Brain size={14} className="text-violet-400" /></div>
-            <h3 className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">AI Shift Insights</h3>
-          </div>
-          <div className="space-y-3">
-            {shiftAiInsights.length === 0 ? (
-              <p className="text-[11px] text-[#6b7fa8] font-['Plus_Jakarta_Sans']">No alerts yet — team activity looks normal.</p>
-            ) : (
-            shiftAiInsights.map((ins, i) => {
-              const isWarn = ins.type === "warning" || ins.type === "idle" || ins.type === "overwork";
-              return (
-                <div key={i} className={`p-3 rounded-xl border ${isWarn ? "bg-red-500/5 border-red-500/15" : "bg-emerald-500/5 border-emerald-500/15"}`}>
-                  <div className="flex items-center gap-2 mb-1">
-                    {isWarn
-                      ? <AlertTriangle size={11} className="text-amber-400 shrink-0" />
-                      : <Star size={11} className="text-emerald-400 shrink-0" />}
-                    <span className={`text-[10px] font-semibold font-['Geist_Mono'] ${isWarn ? "text-amber-400" : "text-emerald-400"}`}>{ins.emp}</span>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-[#a8b5d1] leading-relaxed mb-2">{ins.msg}</p>
-                  <button className={`text-[10px] font-['Geist_Mono'] flex items-center gap-1 ${isWarn ? "text-amber-400 hover:text-amber-300" : "text-emerald-400 hover:text-emerald-300"} transition-colors`}>
-                    {ins.action} <ArrowUpRight size={9} />
-                  </button>
+
+                  <div className="w-36 shrink-0 px-4 py-4 border-r border-[rgba(99,102,241,0.06)]">
+                    <span className="text-emerald-400 font-['Geist_Mono'] text-[11px] font-bold">{emp.activeFor}</span>
+                  </div>
+
+                  <div className="flex-1 px-4 py-4 min-w-[280px]">
+                    <TimelineBar emp={emp} nowMin={nowMin} />
+                  </div>
                 </div>
               );
-            })
-            )}
+            })}
           </div>
         </div>
-      </div>
+      )}
 
       {selected && (
         <EmployeeDetailPanel emp={selected} onClose={() => setSelected(null)} nowMin={nowMin} allTasks={tasks} />

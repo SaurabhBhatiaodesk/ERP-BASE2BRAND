@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { FolderOpen, Search, Star } from "lucide-react";
+import { FolderOpen, Search, Star, Edit2, X, Target, Settings, Users, Plus } from "lucide-react";
 import { Avatar } from "../ui";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
 import { useEmployeeProfiles, useProjectTasks, useProjects } from "@/hooks/useSupabaseData";
@@ -7,6 +7,8 @@ import {
   filterTasksForUser,
   getEmployeeProjects,
   namesMatch,
+  updateProjectDetails,
+  assignProjectTeam,
   type EmployeeProfile,
   type Project,
 } from "@/lib/database";
@@ -88,6 +90,7 @@ function ProjectCard({
   openTasks,
   onToggleFavorite,
   onClick,
+  onClickEdit,
 }: {
   project: Project;
   profiles: EmployeeProfile[];
@@ -95,6 +98,7 @@ function ProjectCard({
   openTasks: number;
   onToggleFavorite: () => void;
   onClick: () => void;
+  onClickEdit?: () => void;
 }) {
   const team = project.team.length > 0 ? project.team : [project.lead].filter(Boolean);
   const visibleTeam = team.slice(0, 6);
@@ -112,27 +116,43 @@ function ProjectCard({
         >
           {project.status || "Active"}
         </span>
-        <div
-          role="button"
-          tabIndex={0}
-          onClick={e => {
-            e.stopPropagation();
-            onToggleFavorite();
-          }}
-          onKeyDown={e => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
+        <div className="flex items-center gap-1">
+          {onClickEdit && (
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={e => {
+                e.stopPropagation();
+                onClickEdit();
+              }}
+              className="p-1 rounded-md text-[#6b7fa8] hover:text-white hover:bg-white/5 transition-colors"
+              title="Edit Project"
+            >
+              <Edit2 size={15} />
+            </div>
+          )}
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={e => {
               e.stopPropagation();
               onToggleFavorite();
-            }
-          }}
-          className="p-1 -mr-1 rounded-md text-[#6b7fa8] hover:text-amber-400 transition-colors"
-          aria-label={favorite ? "Remove from favorites" : "Add to favorites"}
-        >
-          <Star
-            size={16}
-            className={favorite ? "fill-amber-400 text-amber-400" : "opacity-45 group-hover:opacity-100"}
-          />
+            }}
+            onKeyDown={e => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                e.stopPropagation();
+                onToggleFavorite();
+              }
+            }}
+            className="p-1 -mr-1 rounded-md text-[#6b7fa8] hover:text-amber-400 transition-colors"
+            aria-label={favorite ? "Remove from favorites" : "Add to favorites"}
+          >
+            <Star
+              size={16}
+              className={favorite ? "fill-amber-400 text-amber-400" : "opacity-45 group-hover:opacity-100"}
+            />
+          </div>
         </div>
       </div>
 
@@ -188,23 +208,27 @@ export function ProjectsView({
   userRole = "employee",
   userName = "",
   onOpenProject,
+  onNavigate,
 }: {
   userRole?: string;
   userName?: string;
   onOpenProject?: (projectId: string) => void;
+  onNavigate?: (view: string, tab?: any) => void;
 }) {
-  const { data: projects, loading: pLoading, error: pError } = useProjects();
+  const { data: projects, loading: pLoading, error: pError, refresh: refreshProjects } = useProjects();
   const { data: tasks, loading: tLoading, error: tError } = useProjectTasks();
-  const { data: profiles } = useEmployeeProfiles();
+  const { data: profiles, refresh: refreshProfiles } = useEmployeeProfiles();
   const currentProfile = useMemo(
     () => profiles.find(p => p.name.toLowerCase() === userName.toLowerCase()),
     [profiles, userName]
   );
   const [search, setSearch] = useState("");
   const [favorites, setFavorites] = useState<Set<string>>(() => readFavorites());
+  const [editingProject, setEditingProject] = useState<Project | null>(null);
 
   const isPersonal = !isAdminRole(userRole);
   const firstName = userName.split(/\s+/)[0] || "there";
+  const canEditProject = ["ceo", "teamlead", "manager", "hr"].includes(userRole.toLowerCase());
 
   const visibleProjects = useMemo(() => {
     if (isAdminRole(userRole)) return projects;
@@ -279,14 +303,24 @@ export function ProjectsView({
             {filteredProjects.length} project{filteredProjects.length === 1 ? "" : "s"} · tap to open
           </p>
         </div>
-        <div className="relative w-full sm:w-72 shrink-0">
-          <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#6b7fa8]" />
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search projects..."
-            className="w-full bg-[#0d1326] border border-[rgba(99,102,241,0.15)] rounded-xl pl-10 pr-4 py-2.5 text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-indigo-500/40 font-['Plus_Jakarta_Sans']"
-          />
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full sm:w-auto">
+          <div className="relative w-full sm:w-72 shrink-0">
+            <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#6b7fa8]" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search projects..."
+              className="w-full bg-[#0d1326] border border-[rgba(99,102,241,0.15)] rounded-xl pl-10 pr-4 py-2.5 text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-indigo-500/40 font-['Plus_Jakarta_Sans']"
+            />
+          </div>
+          {canEditProject && (
+            <button
+              onClick={() => onNavigate?.("register", "project")}
+              className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-violet-600 to-purple-700 hover:from-violet-500 hover:to-purple-600 text-white text-sm font-semibold rounded-xl transition-all whitespace-nowrap"
+            >
+              <Plus size={15} /> Add Project
+            </button>
+          )}
         </div>
       </div>
 
@@ -311,10 +345,161 @@ export function ProjectsView({
               openTasks={openTasksByProject.get(project.id) || 0}
               onToggleFavorite={() => toggleFavorite(project.id)}
               onClick={() => onOpenProject?.(project.id)}
+              onClickEdit={canEditProject ? () => setEditingProject(project) : undefined}
             />
           ))}
         </div>
       )}
+
+      {editingProject && (
+        <EditProjectModal
+          project={editingProject}
+          profiles={profiles}
+          onClose={() => setEditingProject(null)}
+          onSuccess={() => {
+            setEditingProject(null);
+            refreshProjects();
+            refreshProfiles();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function EditProjectModal({
+  project,
+  profiles,
+  onClose,
+  onSuccess,
+}: {
+  project: Project;
+  profiles: EmployeeProfile[];
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const [form, setForm] = useState({
+    name: project.name,
+    client: project.client || "",
+    leadId: project.leadId || "",
+    memberIds: project.teamIds || [],
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const employeeOptions = profiles.filter(p => p.role !== "CEO");
+
+  const toggleMember = (id: string) => {
+    setForm(prev => ({
+      ...prev,
+      memberIds: prev.memberIds.includes(id)
+        ? prev.memberIds.filter(m => m !== id)
+        : [...prev.memberIds, id],
+    }));
+  };
+
+  const handleSave = async () => {
+    setSubmitting(true);
+    try {
+      await updateProjectDetails(project.id, { name: form.name, client: form.client });
+
+      const leadProfile = profiles.find(p => p.id === form.leadId);
+      const memberProfiles = profiles.filter(p => form.memberIds.includes(p.id));
+      const teamNames = [
+        ...new Set([leadProfile?.name, ...memberProfiles.map(p => p.name)].filter(Boolean)),
+      ] as string[];
+
+      await assignProjectTeam(project.id, teamNames, leadProfile?.name, {
+        leadId: form.leadId,
+        memberIds: [...new Set([form.leadId, ...form.memberIds])].filter(Boolean),
+      });
+      onSuccess();
+    } catch (err) {
+      console.error(err);
+      alert("Failed to update project team.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const inputCls = "w-full bg-[#080c1f] border border-[rgba(99,102,241,0.15)] rounded-xl px-4 py-2.5 text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-indigo-500/40 transition-colors font-['Plus_Jakarta_Sans']";
+  const labelCls = "block text-xs font-semibold text-[#8fa0c4] uppercase tracking-wider mb-2 font-['Geist_Mono']";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 sm:p-8">
+      <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.25)] rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="flex items-center justify-between p-6 border-b border-[rgba(99,102,241,0.12)] shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-indigo-500/20 text-indigo-400 rounded-xl flex items-center justify-center shrink-0">
+              <Settings size={18} />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-white font-['Plus_Jakarta_Sans']">Edit Project</h2>
+              <p className="text-xs text-[#6b7fa8] font-['Geist_Mono'] mt-0.5">Update details and team assignments</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2.5 hover:bg-white/[0.06] rounded-xl transition-colors text-[#8fa0c4] hover:text-white">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="p-6 overflow-y-auto space-y-6 flex-1">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <div>
+              <label className={labelCls}>Project Name *</label>
+              <input value={form.name} onChange={e => setForm({...form, name: e.target.value})} className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Client Name</label>
+              <input value={form.client} onChange={e => setForm({...form, client: e.target.value})} className={inputCls} />
+            </div>
+          </div>
+
+          <div className="pt-4 border-t border-[rgba(99,102,241,0.08)]">
+            <div className="flex items-center gap-2 mb-4">
+              <Users size={16} className="text-[#8fa0c4]" />
+              <h3 className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Team Assignment</h3>
+            </div>
+            
+            <div className="space-y-5">
+              <div>
+                <label className={labelCls}>Project Lead *</label>
+                <select value={form.leadId} onChange={e => setForm({ ...form, leadId: e.target.value })} className={inputCls}>
+                  <option value="">Select project lead</option>
+                  {employeeOptions.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
+                </select>
+              </div>
+              
+              <div>
+                <label className={labelCls}>Team Members *</label>
+                <div className="flex flex-wrap gap-2 p-4 bg-[#131a35] border border-[rgba(99,102,241,0.1)] rounded-xl">
+                  {employeeOptions.map(emp => {
+                    const isSelected = form.memberIds.includes(emp.id);
+                    return (
+                      <button key={emp.id} type="button" onClick={() => toggleMember(emp.id)}
+                        className={`text-xs px-3 py-1.5 rounded-full border transition-all font-['Plus_Jakarta_Sans'] ${
+                          isSelected
+                            ? "bg-indigo-500/20 border-indigo-500/40 text-indigo-300 shadow-[0_0_10px_rgba(99,102,241,0.1)]"
+                            : "border-[rgba(99,102,241,0.15)] text-[#6b7fa8] hover:text-white hover:bg-white/5"
+                        }`}>
+                        {emp.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="p-6 border-t border-[rgba(99,102,241,0.12)] bg-[#0a0f1d] shrink-0 flex justify-end gap-3">
+          <button onClick={onClose} disabled={submitting} className="px-5 py-2.5 rounded-xl text-sm font-semibold text-[#8fa0c4] hover:text-white hover:bg-white/5 transition-colors">
+            Cancel
+          </button>
+          <button onClick={handleSave} disabled={submitting || !form.name || !form.leadId}
+            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white text-sm font-semibold rounded-xl transition-all shadow-lg shadow-indigo-600/20">
+            {submitting ? "Saving..." : "Save Changes"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

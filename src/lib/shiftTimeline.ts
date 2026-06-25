@@ -284,13 +284,11 @@ export function buildShiftEmployee(input: {
   const shiftEndLabel = clockMinutesToLabel(shiftEndMin);
   const nowMin = targetDate ? 1440 : currentTimelineNowMin();
   const shiftEndAxis = shiftEndMin - TIMELINE_AXIS_START;
-  const effectiveNow = Math.min(nowMin, shiftEndAxis);
+  const effectiveNow = Math.min(nowMin, TIMELINE_AXIS_DURATION);
   const timeline = session ? sessionToTimeline(session, effectiveNow) : [];
   const status = sessionStatusToActivity(session);
   const productivity = calcProductivity(timeline, nowMin, shiftStartMin, shiftEndMin);
 
-  const activeSeg = [...timeline].reverse().find(b => b.end === null && b.kind !== "login");
-  const activeMins = activeSeg ? Math.max(0, effectiveNow - activeSeg.start) : 0;
 
   const loginIso = session?.clockIn;
   const loginTime = loginIso
@@ -322,6 +320,13 @@ export function buildShiftEmployee(input: {
     }
   }
 
+  const workingMins = timeline
+    .filter(b => b.kind === "working" || b.kind === "meeting")
+    .reduce((sum, b) => {
+      const endMin = b.end !== null ? b.end : Math.max(nowMin, effectiveNow);
+      return sum + Math.max(0, endMin - b.start);
+    }, 0);
+
   return {
     id,
     name,
@@ -342,7 +347,7 @@ export function buildShiftEmployee(input: {
     currentScreen: currentStatus === "working" ? taskTitle : session?.notes || "—",
     workTasks,
     trackedTasks,
-    activeFor: formatDurationMinutes(activeMins),
+    activeFor: formatDurationMinutes(workingMins),
     productivity,
     status: currentStatus,
     location:

@@ -541,8 +541,8 @@ export function CEODashboard() {
                   </div>
                   {l.reason && <p className="text-[10px] text-[#6b7fa8] italic">"{l.reason}"</p>}
                   <div className="flex gap-2 mt-1">
-                    <button onClick={async () => { await updateLeaveStatus(l.id, "Approved"); refreshLeaves(); }} className="flex-1 text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 py-1.5 rounded-lg transition-colors">Approve</button>
-                    <button onClick={async () => { await updateLeaveStatus(l.id, "Rejected"); refreshLeaves(); }} className="flex-1 text-[10px] font-semibold text-rose-400 bg-rose-500/10 hover:bg-rose-500/20 py-1.5 rounded-lg transition-colors">Reject</button>
+                    <button onClick={async () => { await updateLeaveStatus(l.id, "Approved", { employeeId: l.employeeId, employeeName: l.employeeName, leaveType: l.leaveType }); refreshLeaves(); }} className="flex-1 text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 py-1.5 rounded-lg transition-colors">Approve</button>
+                    <button onClick={async () => { await updateLeaveStatus(l.id, "Rejected", { employeeId: l.employeeId, employeeName: l.employeeName, leaveType: l.leaveType }); refreshLeaves(); }} className="flex-1 text-[10px] font-semibold text-rose-400 bg-rose-500/10 hover:bg-rose-500/20 py-1.5 rounded-lg transition-colors">Reject</button>
                   </div>
                 </div>
               ))

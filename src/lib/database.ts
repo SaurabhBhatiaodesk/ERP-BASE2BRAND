@@ -145,6 +145,8 @@ export type DbLeaveRequest = {
   reason: string;
   status: "Pending" | "Approved" | "Rejected";
   created_at: string;
+  reporting_officer?: string;
+  reporting_to?: string;
 };
 
 // ─── App types (camelCase for UI) ────────────────────────────────────────────
@@ -258,6 +260,8 @@ export type LeaveRequest = {
   reason: string;
   status: "Pending" | "Approved" | "Rejected";
   createdAt: string;
+  reportingOfficer?: string;
+  reportingTo?: string;
 };
 
 export type AppTask = {
@@ -621,6 +625,8 @@ export async function fetchLeaveRequests(): Promise<LeaveRequest[]> {
     reason: row.reason,
     status: row.status,
     createdAt: row.created_at,
+    reportingOfficer: row.reporting_officer,
+    reportingTo: row.reporting_to,
   }));
 }
 
@@ -634,6 +640,8 @@ export async function submitLeaveRequest(input: Omit<LeaveRequest, "id" | "statu
     days: input.days,
     reason: input.reason,
     status: "Pending",
+    reporting_officer: input.reportingOfficer,
+    reporting_to: input.reportingTo,
   });
   if (error) throw error;
 
@@ -659,12 +667,11 @@ export async function submitLeaveRequest(input: Omit<LeaveRequest, "id" | "statu
   }
 }
 
-export async function updateLeaveStatus(id: string, status: "Approved" | "Rejected"): Promise<void> {
-  const { data: leaveData } = await supabase
-    .from("leave_requests")
-    .select("employee_id, employee_name, leave_type")
-    .eq("id", id)
-    .single();
+export async function updateLeaveStatus(
+  id: string, 
+  status: "Approved" | "Rejected",
+  leaveDetails?: { employeeId: string; employeeName: string; leaveType: string }
+): Promise<void> {
 
   const { error } = await supabase
     .from("leave_requests")
@@ -672,13 +679,29 @@ export async function updateLeaveStatus(id: string, status: "Approved" | "Reject
     .eq("id", id);
   if (error) throw error;
 
-  if (leaveData) {
+  let finalEmployeeId = leaveDetails?.employeeId;
+  let finalLeaveType = leaveDetails?.leaveType;
+
+  if (!finalEmployeeId) {
+    const { data: leaveData } = await supabase
+      .from("leave_requests")
+      .select("employee_id, employee_name, leave_type")
+      .eq("id", id)
+      .maybeSingle();
+      
+    if (leaveData) {
+      finalEmployeeId = leaveData.employee_id;
+      finalLeaveType = leaveData.leave_type;
+    }
+  }
+
+  if (finalEmployeeId && finalLeaveType) {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       await insertNotification({
-        recipientId: leaveData.employee_id,
+        recipientId: finalEmployeeId,
         title: `Leave ${status}`,
-        message: `Your ${leaveData.leave_type} request has been ${status.toLowerCase()}.`,
+        message: `Your ${finalLeaveType} request has been ${status.toLowerCase()}.`,
         type: "leave",
         referenceId: id,
         senderId: session?.user?.id,
@@ -1368,6 +1391,23 @@ export async function fetchProjects(): Promise<Project[]> {
   }
 
   return fetchProjectsRelational(rows, profiles);
+}
+
+export async function updateProjectDetails(
+  projectId: string,
+  input: {
+    name?: string;
+    client?: string;
+    dept?: string;
+    desc?: string;
+    budget?: string;
+    priority?: string;
+    start?: string;
+    end?: string;
+  }
+) {
+  const { error } = await supabase.from("projects").update(input).eq("id", projectId);
+  if (error) throw error;
 }
 
 export async function fetchEmployeeProfiles(): Promise<EmployeeProfile[]> {
@@ -2309,12 +2349,11 @@ export async function fetchTodayOfficeSession(
   if (data) {
     const clockInDate = new Date(data.clock_in);
     const now = new Date();
-    // Check if the session is from a previous calendar day AND it's 1 AM or later
+    // Check if the session is from a previous calendar day (auto-close at midnight)
     if (
-      (clockInDate.getFullYear() !== now.getFullYear() ||
+      clockInDate.getFullYear() !== now.getFullYear() ||
       clockInDate.getMonth() !== now.getMonth() ||
-      clockInDate.getDate() !== now.getDate()) &&
-      now.getHours() >= 1
+      clockInDate.getDate() !== now.getDate()
     ) {
       // It's from a previous day! Auto-close it at 23:59:59 of that day.
       const endOfDay = new Date(clockInDate);
@@ -2366,6 +2405,27 @@ export async function fetchActiveClockSession(
   }
   clockSessionsTableReady = true;
   if (!data) return null;
+
+  const clockInDate = new Date(data.clock_in);
+  const now = new Date();
+  if (
+    clockInDate.getFullYear() !== now.getFullYear() ||
+    clockInDate.getMonth() !== now.getMonth() ||
+    clockInDate.getDate() !== now.getDate()
+  ) {
+    const endOfDay = new Date(clockInDate);
+    endOfDay.setHours(23, 59, 59, 999);
+    await clockOutEmployee({
+      sessionId: data.id,
+      employeeName: data.employee_name,
+      employeeId: data.employee_id,
+      reason: "end_day",
+      notes: "Auto-closed at midnight",
+      forceTimeMs: endOfDay.getTime(),
+    });
+    return null;
+  }
+
   const session = mapClockSession(data);
   const segmentsMap = await fetchSegmentsForSessions([session.id]);
   session.segments = segmentsMap.get(session.id) || [];
@@ -3341,6 +3401,50 @@ export async function createGroupChannel(input: {
   });
 }
 
+export async function updateGroupChannel(input: {
+  channelId: string;
+  name?: string;
+  memberIds?: string[];
+}) {
+  const channelId = input.channelId;
+  
+  // 1. Update name if provided
+  if (input.name !== undefined) {
+    const name = input.name.trim();
+    if (name) {
+      const { error } = await supabase
+        .from("chat_channels")
+        .update({ name })
+        .eq("id", channelId);
+      if (error) throw error;
+    }
+  }
+
+  // 2. Update members if provided
+  if (input.memberIds !== undefined) {
+    // Delete existing members
+    const { error: delError } = await supabase
+      .from("chat_channel_members")
+      .delete()
+      .eq("channel_id", channelId);
+    if (delError) throw delError;
+
+    // Insert new members
+    const memberSet = new Set(input.memberIds.filter(Boolean));
+    const rows = [...memberSet].map(userId => ({
+      channel_id: channelId,
+      user_id: userId,
+      role: "member", // We simplify and make everyone a member
+    }));
+    if (rows.length > 0) {
+      const { error: insError } = await supabase
+        .from("chat_channel_members")
+        .insert(rows);
+      if (insError) throw insError;
+    }
+  }
+}
+
 export async function findOrCreateDmChannel(input: {
   userId: string;
   peerId: string;
@@ -3650,6 +3754,7 @@ export async function fetchChatUnreadCounts(userId: string): Promise<Record<stri
       .from("chat_messages")
       .select("*", { count: "exact", head: true })
       .eq("channel_id", channel.id)
+      .neq("sender_id", userId)
       .gt("created_at", since);
     if (error) throw error;
     counts[channel.id] = count ?? 0;
@@ -3681,16 +3786,29 @@ export async function insertNotification(input: {
   senderId?: string;
   referenceId?: string;
 }) {
-  const { error } = await supabase.from("notifications").insert({
+  const payload = {
     recipient_id: input.recipientId,
     sender_id: input.senderId || null,
     title: input.title,
     message: input.message,
     type: input.type,
     reference_id: input.referenceId || null,
-  });
-  if (error && error.message && !error.message.includes("does not exist")) {
-    console.error("Insert notification error:", error);
+  };
+
+  const { error } = await supabase.from("notifications").insert(payload);
+  
+  if (error) {
+    // If it's a foreign key constraint error (likely sender_id mismatch), retry without sender_id
+    if (error.code === '23503' && payload.sender_id) {
+      console.warn("Sender ID foreign key mismatch, retrying without sender_id...");
+      payload.sender_id = null;
+      const { error: retryError } = await supabase.from("notifications").insert(payload);
+      if (retryError && !retryError.message?.includes("does not exist")) {
+        console.error("Retry insert notification error:", retryError);
+      }
+    } else if (!error.message?.includes("does not exist")) {
+      console.error("Insert notification error:", error);
+    }
   }
 }
 

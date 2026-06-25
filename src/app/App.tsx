@@ -72,6 +72,8 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "projects", label: "Projects", icon: Layers },
     { id: "tasks", label: "Tasks", icon: CheckSquare, badge: 2 },
     { id: "shifts", label: "Shift Tracker", icon: Timer },
+    { id: "register", label: "Register / Add", icon: Plus },
+    { id: "timesheet", label: "Time Sheet", icon: Clock },
     { id: "chat", label: "Chat", icon: MessageSquare, badge: 4 },
   ],
   employee: [
@@ -694,6 +696,10 @@ export default function App() {
           onOpenProject={projectId => {
             setSelectedProjectId(projectId);
             setActiveView("projectworkspace");
+          }}
+          onNavigate={(view, tab) => {
+            if (tab) setRegisterTab(tab as any);
+            setActiveView(view);
           }}
         />
       );

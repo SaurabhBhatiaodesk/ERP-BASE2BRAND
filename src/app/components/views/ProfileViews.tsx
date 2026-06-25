@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import { Avatar, Badge } from "../ui";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
-import { useEmployeeProfiles, useLeadsAsClients, useProjectTasks, useProjects, useTimesheets } from "@/hooks/useSupabaseData";
+import { useEmployeeProfiles, useLeadsAsClients, useProjectTasks, useProjects, useTimesheets, useLeaveRequests } from "@/hooks/useSupabaseData";
 import {
   createEmployee, createLead, createProject, assignProjectTeam,
   updateEmployeeProfile, getEmployeeProjects, getEmployeeRecentTasks,
@@ -172,6 +172,7 @@ export function EmployeeProfilePage({
   const { data: projects, refresh: refreshProjects } = useProjects();
   const { data: tasks } = useProjectTasks();
   const { data: timesheets } = useTimesheets();
+  const { data: dbLeaves } = useLeaveRequests();
   const canManageAll = isAdminRole(userRole);
   const visibleProfiles = useMemo(
     () =>
@@ -203,9 +204,7 @@ export function EmployeeProfilePage({
 
   const weeklyHours = useMemo(() => {
     if (!profile) return [];
-    const fromTimesheets = buildWeeklyHoursFromTimesheets(timesheets, profile.id, profile.name);
-    if (fromTimesheets.some(d => d.h > 0)) return fromTimesheets;
-    return profile.weeklyHours.length > 0 ? profile.weeklyHours : fromTimesheets;
+    return buildWeeklyHoursFromTimesheets(timesheets, profile.id, profile.name);
   }, [timesheets, profile]);
 
   const assignedProjects = useMemo(
@@ -218,6 +217,13 @@ export function EmployeeProfilePage({
     [tasks, profile]
   );
 
+  const dynamicLeavesTaken = useMemo(() => {
+    if (!profile) return 0;
+    return dbLeaves
+      .filter(l => l.employeeId === profile.id && l.status === "Approved")
+      .reduce((sum, l) => sum + l.days, 0);
+  }, [dbLeaves, profile]);
+
   if (loading) return <DataLoading label="Loading employee profiles..." />;
   if (error) return <DataError message={error} />;
   if (visibleProfiles.length === 0 || !profile) {
@@ -226,11 +232,11 @@ export function EmployeeProfilePage({
 
   const emp = profile;
   const isOwnProfile = namesMatch(emp.name, userName);
-  const maxH = Math.max(...weeklyHours.map(d => d.h), 1);
+  const maxH = Math.max(...weeklyHours.map(d => d.h), 8); // At least 8h scale
 
   const statsCards = [
     { label: "Attendance", value: `${emp.attendance}%`, color: "text-emerald-400" },
-    { label: "Leaves Taken", value: emp.leaves.toString(), color: "text-amber-400" },
+    { label: "Leaves Taken", value: dynamicLeavesTaken.toString(), color: "text-amber-400" },
     { label: "Active Projects", value: assignedProjects.length.toString(), color: "text-indigo-400" },
     ...(canManageAll
       ? [{ label: "Revenue Generated", value: emp.revenue, color: "text-violet-400" }]
@@ -469,7 +475,7 @@ export function EmployeeProfilePage({
                     <span className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8]">{d.h}h</span>
                     <div
                       className="w-full bg-indigo-600/70 rounded-t-md transition-all min-h-[4px]"
-                      style={{ height: `${Math.max(8, (d.h / maxH) * 88)}px` }}
+                      style={{ height: `${Math.max(4, (d.h / maxH) * 88)}px` }}
                     />
                     <span className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8]">{d.day}</span>
                   </div>

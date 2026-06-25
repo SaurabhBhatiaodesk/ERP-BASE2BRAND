@@ -3,7 +3,7 @@ import {
   Plus, Users, Calendar, Award, MoreHorizontal,
   Hash, Phone, Search, Send, Megaphone, X,
   MessageCircle, UserPlus, Paperclip, FileText, Loader2,
-  CheckCheck, AlertCircle, Download, ExternalLink,
+  CheckCheck, AlertCircle, Download, ExternalLink, Smile, Settings2, Edit, ImagePlay
 } from "lucide-react";
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -29,6 +29,7 @@ import {
   type ChatMessage,
   type EmployeeProfile,
   type MessageDeliveryStatus,
+  updateGroupChannel,
 } from "@/lib/database";
 import {
   fileDownloadUrl,
@@ -488,6 +489,12 @@ export function ChatView({
   const [groupName, setGroupName] = useState("");
   const [groupMembers, setGroupMembers] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showEditGroup, setShowEditGroup] = useState(false);
+  const [showGifPicker, setShowGifPicker] = useState(false);
+  const [gifSearch, setGifSearch] = useState("");
+  const [gifResults, setGifResults] = useState<any[]>([]);
+  const [gifLoading, setGifLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sendingRef = useRef(false);
@@ -496,6 +503,23 @@ export function ChatView({
   useEffect(() => {
     currentMsgRef.current = msg;
   }, [msg]);
+
+  useEffect(() => {
+    if (!showGifPicker) return;
+    const delayDebounceFn = setTimeout(() => {
+      setGifLoading(true);
+      const query = gifSearch.trim() || "excited";
+      fetch(`https://g.tenor.com/v1/search?q=${encodeURIComponent(query)}&key=LIVDSRZULELA&limit=12`)
+        .then(res => res.json())
+        .then(data => {
+          setGifResults(data.results || []);
+        })
+        .catch(console.error)
+        .finally(() => setGifLoading(false));
+    }, 500);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [gifSearch, showGifPicker]);
 
   const chatChannels = useMemo(
     () => channels.filter(c => c.channelType === "dm" || c.channelType === "group"),
@@ -708,6 +732,45 @@ export function ChatView({
     }
   }
 
+  async function handleSendGif(gifUrl: string) {
+    if (!activeChannel || !currentUser) return;
+    
+    setShowGifPicker(false);
+    const caption = msg.trim() || "GIF";
+    const optimistic = buildOptimisticMessage(activeChannel.id, currentUser, {
+      content: caption,
+      messageType: "image",
+      mediaUrl: gifUrl,
+      mediaType: "image/gif",
+      fileName: "tenor.gif",
+      fileSize: 0,
+    });
+    setSending(true);
+    setSendError("");
+    appendMessage(optimistic);
+    try {
+      const sent = await sendChatMessage({
+        channelId: activeChannel.id,
+        senderId: currentUser.id,
+        senderName: currentUser.name,
+        content: caption,
+        messageType: "image",
+        mediaUrl: gifUrl,
+        mediaType: "image/gif",
+        fileName: "tenor.gif",
+        isBroadcast: false,
+      });
+      setMsg("");
+      replaceMessage(optimistic.id, sent);
+      refreshUnread({ silent: true });
+    } catch (err) {
+      patchMessage(optimistic.id, { clientStatus: "failed" });
+      setSendError(err instanceof Error ? err.message : "Failed to send GIF");
+    } finally {
+      setSending(false);
+    }
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -746,6 +809,32 @@ export function ChatView({
     } finally {
       setCreating(false);
     }
+  }
+
+  async function handleEditGroup() {
+    if (!activeChannel || !groupName.trim()) return;
+    setCreating(true);
+    setSendError("");
+    try {
+      await updateGroupChannel({
+        channelId: activeChannel.id,
+        name: groupName.trim(),
+        memberIds: groupMembers,
+      });
+      setShowEditGroup(false);
+      refreshChannels();
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : "Failed to update group");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  function openEditGroupModal() {
+    if (activeChannel?.channelType !== "group") return;
+    setGroupName(activeChannel.displayName);
+    setGroupMembers(activeChannel.memberIds);
+    setShowEditGroup(true);
   }
 
   async function handleStartDm(peerId: string) {
@@ -983,6 +1072,17 @@ export function ChatView({
                   <Phone size={14} />
                 </a>
               )}
+              {activeChannel?.channelType === "group" && (
+                <button
+                  type="button"
+                  onClick={openEditGroupModal}
+                  className="flex items-center gap-1.5 px-2 py-1.5 hover:bg-white/[0.04] rounded-lg transition-colors text-[#6b7fa8] hover:text-white"
+                  title="Group Info"
+                >
+                  <Edit size={14} />
+                  <span className="text-xs font-['Plus_Jakarta_Sans'] font-medium">Edit Group</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -1045,6 +1145,80 @@ export function ChatView({
               >
                 {uploading ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
               </button>
+              <div className="relative flex items-center">
+                <button
+                  type="button"
+                  onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                  disabled={!activeChannel || tablesMissing || uploading}
+                  className="p-1.5 hover:bg-white/[0.04] rounded-lg transition-colors text-[#6b7fa8] hover:text-white disabled:opacity-40"
+                  title="Insert Emoji"
+                >
+                  <Smile size={15} />
+                </button>
+                {showEmojiPicker && (
+                  <div className="absolute bottom-full left-0 mb-2 bg-[#131a35] border border-[rgba(99,102,241,0.2)] rounded-lg p-2 shadow-xl shadow-indigo-950/50 flex flex-wrap gap-1 w-64 z-50">
+                    {[
+                      "😀", "😂", "😊", "😍", "😘", "😎", "😭", "😡", "👍", "👎", 
+                      "👏", "🙌", "🤝", "🙏", "❤️", "💔", "🔥", "🎉", "🎂", "🎁", 
+                      "🎈", "💯", "👀", "🚀", "💡", "✅", "❌", "❓"
+                    ].map(emoji => (
+                      <button
+                        key={emoji}
+                        type="button"
+                        onClick={() => {
+                          const newVal = msg + emoji;
+                          setMsg(newVal);
+                          currentMsgRef.current = newVal;
+                          setShowEmojiPicker(false);
+                        }}
+                        className="hover:bg-white/10 rounded p-1 text-lg leading-none transition-colors"
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="relative flex items-center">
+                <button
+                  type="button"
+                  onClick={() => setShowGifPicker(!showGifPicker)}
+                  disabled={!activeChannel || tablesMissing || uploading}
+                  className="p-1.5 hover:bg-white/[0.04] rounded-lg transition-colors text-[#6b7fa8] hover:text-white disabled:opacity-40"
+                  title="Insert GIF"
+                >
+                  <ImagePlay size={15} />
+                </button>
+                {showGifPicker && (
+                  <div className="absolute bottom-full left-0 mb-2 bg-[#131a35] border border-[rgba(99,102,241,0.2)] rounded-lg p-3 shadow-xl shadow-indigo-950/50 w-72 z-50">
+                    <input
+                      type="text"
+                      value={gifSearch}
+                      onChange={e => setGifSearch(e.target.value)}
+                      placeholder="Search GIFs..."
+                      className="w-full bg-[#080c1a] border border-[rgba(99,102,241,0.15)] rounded px-2 py-1.5 text-xs text-white outline-none focus:border-indigo-500/40 mb-3"
+                    />
+                    <div className="h-48 overflow-y-auto grid grid-cols-2 gap-1.5">
+                      {gifLoading && gifResults.length === 0 ? (
+                        <p className="text-xs text-[#6b7fa8] col-span-2 text-center py-4">Loading...</p>
+                      ) : gifResults.length > 0 ? (
+                        gifResults.map(g => (
+                          <button
+                            key={g.id}
+                            type="button"
+                            onClick={() => handleSendGif(g.media[0].gif.url)}
+                            className="rounded overflow-hidden hover:opacity-80 transition-opacity bg-black/20"
+                          >
+                            <img src={g.media[0].nanogif.url} alt="GIF" className="w-full h-20 object-cover" />
+                          </button>
+                        ))
+                      ) : (
+                        <p className="text-xs text-[#6b7fa8] col-span-2 text-center py-4">No results</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
               <input
                 value={msg}
                 onChange={e => setMsg(e.target.value)}
@@ -1114,6 +1288,55 @@ export function ChatView({
               className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-lg text-sm text-white font-['Plus_Jakarta_Sans']"
             >
               {creating ? "Creating..." : "Create group"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showEditGroup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md bg-[#0d1326] border border-[rgba(99,102,241,0.2)] rounded-xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Group Info</h3>
+              <button type="button" onClick={() => setShowEditGroup(false)} className="text-[#6b7fa8] hover:text-white">
+                <X size={16} />
+              </button>
+            </div>
+            <input
+              value={groupName}
+              onChange={e => setGroupName(e.target.value)}
+              placeholder="Group name"
+              className="w-full px-3 py-2 bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-lg text-sm text-white outline-none focus:border-indigo-500/40"
+            />
+            <div className="max-h-48 overflow-y-auto space-y-1">
+              <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono'] mb-2">Manage members</p>
+              {otherProfiles.map(p => (
+                <label
+                  key={p.id}
+                  className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/[0.03] cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={groupMembers.includes(p.id)}
+                    onChange={() => toggleGroupMember(p.id)}
+                    className="rounded border-indigo-500/40"
+                  />
+                  <Avatar
+                    initials={initialsFromName(p.name)}
+                    src={p.profileImageUrl || undefined}
+                    size="sm"
+                  />
+                  <span className="text-xs text-white">{p.name}</span>
+                </label>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={handleEditGroup}
+              disabled={creating || !groupName.trim()}
+              className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-lg text-sm text-white font-['Plus_Jakarta_Sans']"
+            >
+              {creating ? "Saving..." : "Save changes"}
             </button>
           </div>
         </div>

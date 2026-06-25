@@ -87,11 +87,12 @@ function isDateInRange(date: string, start: Date, end: Date) {
 
 function formatHoursDisplay(hours: number) {
   if (hours <= 0) return "0h";
-  if (hours < 1) {
-    const mins = Math.max(1, Math.round(hours * 60));
-    return `${mins}m`;
-  }
-  return `${Math.round(hours * 100) / 100}h`;
+  const totalMins = Math.round(hours * 60);
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  if (h > 0 && m > 0) return `${h}h ${m}m`;
+  if (h > 0) return `${h}h`;
+  return `${m}m`;
 }
 
 function formatClockTime(iso: string) {
