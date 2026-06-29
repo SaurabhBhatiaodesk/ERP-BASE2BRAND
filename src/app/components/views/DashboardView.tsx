@@ -478,8 +478,8 @@ export function CEODashboard() {
         <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-5">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Live Activity</h3>
-            <span className="flex items-center gap-1.5 text-[10px] font-['Geist_Mono'] text-emerald-400">
-              <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" /> Live
+            <span className="flex items-center gap-1.5 text-[10px] font-['Geist_Mono'] text-red-500 font-bold">
+              <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" /> Live
             </span>
           </div>
           <div className="space-y-3">

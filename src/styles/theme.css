@@ -179,3 +179,131 @@
     line-height: 1.5;
   }
 }
+
+/* ========================================================
+   DYNAMIC ACCENT THEMES (Overrides Tailwind's Indigo)
+   ======================================================== */
+
+.accent-theme-emerald {
+  --color-indigo-50: #ecfdf5;
+  --color-indigo-100: #d1fae5;
+  --color-indigo-200: #a7f3d0;
+  --color-indigo-300: #6ee7b7;
+  --color-indigo-400: #34d399;
+  --color-indigo-500: #10b981;
+  --color-indigo-600: #059669;
+  --color-indigo-700: #047857;
+  --color-indigo-800: #065f46;
+  --color-indigo-900: #064e3b;
+  --color-indigo-950: #022c22;
+}
+
+.accent-theme-rose {
+  --color-indigo-50: #fff1f2;
+  --color-indigo-100: #ffe4e6;
+  --color-indigo-200: #fecdd3;
+  --color-indigo-300: #fda4af;
+  --color-indigo-400: #fb7185;
+  --color-indigo-500: #f43f5e;
+  --color-indigo-600: #e11d48;
+  --color-indigo-700: #be123c;
+  --color-indigo-800: #9f1239;
+  --color-indigo-900: #881337;
+  --color-indigo-950: #4c0519;
+}
+
+.accent-theme-amber {
+  --color-indigo-50: #fffbeb;
+  --color-indigo-100: #fef3c7;
+  --color-indigo-200: #fde68a;
+  --color-indigo-300: #fcd34d;
+  --color-indigo-400: #fbbf24;
+  --color-indigo-500: #f59e0b;
+  --color-indigo-600: #d97706;
+  --color-indigo-700: #b45309;
+  --color-indigo-800: #92400e;
+  --color-indigo-900: #78350f;
+  --color-indigo-950: #451a03;
+}
+
+.accent-theme-blue {
+  --color-indigo-50: #eff6ff;
+  --color-indigo-100: #dbeafe;
+  --color-indigo-200: #bfdbfe;
+  --color-indigo-300: #93c5fd;
+  --color-indigo-400: #60a5fa;
+  --color-indigo-500: #3b82f6;
+  --color-indigo-600: #2563eb;
+  --color-indigo-700: #1d4ed8;
+  --color-indigo-800: #1e40af;
+  --color-indigo-900: #1e3a8a;
+  --color-indigo-950: #172554;
+}
+
+.accent-theme-purple {
+  --color-indigo-50: #faf5ff;
+  --color-indigo-100: #f3e8ff;
+  --color-indigo-200: #e9d5ff;
+  --color-indigo-300: #d8b4fe;
+  --color-indigo-400: #c084fc;
+  --color-indigo-500: #a855f7;
+  --color-indigo-600: #9333ea;
+  --color-indigo-700: #7e22ce;
+  --color-indigo-800: #6b21a8;
+  --color-indigo-900: #581c87;
+  --color-indigo-950: #3b0764;
+}
+
+/* ========================================================
+   DYNAMIC BACKGROUND THEMES (Overrides Hardcoded Arbitrary Hexes)
+   ======================================================== */
+
+/* GRAPHITE MODE */
+.bg-theme-graphite .bg-\[\#080c1a\] { background-color: #09090b !important; }
+.bg-theme-graphite .bg-\[\#0d1326\], .bg-theme-graphite .bg-\[\#0a1020\], .bg-theme-graphite .bg-\[\#0a0f1d\] { background-color: #18181b !important; }
+.bg-theme-graphite .bg-\[\#131a35\], .bg-theme-graphite .bg-\[\#111828\] { background-color: #27272a !important; }
+.bg-theme-graphite .text-\[\#a8b5d1\] { color: #d4d4d8 !important; }
+.bg-theme-graphite .text-\[\#6b7fa8\], .bg-theme-graphite .text-\[\#8fa0c4\] { color: #a1a1aa !important; }
+
+/* OCEANIC MODE */
+.bg-theme-oceanic .bg-\[\#080c1a\] { background-color: #042f2e !important; }
+.bg-theme-oceanic .bg-\[\#0d1326\], .bg-theme-oceanic .bg-\[\#0a1020\], .bg-theme-oceanic .bg-\[\#0a0f1d\] { background-color: #082f49 !important; }
+.bg-theme-oceanic .bg-\[\#131a35\], .bg-theme-oceanic .bg-\[\#111828\] { background-color: #075985 !important; }
+.bg-theme-oceanic .text-\[\#a8b5d1\] { color: #e0f2fe !important; }
+.bg-theme-oceanic .text-\[\#6b7fa8\], .bg-theme-oceanic .text-\[\#8fa0c4\] { color: #bae6fd !important; }
+
+/* ESPRESSO MODE */
+.bg-theme-espresso .bg-\[\#080c1a\] { background-color: #2e1008 !important; }
+.bg-theme-espresso .bg-\[\#0d1326\], .bg-theme-espresso .bg-\[\#0a1020\], .bg-theme-espresso .bg-\[\#0a0f1d\] { background-color: #451a03 !important; }
+.bg-theme-espresso .bg-\[\#131a35\], .bg-theme-espresso .bg-\[\#111828\] { background-color: #78350f !important; }
+.bg-theme-espresso .text-\[\#a8b5d1\] { color: #ffedd5 !important; }
+.bg-theme-espresso .text-\[\#6b7fa8\], .bg-theme-espresso .text-\[\#8fa0c4\] { color: #fed7aa !important; }
+
+/* COSMIC RUBY MODE */
+.bg-theme-cosmic .bg-\[\#080c1a\] { background-color: #2e0219 !important; }
+.bg-theme-cosmic .bg-\[\#0d1326\], .bg-theme-cosmic .bg-\[\#0a1020\], .bg-theme-cosmic .bg-\[\#0a0f1d\] { background-color: #4c0519 !important; }
+.bg-theme-cosmic .bg-\[\#131a35\], .bg-theme-cosmic .bg-\[\#111828\] { background-color: #881337 !important; }
+.bg-theme-cosmic .text-\[\#a8b5d1\] { color: #ffe4e6 !important; }
+.bg-theme-cosmic .text-\[\#6b7fa8\], .bg-theme-cosmic .text-\[\#8fa0c4\] { color: #fecdd3 !important; }
+
+/* ROYAL PLUM MODE */
+.bg-theme-plum .bg-\[\#080c1a\] { background-color: #1e1b4b !important; }
+.bg-theme-plum .bg-\[\#0d1326\], .bg-theme-plum .bg-\[\#0a1020\], .bg-theme-plum .bg-\[\#0a0f1d\] { background-color: #2e1065 !important; }
+.bg-theme-plum .bg-\[\#131a35\], .bg-theme-plum .bg-\[\#111828\] { background-color: #4c1d95 !important; }
+.bg-theme-plum .text-\[\#a8b5d1\] { color: #ede9fe !important; }
+.bg-theme-plum .text-\[\#6b7fa8\], .bg-theme-plum .text-\[\#8fa0c4\] { color: #ddd6fe !important; }
+
+/* DEEP NAVY MODE */
+.bg-theme-navy .bg-\[\#080c1a\] { background-color: #020617 !important; }
+.bg-theme-navy .bg-\[\#0d1326\], .bg-theme-navy .bg-\[\#0a1020\], .bg-theme-navy .bg-\[\#0a0f1d\] { background-color: #0f172a !important; }
+.bg-theme-navy .bg-\[\#131a35\], .bg-theme-navy .bg-\[\#111828\] { background-color: #1e293b !important; }
+.bg-theme-navy .text-\[\#a8b5d1\] { color: #cbd5e1 !important; }
+.bg-theme-navy .text-\[\#6b7fa8\], .bg-theme-navy .text-\[\#8fa0c4\] { color: #94a3b8 !important; }
+
+/* DARK FOREST MODE */
+.bg-theme-forest .bg-\[\#080c1a\] { background-color: #022c22 !important; }
+.bg-theme-forest .bg-\[\#0d1326\], .bg-theme-forest .bg-\[\#0a1020\], .bg-theme-forest .bg-\[\#0a0f1d\] { background-color: #064e3b !important; }
+.bg-theme-forest .bg-\[\#131a35\], .bg-theme-forest .bg-\[\#111828\] { background-color: #065f46 !important; }
+.bg-theme-forest .text-\[\#a8b5d1\] { color: #a7f3d0 !important; }
+.bg-theme-forest .text-\[\#6b7fa8\], .bg-theme-forest .text-\[\#8fa0c4\] { color: #6ee7b7 !important; }
+

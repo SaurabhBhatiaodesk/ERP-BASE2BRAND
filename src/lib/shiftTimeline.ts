@@ -1,7 +1,7 @@
 import type { ClockSessionRecord, ClockSessionSegment } from "./database";
 import type { ActivityKind, ShiftEmployee, TimelineBlock } from "@/app/components/views/ShiftView";
 import type { AppTask } from "./database";
-import { buildShiftActiveTasks, shortStageLabel, type ShiftActiveTask } from "./taskStageTime";
+import { buildShiftActiveTasks, aggregateStageSeconds, shortStageLabel, type ShiftActiveTask } from "./taskStageTime";
 import {
   SHIFT_DURATION,
   TIMELINE_AXIS_DURATION,
@@ -213,6 +213,8 @@ export function calcProductivity(
   nowMin: number,
   shiftStartMin: number,
   shiftEndMin: number,
+  trackedTasks?: ShiftActiveTask[],
+  targetDate?: string,
 ) {
   const shiftStartAxis = Math.max(0, shiftStartMin - TIMELINE_AXIS_START);
   const shiftEndAxis = shiftEndMin - TIMELINE_AXIS_START;
@@ -224,8 +226,19 @@ export function calcProductivity(
   const meetings = timelineDuration(timeline, "meeting", effectiveNow, window);
   const breaks = timelineDuration(timeline, "break", effectiveNow, window);
   const idle = timelineDuration(timeline, "idle", effectiveNow, window);
-  const productive = worked + meetings;
-  const total = productive + breaks + idle;
+  
+  let productive = 0;
+  if (trackedTasks && trackedTasks.length > 0) {
+    productive = trackedTasks.reduce((sum, task) => {
+      const totals = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, targetDate);
+      const activeSecs = (totals["in-progress"] || 0) + (totals["progress"] || 0);
+      return sum + (activeSecs / 60);
+    }, 0);
+  } else {
+    productive = worked + meetings;
+  }
+  
+  const total = worked + meetings + breaks + idle;
   if (total <= 0) return 0;
   return Math.min(100, Math.round((productive / total) * 100));
 }
@@ -287,7 +300,7 @@ export function buildShiftEmployee(input: {
   const effectiveNow = Math.min(nowMin, TIMELINE_AXIS_DURATION);
   const timeline = session ? sessionToTimeline(session, effectiveNow) : [];
   const status = sessionStatusToActivity(session);
-  const productivity = calcProductivity(timeline, nowMin, shiftStartMin, shiftEndMin);
+  const productivity = calcProductivity(timeline, nowMin, shiftStartMin, shiftEndMin, trackedTasks, targetDate);
 
 
   const loginIso = session?.clockIn;
@@ -303,7 +316,7 @@ export function buildShiftEmployee(input: {
   let idleMins = 0;
   if (status === "working" && lastActiveAt) {
     idleMins = Math.floor((Date.now() - new Date(lastActiveAt).getTime()) / 60000);
-    if (idleMins > 2) {
+    if (idleMins > 5) {
       currentStatus = "idle";
       const lastBlock = timeline[timeline.length - 1];
       if (lastBlock && lastBlock.kind === "working" && lastBlock.end === null) {

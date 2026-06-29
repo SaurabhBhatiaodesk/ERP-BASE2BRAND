@@ -22,6 +22,26 @@ export type DbLead = {
   created_at?: string;
 };
 
+export type ATSVacancy = {
+  id: string;
+  role: string;
+  department: string;
+  status: string;
+  applicants: number;
+  target_date: string;
+  created_at?: string;
+  closed_at?: string | null;
+};
+
+export type ATSInterview = {
+  id: string;
+  candidate_name: string;
+  job_role: string;
+  interview_time: string;
+  status: string;
+  avatar_initials: string;
+};
+
 export type DbProjectTask = {
   id?: string;
   title?: string;
@@ -1433,6 +1453,52 @@ export async function fetchEmployeeProfileByEmail(email: string): Promise<Employ
   return data ? mapEmployeeProfile(data as DbEmployeeProfile) : null;
 }
 
+export async function fetchATSVacancies(): Promise<ATSVacancy[]> {
+  const { data, error } = await supabase.from("ats_vacancies").select("*").order("created_at", { ascending: false });
+  if (error) {
+    console.error("fetchATSVacancies error:", error);
+    return [];
+  }
+  return data as ATSVacancy[];
+}
+
+export async function addATSVacancy(vacancy: Omit<ATSVacancy, "id">) {
+  const { data, error } = await supabase.from("ats_vacancies").insert(vacancy).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateATSVacancyStatus(id: string, status: string) {
+  const updateData: any = { status };
+  if (status === "Closed") {
+    updateData.closed_at = new Date().toISOString();
+  } else {
+    updateData.closed_at = null;
+  }
+  const { error } = await supabase.from("ats_vacancies").update(updateData).eq("id", id);
+  if (error) throw error;
+}
+
+export async function fetchATSInterviews(): Promise<ATSInterview[]> {
+  const { data, error } = await supabase.from("ats_interviews").select("*").order("created_at", { ascending: false });
+  if (error) {
+    console.error("fetchATSInterviews error:", error);
+    return [];
+  }
+  return data as ATSInterview[];
+}
+
+export async function addATSInterview(interview: Omit<ATSInterview, "id">) {
+  const { data, error } = await supabase.from("ats_interviews").insert(interview).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateATSInterviewStatus(id: string, status: string) {
+  const { error } = await supabase.from("ats_interviews").update({ status }).eq("id", id);
+  if (error) throw error;
+}
+
 async function syncRelationalTimesheetForTask(
   task: DbProjectTaskRow,
   _profiles: EmployeeProfile[]
@@ -2279,7 +2345,9 @@ function formatClockDate(d: Date) {
 function calculateSessionHours(clockInIso: string, clockOutMs: number) {
   const elapsedMs = clockOutMs - new Date(clockInIso).getTime();
   if (elapsedMs < 1000) return 0;
-  return Math.round((elapsedMs / 3600000) * 10000) / 10000;
+  // Cap at 12 hours to prevent crazy numbers if employee forgets to clock out or closes the system
+  const cappedMs = Math.min(elapsedMs, 12 * 3600000);
+  return Math.round((cappedMs / 3600000) * 10000) / 10000;
 }
 
 function mapClockSession(row: {
@@ -2330,12 +2398,9 @@ export async function fetchTodayOfficeSession(
   employeeName: string,
   employeeId?: string
 ): Promise<ClockSessionRecord | null> {
-  const { start, end } = todayClockRange();
   let query = supabase
     .from("clock_sessions")
     .select("*")
-    .gte("clock_in", start)
-    .lte("clock_in", end)
     .order("clock_in", { ascending: false })
     .limit(1);
 
@@ -2355,17 +2420,19 @@ export async function fetchTodayOfficeSession(
       clockInDate.getMonth() !== now.getMonth() ||
       clockInDate.getDate() !== now.getDate()
     ) {
-      // It's from a previous day! Auto-close it at 23:59:59 of that day.
-      const endOfDay = new Date(clockInDate);
-      endOfDay.setHours(23, 59, 59, 999);
-      await clockOutEmployee({
-        sessionId: data.id,
-        employeeName: data.employee_name,
-        employeeId: data.employee_id,
-        reason: "end_day",
-        notes: "Auto-closed at midnight",
-        forceTimeMs: endOfDay.getTime(),
-      });
+      if (data.status === "active") {
+        // It's from a previous day! Auto-close it at 23:59:59 of that day.
+        const endOfDay = new Date(clockInDate);
+        endOfDay.setHours(23, 59, 59, 999);
+        await clockOutEmployee({
+          sessionId: data.id,
+          employeeName: data.employee_name,
+          employeeId: data.employee_id,
+          reason: "end_day",
+          notes: "Auto-closed at midnight",
+          forceTimeMs: endOfDay.getTime(),
+        });
+      }
       return null;
     }
   }
@@ -2373,7 +2440,7 @@ export async function fetchTodayOfficeSession(
   const session = mapClockSession(data);
   const segmentsMap = await fetchSegmentsForSessions([session.id]);
   session.segments = segmentsMap.get(session.id) || [];
-  return session;
+  return await enforceAutoLunchBreak(session);
 }
 
 export async function fetchActiveClockSession(
@@ -2429,6 +2496,68 @@ export async function fetchActiveClockSession(
   const session = mapClockSession(data);
   const segmentsMap = await fetchSegmentsForSessions([session.id]);
   session.segments = segmentsMap.get(session.id) || [];
+  return await enforceAutoLunchBreak(session);
+}
+
+async function enforceAutoLunchBreak(session: ClockSessionRecord): Promise<ClockSessionRecord> {
+  const now = new Date();
+  const twoPM = new Date(); twoPM.setHours(14, 0, 0, 0);
+  const twoFortyPM = new Date(); twoFortyPM.setHours(14, 40, 0, 0);
+
+  if (now.getTime() < twoPM.getTime()) return session;
+  if (new Date(session.clockIn).getTime() >= twoPM.getTime()) return session;
+
+  const hasLunch = session.segments.some(s => s.kind === "lunch_break" || s.label?.toLowerCase().includes("lunch"));
+  
+  if (hasLunch) {
+    const lunchSeg = session.segments.find(s => s.kind === "lunch_break" && !s.endedAt && new Date(s.startedAt).getTime() === twoPM.getTime());
+    if (lunchSeg && now.getTime() >= twoFortyPM.getTime()) {
+      await supabase.from("clock_session_segments").update({ ended_at: twoFortyPM.toISOString() }).eq("id", lunchSeg.id);
+      lunchSeg.endedAt = twoFortyPM.toISOString();
+      const { data: newWork } = await supabase.from("clock_session_segments").insert({
+        session_id: session.id,
+        kind: "work",
+        label: null,
+        started_at: twoFortyPM.toISOString(),
+        ended_at: null
+      }).select().single();
+      if (newWork) session.segments.push(mapClockSegment(newWork));
+    }
+    return session;
+  }
+
+  const activeNow = session.segments.find(s => !s.endedAt);
+  if (!activeNow || new Date(activeNow.startedAt).getTime() > twoPM.getTime()) {
+    return session;
+  }
+
+  await supabase.from("clock_session_segments").update({ ended_at: twoPM.toISOString() }).eq("id", activeNow.id);
+  activeNow.endedAt = twoPM.toISOString();
+
+  const isPastLunch = now.getTime() >= twoFortyPM.getTime();
+  const lunchEndedAt = isPastLunch ? twoFortyPM.toISOString() : null;
+  const { data: newLunch } = await supabase.from("clock_session_segments").insert({
+    session_id: session.id,
+    kind: "lunch_break",
+    label: "Lunch Break",
+    started_at: twoPM.toISOString(),
+    ended_at: lunchEndedAt
+  }).select().single();
+  
+  if (newLunch) session.segments.push(mapClockSegment(newLunch));
+
+  if (isPastLunch) {
+    const { data: newWork } = await supabase.from("clock_session_segments").insert({
+      session_id: session.id,
+      kind: "work",
+      label: null,
+      started_at: twoFortyPM.toISOString(),
+      ended_at: null
+    }).select().single();
+    if (newWork) session.segments.push(mapClockSegment(newWork));
+  }
+
+  session.segments.sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime());
   return session;
 }
 
@@ -2505,6 +2634,16 @@ export async function clockInEmployee(input: {
 
   if (todayRow) {
     await closeOpenClockSegment(todayRow.id, nowMs);
+    
+    let updatedHours = todayRow.hours || 0;
+    if (todayRow.status === "paused" && todayRow.notes?.toLowerCase().includes("meeting")) {
+      const start = todayRow.sessionStart || todayRow.clockIn;
+      if (start) {
+        const breakHours = (nowMs - new Date(start).getTime()) / 3600000;
+        updatedHours += Math.max(0, breakHours);
+      }
+    }
+
     const { data, error } = await supabase
       .from("clock_sessions")
       .update({
@@ -2512,10 +2651,11 @@ export async function clockInEmployee(input: {
         session_start: now,
         clock_out: null,
         notes: "Office attendance",
+        hours: updatedHours,
       })
       .eq("id", todayRow.id)
       .select("*")
-      .maybeSingle(); // Use maybeSingle to prevent PGRST116 if not found
+      .maybeSingle();
     
     if (error) handleClockSessionsError(error);
     
@@ -2620,6 +2760,57 @@ export async function clockOutEmployee(input: {
 
   await pauseEmployeeTaskTimers(input.employeeName, input.employeeId);
   return { session: mapClockSession(updated), hours: totalHours };
+}
+
+export type EmployeeScreenshot = {
+  id: string;
+  employee_id: string | null;
+  employee_name: string;
+  image_url: string;
+  captured_at: string;
+};
+
+export async function insertEmployeeScreenshot(input: {
+  employeeName: string;
+  employeeId?: string;
+  imageUrl: string;
+}): Promise<void> {
+  const { error } = await supabase.from("employee_screenshots").insert({
+    employee_name: input.employeeName,
+    employee_id: input.employeeId || null,
+    image_url: input.imageUrl,
+  });
+  if (error) console.error("Failed to insert screenshot:", error);
+}
+
+export async function fetchEmployeeScreenshots(
+  employeeName: string,
+  employeeId?: string,
+  date?: Date
+): Promise<EmployeeScreenshot[]> {
+  let query = supabase.from("employee_screenshots").select("*");
+  if (employeeId) {
+    query = query.eq("employee_id", employeeId);
+  } else {
+    query = query.ilike("employee_name", employeeName);
+  }
+
+  if (date) {
+    const start = new Date(date);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(date);
+    end.setHours(23, 59, 59, 999);
+    query = query.gte("captured_at", start.toISOString()).lte("captured_at", end.toISOString());
+  }
+
+  query = query.order("captured_at", { ascending: false });
+
+  const { data, error } = await query;
+  if (error) {
+    console.error("Failed to fetch screenshots:", error);
+    return [];
+  }
+  return data as EmployeeScreenshot[];
 }
 
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri"] as const;
@@ -2744,6 +2935,36 @@ export async function fetchEmployeeHistoricalSessions(employeeId: string, startD
 
 export async function fetchTodayTeamClockSessions(): Promise<ClockSessionRecord[]> {
   const { start, end } = todayClockRange();
+  const { data, error } = await supabase
+    .from("clock_sessions")
+    .select("*")
+    .gte("clock_in", start)
+    .lte("clock_in", end)
+    .order("clock_in", { ascending: true });
+
+  if (error) {
+    if (isMissingClockSessionsTable(error)) return [];
+    throw error;
+  }
+
+  clockSessionsTableReady = true;
+  const sessions = (data || []).map(mapClockSession);
+  const segmentsBySession = await fetchSegmentsForSessions(sessions.map(s => s.id));
+  return sessions.map(s => ({
+    ...s,
+    segments: segmentsBySession.get(s.id) || [],
+  }));
+}
+
+export function clockRangeForDate(dateStr: string) {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+  const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+  return { start: start.toISOString(), end: end.toISOString() };
+}
+
+export async function fetchTeamClockSessionsByDate(dateStr: string): Promise<ClockSessionRecord[]> {
+  const { start, end } = clockRangeForDate(dateStr);
   const { data, error } = await supabase
     .from("clock_sessions")
     .select("*")
@@ -3034,11 +3255,15 @@ export async function addTimesheetEntry(input: {
   }
 }
 
-const PERSONAL_TASK_ROLES = new Set(["employee", "developer", "designer"]);
-
 /** Roles that only see their own assigned tasks / projects in Task Management. */
 export function isPersonalTaskRole(role: string) {
-  return PERSONAL_TASK_ROLES.has(role);
+  if (!role) return true;
+  const r = role.toLowerCase();
+  // If not explicitly an admin/hr/ceo/lead, treat as a personal task role.
+  if (r.includes("ceo") || r.includes("admin") || r.includes("hr ") || r === "hr" || r.includes("team lead") || r.includes("manager")) {
+    return false;
+  }
+  return true;
 }
 
 /** Resolve logged-in user row from profile list (name, then email). */
@@ -3123,6 +3348,39 @@ export function buildWeeklyHoursFromTimesheets(
     const iso = formatLocalDateIso(date);
     const h = scoped
       .filter(e => parseTimesheetEntryDateIso(e.date) === iso)
+      .reduce((sum, e) => sum + e.hours, 0);
+    return { day, h: Math.round(h * 10) / 10 };
+  });
+}
+
+/** Mon–Fri hours for the current week from attendance entries (clock sessions). */
+export function buildWeeklyHoursFromAttendance(
+  entries: AttendanceEntry[],
+  employeeId?: string,
+  employeeName?: string
+): { day: string; h: number }[] {
+  const days = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+  const scoped = entries.filter(e => {
+    if (employeeId && e.employeeId === employeeId) return true;
+    if (employeeName && namesMatch(e.employee, employeeName)) return true;
+    return false;
+  });
+
+  const now = new Date();
+  const monday = new Date(now);
+  const dow = monday.getDay();
+  monday.setDate(monday.getDate() - (dow === 0 ? 6 : dow - 1));
+  monday.setHours(0, 0, 0, 0);
+
+  return days.map((day, i) => {
+    const date = new Date(monday);
+    date.setDate(monday.getDate() + i);
+    const iso = formatLocalDateIso(date);
+    const h = scoped
+      .filter(e => {
+        // AttendanceEntry date is usually YYYY-MM-DD
+        return e.date === iso;
+      })
       .reduce((sum, e) => sum + e.hours, 0);
     return { day, h: Math.round(h * 10) / 10 };
   });

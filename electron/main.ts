@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, powerMonitor } from 'electron';
+import { app, BrowserWindow, ipcMain, powerMonitor, desktopCapturer } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -58,6 +58,21 @@ app.whenReady().then(() => {
   ipcMain.handle('get-system-idle-time', () => {
     // returns idle time in seconds
     return powerMonitor.getSystemIdleTime();
+  });
+
+  // Handle IPC request for screenshot
+  ipcMain.handle('take-screenshot', async () => {
+    try {
+      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1920, height: 1080 } });
+      if (sources.length > 0) {
+        // Return base64 encoded image
+        return sources[0].thumbnail.toDataURL();
+      }
+      return null;
+    } catch (err) {
+      console.error("Screenshot error:", err);
+      return null;
+    }
   });
 });
 

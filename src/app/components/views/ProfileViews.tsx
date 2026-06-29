@@ -5,11 +5,11 @@ import {
 } from "lucide-react";
 import { Avatar, Badge } from "../ui";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
-import { useEmployeeProfiles, useLeadsAsClients, useProjectTasks, useProjects, useTimesheets, useLeaveRequests } from "@/hooks/useSupabaseData";
+import { useEmployeeProfiles, useLeadsAsClients, useProjectTasks, useProjects, useAttendance, useLeaveRequests } from "@/hooks/useSupabaseData";
 import {
   createEmployee, createLead, createProject, assignProjectTeam,
   updateEmployeeProfile, getEmployeeProjects, getEmployeeRecentTasks,
-  buildWeeklyHoursFromTimesheets, initialsFromName,
+  buildWeeklyHoursFromAttendance, initialsFromName,
 } from "@/lib/database";
 import { SHIFT_START_OPTIONS, formatShiftStartLabel } from "@/lib/shiftTimeline";
 import { ProfilePhotoUpload } from "../ProfilePhotoUpload";
@@ -161,17 +161,19 @@ export function EmployeeProfilePage({
   onProfileUpdated,
   userName = "",
   userRole = "employee",
+  initialProfileId,
 }: {
   onBack: () => void;
   onNavigate?: (view: string, tab?: "employee" | "client" | "project" | "assign") => void;
   onProfileUpdated?: () => void;
   userName?: string;
   userRole?: string;
+  initialProfileId?: string;
 }) {
   const { data: employeeProfiles, loading, error, refresh } = useEmployeeProfiles();
   const { data: projects, refresh: refreshProjects } = useProjects();
   const { data: tasks } = useProjectTasks();
-  const { data: timesheets } = useTimesheets();
+  const { data: attendance } = useAttendance();
   const { data: dbLeaves } = useLeaveRequests();
   const canManageAll = isAdminRole(userRole);
   const visibleProfiles = useMemo(
@@ -181,7 +183,7 @@ export function EmployeeProfilePage({
         : employeeProfiles.filter(p => namesMatch(p.name, userName)),
     [employeeProfiles, canManageAll, userName]
   );
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(initialProfileId || null);
   const [editing, setEditing] = useState(false);
   const [openPhotoPicker, setOpenPhotoPicker] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -194,18 +196,23 @@ export function EmployeeProfilePage({
   });
 
   useEffect(() => {
+    if (initialProfileId) setSelectedId(initialProfileId);
+  }, [initialProfileId]);
+
+  useEffect(() => {
     if (visibleProfiles.length === 0) return;
+    if (initialProfileId) return;
     const mine = visibleProfiles.find(p => namesMatch(p.name, userName));
-    setSelectedId(mine?.id ?? visibleProfiles[0].id);
-  }, [visibleProfiles, userName]);
+    if (!selectedId) setSelectedId(mine?.id ?? visibleProfiles[0].id);
+  }, [visibleProfiles, userName, initialProfileId]);
 
   const activeId = selectedId ?? visibleProfiles[0]?.id ?? "";
   const profile = visibleProfiles.find(e => e.id === activeId) ?? visibleProfiles[0];
 
   const weeklyHours = useMemo(() => {
     if (!profile) return [];
-    return buildWeeklyHoursFromTimesheets(timesheets, profile.id, profile.name);
-  }, [timesheets, profile]);
+    return buildWeeklyHoursFromAttendance(attendance, profile.id, profile.name);
+  }, [attendance, profile]);
 
   const assignedProjects = useMemo(
     () => (profile ? getEmployeeProjects(projects, profile.name, profile.id) : []),
@@ -463,10 +470,10 @@ export function EmployeeProfilePage({
           </div>
 
           <div className={`grid gap-4 ${canManageAll ? "lg:grid-cols-2" : ""}`}>
-            {/* Weekly hours — from timesheet entries */}
+            {/* Weekly hours — from attendance entries */}
             <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-5">
               <h3 className="text-sm font-semibold text-white mb-1 font-['Plus_Jakarta_Sans']">Weekly Hours</h3>
-              <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono'] mb-4">This week · from time reports</p>
+              <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono'] mb-4">This week · from live clock-ins</p>
               <div className="flex items-end gap-2 h-32">
                 {weeklyHours.every(d => d.h === 0) ? (
                   <p className="text-xs text-[#6b7fa8]">No hours logged this week yet.</p>
@@ -504,70 +511,74 @@ export function EmployeeProfilePage({
           </div>
 
           {/* Assigned Projects */}
-          <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-white mb-4 font-['Plus_Jakarta_Sans']">Assigned Projects ({assignedProjects.length})</h3>
-            {assignedProjects.length === 0 ? (
-              <div className="space-y-3">
-                <p className="text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans']">No projects assigned to {emp.name} yet.</p>
-                <button
-                  onClick={() => onNavigate?.("register", "assign")}
-                  className="text-xs text-indigo-400 hover:text-indigo-300 font-['Plus_Jakarta_Sans']"
-                >
-                  Assign Project to {emp.name.split(" ")[0]} →
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {assignedProjects.map(p => {
-                  const projectTasks = tasks.filter(
-                    t =>
-                      t.projectId === p.id &&
-                      (t.assigneeId === emp.id || namesMatch(t.assignee, emp.name))
-                  );
-                  const doneCount = projectTasks.filter(t => t.status === "done").length;
-                  const progress = projectTasks.length > 0
-                    ? Math.round((doneCount / projectTasks.length) * 100)
-                    : p.progress;
-                  const statusLabel = p.status || "Active";
-                  return (
-                    <div key={p.id} className="flex items-center gap-4 px-3 py-3 bg-[#131a35] rounded-lg border border-[rgba(99,102,241,0.08)]">
-                      <Layers size={14} className="text-indigo-400 shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs font-semibold text-white font-['Plus_Jakarta_Sans']">{p.name}</p>
-                        <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono']">
-                          {p.client || "Internal"} · Lead: {p.lead}
-                          {projectTasks.length > 0 && ` · ${doneCount}/${projectTasks.length} tasks`}
-                        </p>
+          {userRole !== "hr" && (
+            <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-5">
+              <h3 className="text-sm font-semibold text-white mb-4 font-['Plus_Jakarta_Sans']">Assigned Projects ({assignedProjects.length})</h3>
+              {assignedProjects.length === 0 ? (
+                <div className="space-y-3">
+                  <p className="text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans']">No projects assigned to {emp.name} yet.</p>
+                  <button
+                    onClick={() => onNavigate?.("register", "assign")}
+                    className="text-xs text-indigo-400 hover:text-indigo-300 font-['Plus_Jakarta_Sans']"
+                  >
+                    Assign Project to {emp.name.split(" ")[0]} →
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {assignedProjects.map(p => {
+                    const projectTasks = tasks.filter(
+                      t =>
+                        t.projectId === p.id &&
+                        (t.assigneeId === emp.id || namesMatch(t.assignee, emp.name))
+                    );
+                    const doneCount = projectTasks.filter(t => t.status === "done").length;
+                    const progress = projectTasks.length > 0
+                      ? Math.round((doneCount / projectTasks.length) * 100)
+                      : p.progress;
+                    const statusLabel = p.status || "Active";
+                    return (
+                      <div key={p.id} className="flex items-center gap-4 px-3 py-3 bg-[#131a35] rounded-lg border border-[rgba(99,102,241,0.08)]">
+                        <Layers size={14} className="text-indigo-400 shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-semibold text-white font-['Plus_Jakarta_Sans']">{p.name}</p>
+                          <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono']">
+                            {p.client || "Internal"} · Lead: {p.lead}
+                            {projectTasks.length > 0 && ` · ${doneCount}/${projectTasks.length} tasks`}
+                          </p>
+                        </div>
+                        <Badge variant={statusLabel.toLowerCase().includes("progress") ? "blue" : statusLabel.toLowerCase().includes("complete") ? "green" : "blue"}>
+                          {statusLabel}
+                        </Badge>
+                        <span className="text-xs font-['Geist_Mono'] text-indigo-400 w-10 text-right">{progress}%</span>
                       </div>
-                      <Badge variant={statusLabel.toLowerCase().includes("progress") ? "blue" : statusLabel.toLowerCase().includes("complete") ? "green" : "blue"}>
-                        {statusLabel}
-                      </Badge>
-                      <span className="text-xs font-['Geist_Mono'] text-indigo-400 w-10 text-right">{progress}%</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Recent tasks */}
-          <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-white mb-4 font-['Plus_Jakarta_Sans']">Recent Tasks</h3>
-            <div className="space-y-2">
-              {recentTasks.length === 0 ? (
-                <p className="text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans']">No tasks assigned yet.</p>
-              ) : recentTasks.map(t => (
-                <div key={t.id} className="flex items-center gap-4 px-3 py-3 bg-[#131a35] rounded-lg border border-[rgba(99,102,241,0.08)]">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs text-[#e2e8f7] font-['Plus_Jakarta_Sans'] truncate">{t.title}</p>
-                    <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono'] truncate">{t.project}</p>
+          {userRole !== "hr" && (
+            <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-5">
+              <h3 className="text-sm font-semibold text-white mb-4 font-['Plus_Jakarta_Sans']">Recent Tasks</h3>
+              <div className="space-y-2">
+                {recentTasks.length === 0 ? (
+                  <p className="text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans']">No tasks assigned yet.</p>
+                ) : recentTasks.map(t => (
+                  <div key={t.id} className="flex items-center gap-4 px-3 py-3 bg-[#131a35] rounded-lg border border-[rgba(99,102,241,0.08)]">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-[#e2e8f7] font-['Plus_Jakarta_Sans'] truncate">{t.title}</p>
+                      <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono'] truncate">{t.project}</p>
+                    </div>
+                    <span className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8] shrink-0">Due {t.due}</span>
+                    <Badge variant={t.status === "Done" ? "green" : t.status === "In Progress" ? "blue" : t.status === "In Review" ? "yellow" : "blue"}>{t.status}</Badge>
                   </div>
-                  <span className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8] shrink-0">Due {t.due}</span>
-                  <Badge variant={t.status === "Done" ? "green" : t.status === "In Progress" ? "blue" : t.status === "In Review" ? "yellow" : "blue"}>{t.status}</Badge>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </div>

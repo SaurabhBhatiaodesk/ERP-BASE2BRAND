@@ -9,20 +9,22 @@ import {
   AlertTriangle, ArrowUpRight, Clock, Star, GitBranch,
   DollarSign, UserCheck, Plus, X, Send, Activity,
   Globe, Hash, ChevronRight, Building2, Award, Layers,
-  Timer, Monitor, ChevronLeft, Settings, TrendingUp, LogOut, User,
+  Timer, Monitor, ChevronLeft, Settings, TrendingUp, LogOut, User, Calendar
 } from "lucide-react";
 
 // Imported views
 import { CEODashboard } from "./components/views/DashboardView";
 import { CRMView, TasksView } from "./components/views/CRMTasksViews";
-import { HRView, AnalyticsView, ChatView } from "./components/views/HRAnalyticsChatViews";
+import { HRView, AnalyticsView, ChatView, TimesheetViewRoot, EmployeeMonthlyTimesheetView } from "./components/views/HRAnalyticsChatViews";
 import { ShiftView } from "./components/views/ShiftView";
 import { TeamLeaderDashboard, EmployeeDashboard, DevDashboard, DesignDashboard, MarketingDashboard, RevenueKPIView, HRMSView, LeavesView } from "./components/views/RoleDashboards";
 import { AuthScreen, roleColorMap, roleLabelMap } from "./components/AuthScreen";
 import { EmployeeProfilePage, ClientDetailPage, ProductivityTimelineView, RegistrationFormsView } from "./components/views/ProfileViews";
+import { RecruitmentView } from "./components/views/RecruitmentView";
 import { TimesheetView } from "./components/views/TimesheetView";
 import { ProjectsView } from "./components/views/ProjectsView";
 import { ProjectWorkspaceView } from "./components/views/ProjectWorkspaceView";
+import { ThemeSwitcher } from "./components/ThemeSwitcher";
 import { Toaster } from "./components/ui/sonner";
 import { findProfileForUser, isPersonalTaskRole } from "@/lib/database";
 import { useEmployeeProfiles } from "@/hooks/useSupabaseData";
@@ -107,9 +109,11 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
   hr: [
+    { id: "employee", label: "My Dashboard", icon: LayoutDashboard },
     { id: "hr", label: "HR Overview", icon: Users },
+    { id: "recruitment", label: "Recruitment", icon: Briefcase },
+    { id: "timesheet", label: "Time Reports", icon: Calendar },
     { id: "hrms", label: "HRMS", icon: Award },
-    { id: "analytics", label: "People Analytics", icon: BarChart3 },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
 };
@@ -359,7 +363,7 @@ export default function App() {
     let cancelled = false;
 
     async function checkAndBeep() {
-      if (idleSeconds > 180 && userRole !== "ceo" && currentProfile) {
+      if (idleSeconds > 180 && userRole !== "ceo" && userRole !== "hr" && currentProfile) {
         const { fetchActiveClockSession } = await import("@/lib/database");
         const session = await fetchActiveClockSession(currentProfile.name, currentProfile.id);
         if (cancelled) return;
@@ -550,6 +554,10 @@ export default function App() {
                 setTaskNav(null);
                 setActiveView("projectworkspace");
               }}
+              onNavigate={(view, tab) => {
+                if (tab) setRegisterTab(tab as any);
+                setActiveView(view);
+              }}
             />
           );
         }
@@ -565,10 +573,34 @@ export default function App() {
         );
       case "hr": return (
         <HRView
-          onNavigate={(view, tab) => {
-            if (tab) setRegisterTab(tab);
+          onNavigate={(view, tabOrOptions) => {
+            if (typeof tabOrOptions === "string") setRegisterTab(tabOrOptions as any);
+            else if (typeof tabOrOptions === "object") setTaskNav(tabOrOptions);
             setActiveView(view);
           }}
+        />
+      );
+      case "timesheet": 
+        if (isPersonalTaskRole(userRole)) {
+          return (
+            <TimesheetView 
+              userRole={userRole}
+              userName={userName}
+            />
+          );
+        }
+        return (
+          <TimesheetViewRoot
+            onNavigate={(view, options) => {
+              if (options) setTaskNav(options);
+              setActiveView(view);
+            }}
+          />
+        );
+      case "employee-timesheet": return (
+        <EmployeeMonthlyTimesheetView 
+          employeeName={taskNav?.employeeName}
+          onBack={() => setActiveView("timesheet")}
         />
       );
       case "analytics": return <AnalyticsView />;
@@ -618,12 +650,14 @@ export default function App() {
       );
       case "designer": return <DesignDashboard />;
       case "marketing": return <MarketingDashboard />;
+      case "recruitment": return <RecruitmentView />;
       case "revenue": return <RevenueKPIView />;
       case "hrms": return <HRMSView />;
       case "profiles": return (
         <EmployeeProfilePage
           userName={userName}
           userRole={userRole}
+          initialProfileId={taskNav?.profileId}
           onProfileUpdated={refreshProfiles}
           onBack={() => setActiveView(isAdminRole(userRole) ? "hr" : "employee")}
           onNavigate={(view, tab) => {
@@ -641,15 +675,7 @@ export default function App() {
           }}
         />
       );
-      case "timesheet": return (
-        <TimesheetView
-          userRole={userRole}
-          userName={userName}
-          initialProjectId={timesheetNav?.projectId}
-          initialTab={timesheetNav?.tab}
-          onNavConsumed={() => setTimesheetNav(null)}
-        />
-      );
+
       case "productivity": return <ProductivityTimelineView />;
       case "register": return <RegistrationFormsView initialTab={registerTab} />;
       case "settings": return <SettingsPage />;
@@ -672,6 +698,10 @@ export default function App() {
           onOpenProject={projectId => {
             setSelectedProjectId(projectId);
             setActiveView("projectworkspace");
+          }}
+          onNavigate={(view, tab) => {
+            if (tab) setRegisterTab(tab as any);
+            setActiveView(view);
           }}
         />
       );
@@ -726,7 +756,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-[#06091a] overflow-hidden" style={{ fontFamily: "Inter, sans-serif" }}>
-      {idleSeconds > 180 && userRole !== "ceo" && (
+      {idleSeconds > 180 && userRole !== "ceo" && userRole !== "hr" && (
         <div className="fixed top-6 right-6 z-50 flex items-center gap-4 bg-[#1e0f15] border border-red-500/40 text-red-200 px-5 py-4 rounded-2xl shadow-[0_10px_40px_-10px_rgba(239,68,68,0.4)] backdrop-blur-xl animate-in fade-in slide-in-from-top-4">
           <div className="bg-red-500/20 p-2 rounded-full">
             <AlertTriangle className="w-5 h-5 text-red-400 animate-pulse" />
@@ -810,7 +840,7 @@ export default function App() {
       {/* Main area */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Topbar */}
-        <header className="h-14 bg-[#080c1f]/80 backdrop-blur-sm border-b border-[rgba(99,102,241,0.1)] flex items-center justify-between px-4 lg:px-6 shrink-0">
+        <header className="relative z-50 h-14 bg-[#080c1f]/80 backdrop-blur-sm border-b border-[rgba(99,102,241,0.1)] flex items-center justify-between px-4 lg:px-6 shrink-0">
           <div className="flex items-center gap-3">
             <button onClick={() => setSidebarOpen(v => !v)} className="lg:hidden p-2 hover:bg-white/[0.04] rounded-lg text-[#6b7fa8] hover:text-white transition-colors">
               {sidebarOpen ? <X size={18} /> : <Hash size={18} />}
@@ -827,10 +857,8 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-2 lg:gap-3">
-            <div className="hidden md:flex items-center gap-2 bg-[#131a35] border border-[rgba(99,102,241,0.12)] rounded-lg px-3 py-2 w-48 lg:w-56 focus-within:border-indigo-500/30 transition-colors">
-              <Search size={13} className="text-[#6b7fa8]" />
-              <input placeholder="Search anything..." className="bg-transparent text-xs text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none flex-1 font-['Plus_Jakarta_Sans']" />
-            </div>
+
+            <ThemeSwitcher />
 
             <div className="relative">
               <button onClick={() => { if (activeView === "notifications") setShowNotifications(!showNotifications); else { setActiveView("notifications"); setShowNotifications(false); } }}

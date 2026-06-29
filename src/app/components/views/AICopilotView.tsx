@@ -78,9 +78,11 @@ export function AICopilotView() {
               <p className="text-sm font-bold text-white font-['Plus_Jakarta_Sans']">B2B AI Copilot</p>
               <span className="text-[9px] font-['Geist_Mono'] text-indigo-300 bg-indigo-500/20 px-2 py-0.5 rounded-full">ENTERPRISE</span>
             </div>
-            <p className="text-[10px] font-['Geist_Mono'] text-emerald-400 flex items-center gap-1 mt-0.5">
-              <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse inline-block" />
-              Live · Analysing 38 employees · ₹52L pipeline · 24 leads
+            <p className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8] flex items-center gap-1 mt-0.5">
+              <span className="text-red-500 font-bold flex items-center gap-1">
+                <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse inline-block" />
+                Live
+              </span> · Analysing 38 employees · ₹52L pipeline · 24 leads
             </p>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
@@ -178,7 +180,7 @@ export function AICopilotView() {
             <p className="text-xs font-semibold text-white font-['Plus_Jakarta_Sans']">Copilot Status</p>
           </div>
           {[
-            { label: "Data freshness", value: "Live", color: "text-emerald-400" },
+            { label: "Data freshness", value: "Live", color: "text-red-500 animate-pulse" },
             { label: "Employees tracked", value: "38", color: "text-indigo-400" },
             { label: "Pipeline monitored", value: "₹52L", color: "text-violet-400" },
             { label: "Active alerts", value: "4", color: "text-amber-400" },

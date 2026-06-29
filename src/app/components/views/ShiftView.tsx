@@ -10,6 +10,7 @@ import { useEmployeeProfiles, useProjectTasks } from "@/hooks/useSupabaseData";
 import {
   CLOCK_SESSIONS_SETUP_MSG,
   fetchTodayTeamClockSessions,
+  fetchTeamClockSessionsByDate,
   initialsFromName,
   isClockSessionsTableReady,
   type ClockSessionRecord,
@@ -40,6 +41,7 @@ import {
 } from "@/lib/taskStageTime";
 import { playBeep } from "@/lib/audio";
 import { useEmployeeVisualHistory } from "./useEmployeeVisualHistory";
+import { ScreenshotsView } from "./ScreenshotsView";
 
 export type ActivityKind = "working" | "break" | "idle" | "meeting" | "login" | "offline";
 
@@ -155,7 +157,7 @@ export function TaskStageGrid({
   large?: boolean;
   targetDate?: string;
 }) {
-  const totals = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, targetDate);
+  const totals = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, undefined);
   const rows = getAllStageEntries(task.status, totals);
 
   function stageUi(status: string) {
@@ -271,8 +273,23 @@ function TaskStageList({ tasks, max = 4, large = false, targetDate }: { tasks: S
   );
 }
 
-function TaskStageDetail({ task, compact = false, large = false }: { task: ShiftActiveTask; compact?: boolean; large?: boolean }) {
-  const totals = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt);
+function TaskStageDetail({ task, compact = false, large = false, targetDate, maxActiveSeconds }: { task: ShiftActiveTask; compact?: boolean; large?: boolean; targetDate?: string, maxActiveSeconds?: number }) {
+  // Use undefined for targetDate to calculate all-time cumulative Kanban stage times.
+  const totals = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, undefined);
+  
+  if (maxActiveSeconds !== undefined && (task.status === "in-progress" || task.status === "progress")) {
+    const todayStr = new Date().toLocaleDateString("en-CA");
+    const firstHistory = task.stageHistory.find(r => r.to_status === task.status);
+    const firstEntered = firstHistory ? firstHistory.entered_at : task.statusEnteredAt;
+    
+    // Only cap if the task first entered "in-progress" today. If it was in-progress before today, 
+    // the cumulative time naturally exceeds today's work time, so we shouldn't cap it.
+    if (firstEntered && firstEntered.startsWith(todayStr)) {
+      if ((totals[task.status] || 0) > maxActiveSeconds) {
+        totals[task.status] = maxActiveSeconds;
+      }
+    }
+  }
   const rows = getAllStageEntries(task.status, totals);
 
   function stageUi(status: string) {
@@ -341,6 +358,26 @@ function TaskStageDetail({ task, compact = false, large = false }: { task: Shift
         {rows.map(entry => {
           const ui = stageUi(entry.status);
           const showAccent = entry.isCurrent || entry.seconds > 0;
+          
+          let enteredDateStr: string | null = null;
+          const historyRow = task.stageHistory.find(r => r.to_status === entry.status);
+          
+          if (historyRow) {
+             enteredDateStr = historyRow.entered_at;
+          } else if (entry.isCurrent && task.statusEnteredAt && task.statusEnteredAt !== "paused") {
+             enteredDateStr = task.statusEnteredAt;
+          } else if (entry.status === "todo" && task.stageHistory.length === 0) {
+             enteredDateStr = task.statusEnteredAt !== "paused" ? task.statusEnteredAt : null;
+          }
+
+          let formattedDate = "";
+          if (enteredDateStr) {
+            const d = new Date(enteredDateStr);
+            if (!Number.isNaN(d.getTime())) {
+               formattedDate = d.toLocaleString("en-IN", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+            }
+          }
+
           return (
             <div
               key={entry.status}
@@ -361,26 +398,17 @@ function TaskStageDetail({ task, compact = false, large = false }: { task: Shift
                 } ${showAccent ? ui.text : "text-white"}`}
               >
                 {formatStageDuration(entry.seconds)}
-                {entry.isCurrent ? (task.statusEnteredAt === "paused" ? " · paused" : " · live") : ""}
+                {entry.isCurrent ? (task.statusEnteredAt === "paused" ? " · paused" : <><span className="mx-1">·</span><span className="text-red-500 font-bold animate-pulse">live</span></>) : ""}
               </p>
+              {formattedDate && (
+                <p className={`font-['Geist_Mono'] mt-1.5 ${large ? "text-[10px]" : "text-[9px]"} ${showAccent ? ui.text : "text-[#6b7fa8]"} opacity-75 truncate`} title={formattedDate}>
+                  {formattedDate}
+                </p>
+              )}
             </div>
           );
         })}
       </div>
-      {task.stageHistory.length > 0 && (
-        <div className={`pt-3 border-t border-amber-500/15 space-y-1.5 overflow-y-auto ${large ? "max-h-36" : "max-h-28"}`}>
-          {[...task.stageHistory].reverse().slice(0, 8).map(row => (
-            <p key={row.id} className={`font-['Geist_Mono'] text-[#8fa0c4] ${large ? "text-xs" : "text-[10px]"}`}>
-              {shortStageLabel(row.to_status)}
-              {row.exited_at
-                ? ` · ${formatStageDuration(row.duration_seconds || 0)}`
-                : " · current"}
-              {" · "}
-              {formatStageEnteredAt(row.entered_at)}
-            </p>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -399,14 +427,33 @@ function TaskStageBar({
   shiftWindow,
   targetDate,
   nowMin,
+  maxActiveSeconds,
 }: {
   task: ShiftActiveTask;
   shiftWindow: { left: number; width: number };
   targetDate?: string;
   nowMin: number;
+  maxActiveSeconds?: number;
 }) {
-  const totals = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, targetDate);
-  const segments = buildProportionalStageSegments(totals);
+  const totalsForToday = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, targetDate);
+  const totalsAllTime = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, undefined);
+
+  if (maxActiveSeconds !== undefined && (task.status === "in-progress" || task.status === "progress")) {
+    const todayStr = new Date().toLocaleDateString("en-CA");
+    const firstHistory = task.stageHistory.find(r => r.to_status === task.status);
+    const firstEntered = firstHistory ? firstHistory.entered_at : task.statusEnteredAt;
+    
+    if (firstEntered && firstEntered.startsWith(todayStr)) {
+      if ((totalsForToday[task.status] || 0) > maxActiveSeconds) {
+        totalsForToday[task.status] = maxActiveSeconds;
+      }
+      if ((totalsAllTime[task.status] || 0) > maxActiveSeconds) {
+        totalsAllTime[task.status] = maxActiveSeconds;
+      }
+    }
+  }
+
+  const segments = buildProportionalStageSegments(totalsAllTime);
   const currentStageMeta = stageMeta[task.status as (typeof STAGE_ORDER)[number]];
 
   return (
@@ -471,7 +518,7 @@ function TaskStageBar({
         )}
       </div>
       <div className="flex flex-wrap gap-x-2 gap-y-0.5">
-        {getAllStageEntries(task.status, totals).map(entry => {
+        {getAllStageEntries(task.status, totalsAllTime).map(entry => {
           const meta = stageMeta[entry.status as (typeof STAGE_ORDER)[number]];
           if (entry.seconds <= 0 && !entry.isCurrent) return null;
           return (
@@ -483,7 +530,7 @@ function TaskStageBar({
             >
               <span className={`w-2 h-2 rounded-[3px] shrink-0 ${meta?.bg ?? "bg-slate-500"}`} />
               {entry.label} {formatStageDuration(entry.seconds)}
-              {entry.isCurrent ? (task.statusEnteredAt === "paused" ? " · paused" : " · live") : ""}
+              {entry.isCurrent ? (task.statusEnteredAt === "paused" ? " · paused" : <><span className="mx-1">·</span><span className="text-red-500 font-bold animate-pulse">live</span></>) : ""}
             </span>
           );
         })}
@@ -499,16 +546,30 @@ export function StageTimelineBar({ emp, nowMin, targetDate }: { emp: ShiftEmploy
   const shiftWindow = shiftWindowOnAxis(emp);
   const hourMarks = Array.from({ length: TIMELINE_AXIS_DURATION / 60 + 1 }, (_, i) => i * 60).slice(1, -1);
   
+  const workingMins = emp.timeline
+    .filter(b => b.kind === "working" || b.kind === "meeting")
+    .reduce((sum, b) => sum + Math.max(0, (b.end !== null ? b.end : nowMin) - b.start), 0);
+  const maxActiveSeconds = workingMins * 60;
+  
   const sortedTasks = useMemo(() => {
-    const list = [...(emp.trackedTasks || [])];
-    return list.sort((a, b) => {
-      const aProg = a.status === "in_progress" || a.status === "progress";
-      const bProg = b.status === "in_progress" || b.status === "progress";
-      if (aProg && !bProg) return -1;
-      if (!aProg && bProg) return 1;
-      return 0;
+    const list = (emp.trackedTasks || []).filter(task => {
+      const totals = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, targetDate);
+      return Object.values(totals).reduce((a, b) => a + b, 0) > 0;
     });
-  }, [emp.trackedTasks]);
+    return list.sort((a, b) => {
+      const aProg = a.status === "in-progress" ? 1 : 0;
+      const bProg = b.status === "in-progress" ? 1 : 0;
+      if (aProg !== bProg) return bProg - aProg;
+
+      const aTotals = aggregateStageSeconds(a.stageHistory, a.status, a.statusEnteredAt, targetDate);
+      const bTotals = aggregateStageSeconds(b.stageHistory, b.status, b.statusEnteredAt, targetDate);
+      
+      const aHasInProgress = (aTotals["in-progress"] || 0) > 0 ? 1 : 0;
+      const bHasInProgress = (bTotals["in-progress"] || 0) > 0 ? 1 : 0;
+      
+      return bHasInProgress - aHasInProgress;
+    });
+  }, [emp.trackedTasks, targetDate]);
 
   const totalPages = Math.ceil(sortedTasks.length / PAGE_SIZE);
   const visibleTasks = sortedTasks.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -535,7 +596,7 @@ export function StageTimelineBar({ emp, nowMin, targetDate }: { emp: ShiftEmploy
         </div>
         {visibleTasks.length > 0 ? (
           visibleTasks.map(task => (
-          <TaskStageBar key={task.taskId} task={task} shiftWindow={shiftWindow} targetDate={targetDate} nowMin={nowMin} />
+          <TaskStageBar key={task.taskId} task={task} shiftWindow={shiftWindow} targetDate={targetDate} nowMin={nowMin} maxActiveSeconds={maxActiveSeconds} />
         ))
       ) : (
         <div className="relative h-8 bg-[#111828] rounded-lg overflow-hidden">
@@ -594,7 +655,7 @@ export function TimelineBar({ emp, nowMin }: { emp: ShiftEmployee; nowMin: numbe
       ))}
       {emp.timeline.filter(b => b.kind !== "login").map((block, i) => {
         const s = (block.start / TIMELINE_AXIS_DURATION) * 100;
-        const endMin = block.end ?? Math.min(effectiveNow, shiftEndAxis);
+        const endMin = block.end ?? effectiveNow;
         const w = ((endMin - block.start) / TIMELINE_AXIS_DURATION) * 100;
         const meta = kindMeta[block.kind];
         const isOngoing = block.end === null;
@@ -616,8 +677,8 @@ export function TimelineBar({ emp, nowMin }: { emp: ShiftEmployee; nowMin: numbe
   );
 }
 
-export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks }: { emp: ShiftEmployee; onClose: () => void; nowMin: number; allTasks: AppTask[] }) {
-  const [tab, setTab] = useState<"live" | "history">("live");
+export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks, targetDate }: { emp: ShiftEmployee; onClose: () => void; nowMin: number; allTasks: AppTask[]; targetDate: string }) {
+  const [tab, setTab] = useState<"live" | "history" | "screenshots">("live");
   const [historyRange, setHistoryRange] = useState<number>(7);
   const [page, setPage] = useState(1);
   const { historyDays, loading: historyLoading } = useEmployeeVisualHistory(emp, historyRange, allTasks);
@@ -625,6 +686,27 @@ export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks }: { emp: S
   const PAGE_SIZE = 7;
   const totalPages = Math.ceil(historyDays.length / PAGE_SIZE);
   const visibleDays = historyDays.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  const tasksForToday = useMemo(() => {
+    const activeTasks = emp.trackedTasks.filter(task => {
+      const totals = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, targetDate);
+      return Object.values(totals).reduce((a, b) => a + b, 0) > 0;
+    });
+
+    return activeTasks.sort((a, b) => {
+      const aIsInProgress = a.status === "in-progress" ? 1 : 0;
+      const bIsInProgress = b.status === "in-progress" ? 1 : 0;
+      if (aIsInProgress !== bIsInProgress) return bIsInProgress - aIsInProgress;
+
+      const aTotals = aggregateStageSeconds(a.stageHistory, a.status, a.statusEnteredAt, targetDate);
+      const bTotals = aggregateStageSeconds(b.stageHistory, b.status, b.statusEnteredAt, targetDate);
+      
+      const aHasInProgress = (aTotals["in-progress"] || 0) > 0 ? 1 : 0;
+      const bHasInProgress = (bTotals["in-progress"] || 0) > 0 ? 1 : 0;
+      
+      return bHasInProgress - aHasInProgress;
+    });
+  }, [emp.trackedTasks, targetDate]);
 
   const shiftStartAxis = Math.max(0, emp.shiftStartMin - TIMELINE_AXIS_START);
   const shiftEndAxis = emp.shiftEndMin - TIMELINE_AXIS_START;
@@ -689,6 +771,15 @@ export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks }: { emp: S
               style={{ marginBottom: "-13px" }}
             >
               Visual History
+            </button>
+            <button
+              onClick={() => setTab("screenshots")}
+              className={`pb-3 text-sm font-['Geist_Mono'] font-medium uppercase tracking-wider transition-colors relative border-b-2 ${
+                tab === "screenshots" ? "border-indigo-500 text-indigo-400" : "border-transparent text-[#6b7fa8] hover:text-white"
+              }`}
+              style={{ marginBottom: "-13px" }}
+            >
+              Screenshots
             </button>
           </div>
           
@@ -779,7 +870,7 @@ export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks }: { emp: S
         </div>
              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 m-6 sm:m-8 mb-0">
           {[
-            { label: "Work Time", value: fmtMin(worked), color: "text-indigo-400", icon: Activity },
+            { label: "Work Time", value: fmtMin(worked + meetings), color: "text-indigo-400", icon: Activity },
             { label: "Meetings", value: fmtMin(meetings), color: "text-violet-400", icon: Users },
             { label: "Breaks", value: fmtMin(breaks), color: "text-amber-400", icon: Coffee },
             { label: "Idle Time", value: fmtMin(idle), color: idle > 30 ? "text-red-400" : "text-slate-400", icon: WifiOff },
@@ -826,7 +917,7 @@ export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks }: { emp: S
             ))}
             {emp.timeline.filter(b => b.kind !== "login").map((block, i) => {
               const s = (block.start / TIMELINE_AXIS_DURATION) * 100;
-              const endMin = block.end ?? Math.min(effectiveNow, shiftEndAxis);
+              const endMin = block.end ?? effectiveNow;
               const w = ((endMin - block.start) / TIMELINE_AXIS_DURATION) * 100;
               const meta = kindMeta[block.kind];
               return (
@@ -843,13 +934,13 @@ export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks }: { emp: S
 
         </div>
 
-        {emp.trackedTasks.length > 0 && (
+        {tasksForToday.length > 0 && (
           <div className="m-6 sm:m-8 mb-0 space-y-4">
             <p className="text-xs font-['Geist_Mono'] text-amber-400 uppercase tracking-widest font-medium">
-              Task Stage Time ({emp.trackedTasks.length})
+              Task Stage Time ({tasksForToday.length})
             </p>
-            {emp.trackedTasks.map(task => (
-              <TaskStageDetail key={task.taskId} task={task} compact large />
+            {tasksForToday.map(task => (
+              <TaskStageDetail key={task.taskId} task={task} compact large targetDate={targetDate} maxActiveSeconds={worked * 60} />
             ))}
           </div>
         )}
@@ -940,6 +1031,12 @@ export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks }: { emp: S
             )}
           </div>
         )}
+        
+        {tab === "screenshots" && (
+          <div className="mt-6 h-full">
+            <ScreenshotsView employeeId={emp.id} />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -962,6 +1059,11 @@ export function ShiftView({
   const [nowMin, setNowMin] = useState(currentShiftNowMin());
   const [viewMode, setViewMode] = useState<"timeline" | "grid">("timeline");
   const [searchQuery, setSearchQuery] = useState("");
+  const dateInputRef = useRef<HTMLInputElement>(null);
+
+  const [targetDate, setTargetDate] = useState<string>(
+    () => new Date().toLocaleDateString("en-CA") // "YYYY-MM-DD" local time
+  );
 
   const viewerProfile = useMemo(
     () => profiles.find(p => p.name.trim().toLowerCase() === userName.trim().toLowerCase()),
@@ -973,7 +1075,7 @@ export function ShiftView({
     setFetchError("");
     try {
       refreshProfiles();
-      const rows = await fetchTodayTeamClockSessions();
+      const rows = await fetchTeamClockSessionsByDate(targetDate);
       setSessions(rows);
       setSetupNeeded(!isClockSessionsTableReady());
     } catch (err) {
@@ -981,17 +1083,25 @@ export function ShiftView({
     } finally {
       if (!isBackground) setLoading(false);
     }
-  }, []);
+  }, [targetDate, refreshProfiles]);
 
   useEffect(() => {
     void refresh(false);
+    
+    const isToday = targetDate === new Date().toLocaleDateString("en-CA");
+    if (!isToday) {
+      setNowMin(TIMELINE_AXIS_DURATION); // lock timeline to end of day for past dates
+      return;
+    }
+    
+    setNowMin(currentShiftNowMin());
     const refreshId = setInterval(() => void refresh(true), 30_000);
     const clockId = setInterval(() => setNowMin(currentShiftNowMin()), 15_000);
     return () => {
       clearInterval(refreshId);
       clearInterval(clockId);
     };
-  }, [refresh]);
+  }, [refresh, targetDate]);
 
   const sessionByEmployee = useMemo(() => {
     const map = new Map<string, ClockSessionRecord>();
@@ -1035,7 +1145,8 @@ export function ShiftView({
         trackedTasksInput: trackedTasks,
       });
     });
-    
+    list.sort((a, b) => a.name.localeCompare(b.name));
+
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       return list.filter(emp => emp.name.toLowerCase().includes(q) || emp.dept.toLowerCase().includes(q));
@@ -1084,11 +1195,27 @@ export function ShiftView({
     hour: "numeric",
     minute: "2-digit",
   });
-  const todayLabel = new Date().toLocaleDateString("en-US", {
+  const isToday = targetDate === new Date().toLocaleDateString("en-CA");
+  
+  // Parse targetDate in local time to avoid timezone offset issues
+  const [ty, tm, td] = targetDate.split("-").map(Number);
+  const displayDateLabel = new Date(ty, tm - 1, td).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
   });
+
+  const handlePrevDay = () => {
+    const d = new Date(ty, tm - 1, td);
+    d.setDate(d.getDate() - 1);
+    setTargetDate(d.toLocaleDateString("en-CA"));
+  };
+
+  const handleNextDay = () => {
+    const d = new Date(ty, tm - 1, td);
+    d.setDate(d.getDate() + 1);
+    setTargetDate(d.toLocaleDateString("en-CA"));
+  };
 
   // Only show full loading screen if we have no initial data
   const isInitialLoad = loading || (pLoading && profiles.length === 0) || (tLoading && tasks.length === 0);
@@ -1106,9 +1233,9 @@ export function ShiftView({
         <div>
           <h1 className="text-2xl font-bold text-white font-['Plus_Jakarta_Sans']">Shift Tracker</h1>
           <p className="text-[#6b7fa8] text-sm font-['Geist_Mono'] mt-0.5">
-            Today · {clockMinutesToLabel(TIMELINE_AXIS_START)} → {clockMinutesToLabel(TIMELINE_AXIS_END)} ·{" "}
+            {isToday ? "Today" : displayDateLabel} · {clockMinutesToLabel(TIMELINE_AXIS_START)} → {clockMinutesToLabel(TIMELINE_AXIS_END)} ·{" "}
             <span className="text-[#6b7fa8]">{SHIFT_HOURS}h shift per employee ·</span>{" "}
-            <span className="text-emerald-400">Current: {currentTimeLabel}</span>
+            {isToday ? <span className="text-emerald-400">Current: {currentTimeLabel}</span> : <span className="text-indigo-400">Historical View</span>}
             {userRole === "teamlead" && viewerProfile?.dept ? (
               <span className="text-indigo-400"> · {viewerProfile.dept} team</span>
             ) : null}
@@ -1125,16 +1252,42 @@ export function ShiftView({
               className="bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-lg pl-9 pr-3 py-1.5 text-xs text-white placeholder-[#6b7fa8] focus:outline-none focus:border-indigo-500/50 w-48 transition-colors"
             />
           </div>
-          <div className="flex items-center gap-1.5 text-[10px] font-['Geist_Mono'] px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
-            <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
-            <span className="text-emerald-400">Live Tracking Active</span>
+          <div className={`flex items-center gap-1.5 text-[10px] font-['Geist_Mono'] px-3 py-2 rounded-lg ${isToday ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-400" : "bg-amber-500/10 border border-amber-500/20 text-amber-400"}`}>
+            {isToday && <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />}
+            <span>{isToday ? "Live Tracking Active" : "Historical Data"}</span>
           </div>
-          <button
-            type="button"
-            className="flex items-center gap-1.5 px-3 py-2 bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-lg text-[#a8b5d1] text-xs hover:border-indigo-500/30 transition-colors"
-          >
-            <Calendar size={12} /> {todayLabel}
-          </button>
+          <div className="flex items-center bg-[#131a35] border border-indigo-500/30 rounded-lg overflow-hidden transition-colors shadow-sm shadow-indigo-500/10">
+            <button onClick={handlePrevDay} className="px-3 py-2 text-[#8fa0c4] hover:text-white hover:bg-indigo-500/10 transition-colors border-r border-[rgba(99,102,241,0.15)]">
+              <ChevronLeft size={16} />
+            </button>
+            <div 
+              className="relative px-4 py-2 flex items-center justify-center gap-2 min-w-[150px] hover:bg-white/5 transition-colors cursor-pointer group"
+              onClick={() => {
+                try {
+                  dateInputRef.current?.showPicker?.();
+                } catch (e) {
+                  // Fallback for browsers that don't support showPicker on dates yet
+                  dateInputRef.current?.focus();
+                }
+              }}
+            >
+              <Calendar size={14} className="text-indigo-400 group-hover:text-indigo-300 transition-colors" />
+              <span className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">
+                {isToday ? "Today" : targetDate === new Date(Date.now() - 86400000).toLocaleDateString("en-CA") ? "Yesterday" : displayDateLabel}
+              </span>
+              <input 
+                ref={dateInputRef}
+                type="date" 
+                value={targetDate}
+                onChange={(e) => { if (e.target.value) setTargetDate(e.target.value); }}
+                className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                title="Select Date"
+              />
+            </div>
+            <button onClick={handleNextDay} disabled={isToday} className="px-3 py-2 text-[#8fa0c4] hover:text-white hover:bg-indigo-500/10 disabled:opacity-30 disabled:hover:bg-transparent transition-colors border-l border-[rgba(99,102,241,0.15)]">
+              <ChevronRight size={16} />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1163,16 +1316,16 @@ export function ShiftView({
           </div>
         ))}
       </div>
-      <div className="flex bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-lg p-1 w-fit mb-4 mt-2">
+      <div className="flex bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-lg p-1 w-full mb-4 mt-2">
         <button
           onClick={() => setViewMode("timeline")}
-          className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-colors ${viewMode === "timeline" ? "bg-[rgba(99,102,241,0.15)] text-indigo-400" : "text-[#6b7fa8] hover:text-white"}`}
+          className={`flex-1 px-4 py-2 rounded-md text-sm font-semibold transition-colors ${viewMode === "timeline" ? "bg-[rgba(99,102,241,0.15)] text-indigo-400" : "text-[#6b7fa8] hover:text-white"}`}
         >
           Team Shift Timeline
         </button>
         <button
           onClick={() => setViewMode("grid")}
-          className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-colors ${viewMode === "grid" ? "bg-[rgba(99,102,241,0.15)] text-indigo-400" : "text-[#6b7fa8] hover:text-white"}`}
+          className={`flex-1 px-4 py-2 rounded-md text-sm font-semibold transition-colors ${viewMode === "grid" ? "bg-[rgba(99,102,241,0.15)] text-indigo-400" : "text-[#6b7fa8] hover:text-white"}`}
         >
           Live Tracking Grid
         </button>
@@ -1264,7 +1417,7 @@ export function ShiftView({
               </div>
 
               <div className="flex-1 px-4 py-4">
-                <StageTimelineBar emp={emp} nowMin={nowMin} />
+                <StageTimelineBar emp={emp} nowMin={nowMin} targetDate={targetDate} />
               </div>
 
               <div className="w-36 shrink-0 px-4 py-4 border-l border-[rgba(99,102,241,0.06)] bg-[#0a0f1d] flex flex-col justify-center">
@@ -1298,8 +1451,8 @@ export function ShiftView({
             
             <div className="flex border-t border-[rgba(99,102,241,0.08)] bg-[#080c1f]">
               <div className="w-48 shrink-0 px-5 py-3 text-[10px] font-['Geist_Mono'] text-[#8fa0c4] uppercase tracking-wider">Employee</div>
-              <div className="w-56 shrink-0 px-4 py-3 text-[10px] font-['Geist_Mono'] text-[#8fa0c4] uppercase tracking-wider">Current Activity</div>
-              <div className="w-36 shrink-0 px-4 py-3 text-[10px] font-['Geist_Mono'] text-[#8fa0c4] uppercase tracking-wider">Total Attendance</div>
+              <div className="w-64 shrink-0 px-4 py-3 text-[10px] font-['Geist_Mono'] text-[#8fa0c4] uppercase tracking-wider">Current Activity</div>
+              <div className="w-32 shrink-0 px-4 py-3 text-[10px] font-['Geist_Mono'] text-[#8fa0c4] uppercase tracking-wider">Attendance</div>
               <div className="flex-1 px-4 pt-3 pb-2 flex flex-col gap-2">
                 <span className="text-[10px] font-['Geist_Mono'] text-[#8fa0c4] uppercase tracking-wider">Daily Timeline</span>
                 <div className="flex justify-between text-[9px] font-['Geist_Mono'] text-[#4f679b]">
@@ -1313,10 +1466,26 @@ export function ShiftView({
             {shiftEmployees.map((emp, i) => {
               const meta = kindMeta[emp.status];
               const photo = (emp as ShiftEmployee & { profileImageUrl?: string }).profileImageUrl;
+              
+
+
+              const workedMins = emp.timeline
+                .filter(b => b.kind === "working")
+                .reduce((sum, b) => sum + Math.max(0, (b.end ?? nowMin) - b.start), 0);
+              const workedSeconds = workedMins * 60;
+
+              const currentWorkTask = emp.status === "working" && emp.workTasks[0] ? emp.workTasks[0] : null;
+              const currentWorkTaskTodayTotals = currentWorkTask ? aggregateStageSeconds(currentWorkTask.stageHistory, currentWorkTask.status, currentWorkTask.statusEnteredAt, targetDate) : null;
+              
+              let currentWorkTaskTodaySum = currentWorkTaskTodayTotals ? (currentWorkTaskTodayTotals["in-progress"] || 0) + (currentWorkTaskTodayTotals["progress"] || 0) : 0;
+              if (currentWorkTaskTodaySum > workedSeconds) {
+                currentWorkTaskTodaySum = workedSeconds;
+              }
+
               return (
                 <div key={i} className="flex items-center bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl hover:border-indigo-500/30 hover:shadow-[0_4px_20px_-4px_rgba(99,102,241,0.1)] transition-all cursor-pointer overflow-hidden group"
                   onClick={() => setSelected(emp)}>
-                  <div className="w-48 shrink-0 px-5 py-4 flex items-center gap-3 border-r border-[rgba(99,102,241,0.06)] bg-[#0a0f1d]">
+                  <div className="w-48 shrink-0 px-5 py-4 flex items-center gap-3 border-r border-[rgba(99,102,241,0.06)] bg-[#0a0f1d] self-stretch">
                     <Avatar initials={emp.avatar} size="sm" src={photo} />
                     <div>
                       <p className="text-xs font-semibold text-white font-['Plus_Jakarta_Sans'] group-hover:text-indigo-300 transition-colors">{emp.name.split(" ")[0]}</p>
@@ -1324,20 +1493,33 @@ export function ShiftView({
                     </div>
                   </div>
 
-                  <div className="w-56 shrink-0 px-4 py-4 border-r border-[rgba(99,102,241,0.06)] flex items-center">
-                    <div className={`flex items-start gap-1.5 text-xs font-['Geist_Mono'] ${meta.color}`}>
-                      <span className={`shrink-0 w-1.5 h-1.5 mt-1 rounded-full ${meta.dot} ${emp.status === "working" ? "animate-pulse" : ""}`} />
-                      <span className="whitespace-normal line-clamp-2 leading-relaxed" title={emp.status === "working" ? (emp.workTasks[0]?.title || (emp.trackedTasks.length > 0 ? "Clocked in — task not started" : "Clocked in")) : (emp.status === "idle" && (emp.idleDurationMins || 0) > 0 ? `Not at desk for ${emp.idleDurationMins}m` : meta.label)}>
-                        {emp.status === "working"
-                          ? (emp.workTasks[0]?.title
-                            || (emp.trackedTasks.length > 0 ? "Clocked in — task not started" : "Clocked in"))
-                          : (emp.status === "idle" && (emp.idleDurationMins || 0) > 0 ? `Not at desk for ${emp.idleDurationMins}m` : meta.label)}
-                      </span>
+                  <div className="w-64 shrink-0 px-4 py-3 border-r border-[rgba(99,102,241,0.06)] flex flex-col justify-center self-stretch">
+                    <div className={`flex items-start gap-2 text-xs font-['Geist_Mono'] ${meta.color}`}>
+                      <span className={`shrink-0 w-2 h-2 mt-1 rounded-full ${meta.bg} shadow-[0_0_8px_currentColor] ${emp.status === "working" ? "animate-pulse" : "opacity-80"}`} />
+                      <div className="flex flex-col flex-1 min-w-0">
+                        <span className="whitespace-normal break-words leading-snug font-semibold drop-shadow-sm" style={{ wordBreak: 'break-word' }}>
+                          {emp.status === "working"
+                            ? (emp.workTasks[0]?.title
+                              || (emp.trackedTasks.length > 0 ? "Clocked in — task not started" : "Clocked in"))
+                            : (emp.status === "idle" && (emp.idleDurationMins || 0) > 0 ? `Not at desk for ${emp.idleDurationMins}m` : meta.label)}
+                        </span>
+                        {emp.status === "working" && currentWorkTaskTodaySum > 0 && (
+                          <span className="text-[10px] font-bold text-indigo-300 mt-2 bg-indigo-500/20 border border-indigo-500/30 px-2 py-1 rounded shadow-sm w-fit tracking-wide uppercase">
+                            Time Today: {formatStageDuration(currentWorkTaskTodaySum)}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
 
-                  <div className="w-36 shrink-0 px-4 py-4 border-r border-[rgba(99,102,241,0.06)]">
+
+
+                  <div className="w-32 shrink-0 px-4 py-4 border-r border-[rgba(99,102,241,0.06)] flex flex-col justify-center">
                     <span className="text-emerald-400 font-['Geist_Mono'] text-[11px] font-bold">{emp.activeFor}</span>
+                    <div className="mt-1 h-1 bg-[#131a35] rounded-full overflow-hidden w-full">
+                      <div className={`h-full rounded-full ${emp.productivity >= 90 ? "bg-emerald-500" : emp.productivity >= 75 ? "bg-indigo-500" : "bg-amber-500"}`}
+                        style={{ width: `${emp.productivity}%` }} />
+                    </div>
                   </div>
 
                   <div className="flex-1 px-4 py-4 min-w-[280px]">
@@ -1351,7 +1533,7 @@ export function ShiftView({
       )}
 
       {selected && (
-        <EmployeeDetailPanel emp={selected} onClose={() => setSelected(null)} nowMin={nowMin} allTasks={tasks} />
+        <EmployeeDetailPanel emp={selected} onClose={() => setSelected(null)} nowMin={nowMin} allTasks={tasks} targetDate={targetDate} />
       )}
     </div>
   );

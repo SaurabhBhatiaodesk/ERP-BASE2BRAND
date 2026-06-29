@@ -19,6 +19,10 @@ import {
   type TimesheetEntry,
   type AttendanceEntry,
   type LeaveRequest,
+  fetchATSVacancies,
+  fetchATSInterviews,
+  type ATSVacancy,
+  type ATSInterview,
 } from "@/lib/database";
 import { supabase } from "@/lib/supabase";
 
@@ -66,6 +70,32 @@ export function useEmployees() {
 
 export function useLeads() {
   return useQuery(fetchLeads, [] as Lead[]);
+}
+
+export function useATSVacancies() {
+  const [tick, setTick] = useState(0);
+  
+  useEffect(() => {
+    const channel = supabase.channel("ats_vacancies_changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "ats_vacancies" }, () => setTick(t => t + 1))
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, []);
+
+  return useQuery(fetchATSVacancies, [] as ATSVacancy[], [tick]);
+}
+
+export function useATSInterviews() {
+  const [tick, setTick] = useState(0);
+  
+  useEffect(() => {
+    const channel = supabase.channel("ats_interviews_changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "ats_interviews" }, () => setTick(t => t + 1))
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, []);
+
+  return useQuery(fetchATSInterviews, [] as ATSInterview[], [tick]);
 }
 
 export function useLeadsAsClients() {

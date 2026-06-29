@@ -3,7 +3,8 @@ import {
   Plus, Users, Calendar, Award, MoreHorizontal,
   Hash, Phone, Search, Send, Megaphone, X,
   MessageCircle, UserPlus, Paperclip, FileText, Loader2,
-  CheckCheck, AlertCircle, Download, ExternalLink, Smile, Settings2, Edit, ImagePlay
+  CheckCheck, AlertCircle, Download, ExternalLink, Smile, Settings2, Edit, ImagePlay,
+  ChevronLeft, ChevronRight
 } from "lucide-react";
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -12,7 +13,7 @@ import {
 import { Avatar, Badge } from "../ui";
 import { DataLoading, DataError } from "../ui/DataStatus";
 import { deptData, productivityData } from "../../data";
-import { useEmployees, useEmployeeProfiles } from "@/hooks/useSupabaseData";
+import { useEmployees, useEmployeeProfiles, useAttendance } from "@/hooks/useSupabaseData";
 import { useChatChannelReads, useChatChannels, useChatMessages, useChatUnreadCounts } from "@/hooks/useChat";
 import {
   findProfileForUser,
@@ -30,6 +31,7 @@ import {
   type EmployeeProfile,
   type MessageDeliveryStatus,
   updateGroupChannel,
+  fetchTodayTeamClockSessions,
 } from "@/lib/database";
 import {
   fileDownloadUrl,
@@ -177,9 +179,24 @@ function resolveOutgoingMessage(text: string) {
 export function HRView({
   onNavigate,
 }: {
-  onNavigate?: (view: string, tab?: "employee" | "client" | "project" | "assign") => void;
+  onNavigate?: (view: string, options?: any) => void;
 }) {
   const { data: employees, loading, error } = useEmployees();
+  const { data: profiles } = useEmployeeProfiles();
+  const [liveNames, setLiveNames] = useState<Set<string>>(new Set());
+  const [searchQuery, setSearchQuery] = useState("");
+
+  useEffect(() => {
+    fetchTodayTeamClockSessions().then(sessions => {
+      const names = new Set<string>();
+      sessions.forEach(s => {
+        if (s.status === "active") names.add(s.employeeName);
+      });
+      setLiveNames(names);
+    }).catch(console.error);
+  }, []);
+
+  const liveEmployees = useMemo(() => employees.filter(emp => liveNames.has(emp.name)), [employees, liveNames]);
 
   if (loading) return <DataLoading label="Loading employees..." />;
   if (error) return <DataError message={error} />;
@@ -189,7 +206,7 @@ export function HRView({
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white font-['Plus_Jakarta_Sans']">HR & People Ops</h1>
-          <p className="text-[#6b7fa8] text-sm font-['Geist_Mono'] mt-0.5">{employees.length} employees · live from Supabase</p>
+          <p className="text-[#6b7fa8] text-sm font-['Geist_Mono'] mt-0.5">{employees.length} employees total <span className="mx-1">·</span><span className="text-red-500 font-bold animate-pulse">{liveEmployees.length} live</span></p>
         </div>
         <button
           type="button"
@@ -216,31 +233,612 @@ export function HRView({
         ))}
       </div>
 
-      <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl overflow-hidden">
-        <div className="p-5 border-b border-[rgba(99,102,241,0.1)] flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Employee Directory</h2>
-          <button className="p-1.5 hover:bg-white/[0.04] rounded-lg text-[#6b7fa8]"><MoreHorizontal size={14} /></button>
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mt-8 mb-4 gap-4">
+        <h2 className="text-base font-bold text-white font-['Plus_Jakarta_Sans']">Employee Directory</h2>
+        <div className="relative">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-indigo-400" />
+          <input 
+            type="text" 
+            placeholder="Search employee..." 
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            className="w-full sm:w-64 bg-[#131b2f] border border-white/[0.05] rounded-lg pl-9 pr-3 py-2 text-xs text-white placeholder-[#6b7fa8] focus:outline-none focus:border-indigo-500/50 transition-colors"
+          />
         </div>
-        <div className="divide-y divide-[rgba(99,102,241,0.08)]">
-          {employees.map(emp => (
-            <div key={emp.name} className="flex items-center gap-4 px-5 py-3.5 hover:bg-white/[0.02] transition-colors">
-              <Avatar initials={emp.avatar} src={emp.profileImageUrl || undefined} size="md" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">{emp.name}</p>
-                <p className="text-xs text-[#6b7fa8] font-['Geist_Mono']">{emp.role} · {emp.dept}</p>
-              </div>
-              <div className="hidden sm:flex items-center gap-3 w-48">
-                <div className="flex-1 h-1.5 bg-[#131a35] rounded-full overflow-hidden">
-                  <div
-                    className="h-full rounded-full transition-all duration-500"
-                    style={{ width: `${emp.score}%`, background: `linear-gradient(90deg, #6366f1, #8b5cf6)` }}
-                  />
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+        {[...employees]
+          .filter(emp => (emp.name || "").toLowerCase().includes(searchQuery.toLowerCase()) || (emp.role || "").toLowerCase().includes(searchQuery.toLowerCase()))
+          .sort((a, b) => (a.name || "").localeCompare(b.name || "")).map(emp => (
+          <div key={emp.name} className="bg-[#0f1528]/80 backdrop-blur-xl border border-indigo-500/20 shadow-[0_8px_32px_rgba(0,0,0,0.4)] rounded-2xl p-5 hover:border-indigo-500/40 hover:shadow-[0_8px_32px_rgba(99,102,241,0.15)] transition-all duration-300 flex flex-col gap-4 group">
+            
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-4">
+                <Avatar initials={emp.avatar} src={emp.profileImageUrl || undefined} size="lg" />
+                <div>
+                  <p className="text-sm font-bold text-white font-['Plus_Jakarta_Sans'] group-hover:text-indigo-300 transition-colors">{emp.name}</p>
+                  <p className="text-xs text-indigo-300/80 font-['Geist_Mono'] mt-1">{emp.role}</p>
+                  <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono'] mt-0.5">{emp.dept}</p>
                 </div>
-                <span className={`text-sm font-bold font-['Geist_Mono'] w-8 text-right ${emp.score >= 90 ? "text-emerald-400" : emp.score >= 80 ? "text-indigo-400" : "text-amber-400"}`}>{emp.score}</span>
-                <Badge label={emp.status} variant={emp.status as "active" | "idle"} />
               </div>
+              {liveNames.has(emp.name) ? (
+                <div className="flex items-center gap-1.5 bg-red-500/10 border border-red-500/20 px-2.5 py-1 rounded-full">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.8)]" />
+                  <span className="text-[10px] font-bold font-['Geist_Mono'] text-red-400">Live</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 bg-white/5 border border-white/5 px-2.5 py-1 rounded-full">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#6b7fa8]" />
+                  <span className="text-[10px] font-bold font-['Geist_Mono'] text-[#6b7fa8]">Offline</span>
+                </div>
+              )}
             </div>
-          ))}
+
+            <div className="flex items-center gap-2 pt-4 mt-auto border-t border-white/[0.05]">
+              <button 
+                onClick={() => {
+                  const pid = profiles?.find(p => p.name === emp.name)?.id;
+                  onNavigate?.("profiles", { profileId: pid });
+                }}
+                className="flex-1 flex justify-center text-xs font-semibold font-['Plus_Jakarta_Sans'] text-white bg-indigo-600/80 hover:bg-indigo-500 py-2 rounded-lg transition-colors border border-indigo-500/50">
+                View Profile
+              </button>
+              <button 
+                onClick={() => {
+                  const pid = profiles?.find(p => p.name === emp.name)?.id;
+                  onNavigate?.("profiles", { profileId: pid });
+                }}
+                className="px-3 py-2 text-[#8b99b8] hover:text-white bg-white/5 hover:bg-white/10 rounded-lg transition-colors border border-white/5">
+                <Edit size={14} />
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function TimesheetViewRoot({
+  onNavigate,
+}: {
+  onNavigate?: (view: string, options?: any) => void;
+}) {
+  const { data: employees } = useEmployees();
+  const { data: profiles } = useEmployeeProfiles();
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-white font-['Plus_Jakarta_Sans']">Time Reports</h1>
+          <p className="text-[#6b7fa8] text-sm font-['Geist_Mono'] mt-0.5">Monthly Timesheet & Attendance</p>
+        </div>
+      </div>
+      <HRTimesheetTab employees={employees} profiles={profiles} onNavigate={onNavigate} />
+    </div>
+  );
+}
+
+function getAttendanceStatus(hours: number) {
+  if (hours === 0) return { label: "A", full: "Absent", color: "bg-red-500/10 text-red-400 border-red-500/20 shadow-[0_0_10px_rgba(239,68,68,0.15)]" };
+  if (hours >= 8) return { label: "P", full: "Full Day", color: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 shadow-[0_0_10px_rgba(16,185,129,0.2)]" };
+  if (hours >= 6) return { label: "SL", full: "Short Leave", color: "bg-orange-500/10 text-orange-400 border-orange-500/20 shadow-[0_0_10px_rgba(249,115,22,0.2)]" };
+  if (hours >= 4.5) return { label: "HD", full: "Half Day", color: "bg-amber-500/10 text-amber-400 border-amber-500/20 shadow-[0_0_10px_rgba(245,158,11,0.2)]" };
+  return { label: "P", full: "Present", color: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 shadow-[0_0_10px_rgba(16,185,129,0.2)]" };
+}
+
+function HRTimesheetTab({ employees, profiles, onNavigate }: { employees: any[], profiles: any[], onNavigate?: (view: string, options?: any) => void }) {
+  const { data: attendance, loading } = useAttendance();
+  const [monthOffset, setMonthOffset] = useState(0);
+  const [searchQuery, setSearchQuery] = useState("");
+
+  // Calculate current month dates
+  const monthDates = useMemo(() => {
+    const dates = [];
+    const now = new Date();
+    const targetMonth = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + monthOffset + 1, 0);
+
+    for (let i = 1; i <= lastDay.getDate(); i++) {
+      dates.push(new Date(targetMonth.getFullYear(), targetMonth.getMonth(), i));
+    }
+    return dates;
+  }, [monthOffset]);
+
+  const currentMonthName = useMemo(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() + monthOffset);
+    return d.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  }, [monthOffset]);
+
+  const handleExportCSV = () => {
+    const headers = ["Employee Name", "Role", ...monthDates.map(d => `${d.getDate()} ${d.toLocaleDateString("en-US", { month: "short" })}`)];
+    const rows = [...employees].sort((a, b) => (a.name || "").localeCompare(b.name || "")).map(emp => {
+      const rowData = [emp.name, emp.role || "Employee"];
+      monthDates.forEach(d => {
+        const isFuture = d.getTime() > new Date().getTime();
+        if (isFuture) {
+          rowData.push("-");
+          return;
+        }
+        
+        const dateStr = [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
+        const records = attendance.filter(a => a.employee === emp.name && a.date === dateStr);
+        const totalHours = Math.round(records.reduce((sum, r) => sum + r.hours, 0) * 10) / 10;
+        
+        const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+        if (totalHours === 0 && isWeekend) {
+          rowData.push("W/O");
+        } else {
+          rowData.push(getAttendanceStatus(totalHours).label);
+        }
+      });
+      return rowData.join(",");
+    });
+
+    const csvContent = [headers.join(","), ...rows].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `Timesheet_${currentMonthName.replace(" ", "_")}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  if (loading) return <DataLoading label="Loading attendance..." />;
+
+  return (
+    <div className="bg-[#0f1528]/80 backdrop-blur-xl border border-indigo-500/20 shadow-[0_8px_32px_rgba(0,0,0,0.4)] rounded-2xl overflow-hidden text-white transition-all duration-300 flex flex-col h-[calc(100vh-200px)]">
+      <div className="p-5 border-b border-white/[0.05] bg-gradient-to-r from-white/[0.02] to-transparent flex items-center justify-between shrink-0">
+        <h2 className="text-base font-bold font-['Plus_Jakarta_Sans'] flex items-center gap-2">
+          <Calendar size={18} className="text-indigo-400" />
+          Employee Timesheet
+        </h2>
+        <div className="flex items-center gap-4">
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-indigo-400" />
+            <input 
+              type="text" 
+              placeholder="Search employee..." 
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              className="w-48 bg-[#131b2f] border border-white/[0.05] rounded-lg pl-9 pr-3 py-1.5 text-xs text-white placeholder-[#6b7fa8] focus:outline-none focus:border-indigo-500/50 transition-colors"
+            />
+          </div>
+          <button 
+            onClick={handleExportCSV}
+            className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg text-xs font-semibold hover:bg-emerald-500/20 transition-colors"
+          >
+            <Download size={14} />
+            Export CSV
+          </button>
+          <div className="flex items-center gap-2 bg-[#131b2f] p-1 rounded-lg border border-white/[0.05]">
+            <button onClick={() => setMonthOffset(w => w - 1)} className="p-1.5 hover:bg-white/10 rounded-md transition-colors"><ChevronLeft size={16} /></button>
+            <span className="text-xs font-semibold font-['Geist_Mono'] text-indigo-200 min-w-[120px] text-center">
+              {currentMonthName}
+            </span>
+            <button onClick={() => setMonthOffset(w => w + 1)} disabled={monthOffset >= 0} className={`p-1.5 rounded-md transition-colors ${monthOffset >= 0 ? "opacity-30" : "hover:bg-white/10"}`}><ChevronRight size={16} /></button>
+          </div>
+        </div>
+      </div>
+      <div className="overflow-auto custom-scrollbar flex-1 relative px-2">
+        <table className="w-full text-left border-separate border-spacing-y-2 min-w-max">
+          <thead className="sticky top-0 z-20">
+            <tr>
+              <th className="px-5 py-4 text-xs font-semibold text-indigo-200 font-['Plus_Jakarta_Sans'] uppercase tracking-wider sticky left-0 bg-[#131b2f] z-30 shadow-[4px_0_12px_rgba(0,0,0,0.2)] rounded-l-xl">Employee</th>
+              {monthDates.map((d, index) => (
+                <th key={d.toISOString()} className={`px-3 py-4 text-xs font-medium text-center font-['Geist_Mono'] text-[#8b99b8] min-w-[50px] bg-[#131b2f] ${index === monthDates.length - 1 ? 'rounded-r-xl' : ''}`}>
+                  <span className="text-white font-semibold">{d.toLocaleDateString("en-US", { weekday: "short" })}</span><br/>
+                  <span className="text-[10px]">{d.getDate()}</span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {[...employees]
+              .filter(emp => (emp.name || "").toLowerCase().includes(searchQuery.toLowerCase()) || (emp.role || "").toLowerCase().includes(searchQuery.toLowerCase()))
+              .sort((a, b) => (a.name || "").localeCompare(b.name || "")).map(emp => {
+              return (
+                <tr 
+                  key={emp.name} 
+                  onClick={() => onNavigate?.("employee-timesheet", { employeeName: emp.name })}
+                  className="group hover:bg-indigo-500/[0.03] transition-colors cursor-pointer"
+                >
+                  <td className="px-5 py-3 whitespace-nowrap sticky left-0 z-10 shadow-[4px_0_12px_rgba(0,0,0,0.2)] rounded-l-xl border-y border-l border-[rgba(99,102,241,0.15)] bg-[#0f1528] group-hover:bg-[#131a35] group-hover:border-[rgba(99,102,241,0.3)] transition-all">
+                    <div className="flex items-center gap-3">
+                      <Avatar initials={emp.avatar} src={emp.profileImageUrl || undefined} size="sm" />
+                      <div>
+                        <p className="text-sm font-semibold font-['Plus_Jakarta_Sans'] text-white group-hover:text-indigo-300 transition-colors">{emp.name}</p>
+                        <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono']">{emp.role || "Employee"}</p>
+                      </div>
+                    </div>
+                  </td>
+                  {monthDates.map((d, index) => {
+                    const dateStr = [
+                      d.getFullYear(),
+                      String(d.getMonth() + 1).padStart(2, "0"),
+                      String(d.getDate()).padStart(2, "0")
+                    ].join("-");
+                    
+                    const isLast = index === monthDates.length - 1;
+                    const tdClass = `px-3 py-3 text-center border-y border-[rgba(99,102,241,0.15)] bg-[#0d1326] group-hover:bg-[#131a35] group-hover:border-y-[rgba(99,102,241,0.3)] transition-all ${isLast ? 'border-r rounded-r-xl group-hover:border-r-[rgba(99,102,241,0.3)]' : ''}`;
+                    
+                    const records = attendance.filter(a => a.employee === emp.name && a.date === dateStr);
+                    const totalHours = Math.round(records.reduce((sum, r) => sum + r.hours, 0) * 10) / 10;
+                    
+                    const isFuture = d.getTime() > new Date().getTime();
+                    if (isFuture) {
+                      return <td key={dateStr} className={tdClass}>-</td>;
+                    }
+
+                    const status = getAttendanceStatus(totalHours);
+                    const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+                    
+                    if (totalHours === 0 && isWeekend) {
+                      return <td key={dateStr} className={`${tdClass} text-[10px] text-[#6b7fa8] font-['Geist_Mono']`}>W/O</td>;
+                    }
+
+                    return (
+                      <td key={dateStr} className={tdClass}>
+                        <div className={`mx-auto w-8 h-8 flex items-center justify-center rounded-lg border text-xs font-bold ${status.color}`} title={`${status.full} (${Math.round(totalHours * 10) / 10}h)`}>
+                          {status.label}
+                        </div>
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      
+      {/* Legend */}
+      <div className="p-4 border-t border-white/[0.05] bg-black/20 flex items-center gap-5 flex-wrap text-[11px] font-medium font-['Geist_Mono'] text-[#a5b4fc] shrink-0">
+        <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div> Full Day (≥8h)</div>
+        <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.5)]"></div> Short Leave (≥6h)</div>
+        <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]"></div> Half Day (≥4.5h)</div>
+        <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]"></div> Present (&lt;4.5h)</div>
+        <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]"></div> Absent (0h)</div>
+        <div className="flex items-center gap-2 ml-auto opacity-70">W/O = Week Off</div>
+      </div>
+    </div>
+  );
+}
+
+export function EmployeeMonthlyTimesheetView({
+  employeeName,
+  onBack,
+}: {
+  employeeName?: string;
+  onBack: () => void;
+}) {
+  const { data: attendance, loading } = useAttendance();
+  const [monthOffset, setMonthOffset] = useState(0);
+
+  // Calculate current month dates
+  const monthDates = useMemo(() => {
+    const dates = [];
+    const now = new Date();
+    // Start of the selected month
+    const year = now.getFullYear();
+    const month = now.getMonth() + monthOffset;
+    
+    // Create date for 1st of the month
+    const firstDay = new Date(year, month, 1);
+    // Create date for last day of the month
+    const lastDay = new Date(year, month + 1, 0);
+
+    for (let i = 1; i <= lastDay.getDate(); i++) {
+      dates.push(new Date(firstDay.getFullYear(), firstDay.getMonth(), i));
+    }
+    return dates;
+  }, [monthOffset]);
+
+  // Calculate Stats
+  const stats = useMemo(() => {
+    let present = 0;
+    let absent = 0;
+    let wo = 0;
+    let totalHrs = 0;
+    
+    if (!employeeName) return { present, absent, wo, totalHrs };
+    
+    const now = new Date();
+    
+    monthDates.forEach(d => {
+      // Don't count future dates for stats
+      if (d.getTime() > now.getTime() && d.getDate() !== now.getDate()) return;
+      
+      const dateStr = [
+        d.getFullYear(),
+        String(d.getMonth() + 1).padStart(2, "0"),
+        String(d.getDate()).padStart(2, "0")
+      ].join("-");
+      
+      const records = attendance.filter(a => a.employee === employeeName && a.date === dateStr);
+      const hrs = records.reduce((sum, r) => sum + r.hours, 0);
+      
+      totalHrs += hrs;
+      
+      const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+      if (hrs > 0) {
+        present++;
+      } else if (isWeekend) {
+        wo++;
+      } else {
+        absent++;
+      }
+    });
+    
+    return { present, absent, wo, totalHrs };
+  }, [monthDates, attendance, employeeName]);
+
+  if (!employeeName) {
+    return (
+      <div className="p-8 text-center text-white">
+        <p>No employee selected.</p>
+        <button onClick={onBack} className="mt-4 text-indigo-400 underline">Go Back</button>
+      </div>
+    );
+  }
+
+  if (loading) return <DataLoading label="Loading attendance..." />;
+
+  const monthLabel = monthDates[0].toLocaleDateString("en-US", { month: "long", year: "numeric" });
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <button 
+            onClick={onBack}
+            className="w-8 h-8 flex items-center justify-center rounded-lg border border-indigo-500/30 bg-[#0f1528] text-white hover:bg-[#131b2f] transition-colors"
+          >
+            <ChevronLeft size={16} />
+          </button>
+          <div>
+            <h1 className="text-2xl font-bold text-white font-['Plus_Jakarta_Sans']">{employeeName}'s Timesheet</h1>
+            <p className="text-indigo-300 text-sm font-['Geist_Mono'] mt-0.5">Monthly Attendance Report</p>
+          </div>
+        </div>
+        <button
+          onClick={() => {
+            const rows = [["Date", "Day", "Status", "Clock In", "Clock Out", "Hours Worked"]];
+            const now = new Date();
+            
+            monthDates.forEach(d => {
+              if (d.getTime() > now.getTime() && d.getDate() !== now.getDate()) return;
+              
+              const dateStr = [
+                d.getFullYear(),
+                String(d.getMonth() + 1).padStart(2, "0"),
+                String(d.getDate()).padStart(2, "0")
+              ].join("-");
+              
+              const records = attendance.filter(a => a.employee === employeeName && a.date === dateStr);
+              const totalHours = Math.round(records.reduce((sum, r) => sum + r.hours, 0) * 10) / 10;
+              
+              const sortedRecords = [...records].sort((a, b) => new Date(a.clockIn).getTime() - new Date(b.clockIn).getTime());
+              const firstClockIn = sortedRecords.length > 0 ? new Date(sortedRecords[0].clockIn) : null;
+              const lastClockOut = sortedRecords.length > 0 && sortedRecords[sortedRecords.length - 1].clockOut 
+                ? new Date(sortedRecords[sortedRecords.length - 1].clockOut!) 
+                : null;
+                
+              const formatTime = (date: Date | null) => {
+                if (!date || isNaN(date.getTime())) return "--:--";
+                return date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+              };
+              
+              const status = getAttendanceStatus(totalHours);
+              const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+              const statusStr = (totalHours === 0 && isWeekend) ? "Week Off" : status.full;
+              
+              const formatDate = (date: Date) => {
+                const yyyy = date.getFullYear();
+                const mm = String(date.getMonth() + 1).padStart(2, '0');
+                const dd = String(date.getDate()).padStart(2, '0');
+                return `${yyyy}-${mm}-${dd}`;
+              };
+              
+              rows.push([
+                formatDate(d),
+                d.toLocaleDateString("en-US", { weekday: "long" }),
+                `"${statusStr}"`, // Wrap in quotes just in case
+                `"${totalHours > 0 ? formatTime(firstClockIn) : "-"}"`,
+                `"${totalHours > 0 ? formatTime(lastClockOut) : "-"}"`,
+                totalHours > 0 ? (Math.round(totalHours * 10) / 10).toString() : "0"
+              ]);
+            });
+            
+            rows.push([]);
+            rows.push(["Summary", "", "", "", "", ""]);
+            rows.push(["Present Days", stats.present.toString(), "", "", "", ""]);
+            rows.push(["Absent Days", stats.absent.toString(), "", "", "", ""]);
+            rows.push(["Week Offs", stats.wo.toString(), "", "", "", ""]);
+            rows.push(["Total Hours", (Math.round(stats.totalHrs * 10) / 10).toString(), "", "", "", ""]);
+            
+            const csvContent = "data:text/csv;charset=utf-8," + rows.map(e => e.join(",")).join("\n");
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", `${employeeName.replace(/\s+/g, '_')}_Timesheet_${monthLabel.replace(/\s+/g, '_')}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+          }}
+          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors font-medium text-sm font-['Plus_Jakarta_Sans'] shadow-[0_0_15px_rgba(79,70,229,0.3)]"
+        >
+          <Download size={16} /> Export CSV
+        </button>
+      </div>
+      
+      {/* Summary Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="bg-[#0f1528]/80 backdrop-blur-md border border-emerald-500/20 shadow-[0_0_20px_rgba(16,185,129,0.1)] rounded-2xl p-5">
+          <p className="text-emerald-400 text-xs font-semibold font-['Geist_Mono'] mb-1">Present Days</p>
+          <p className="text-3xl font-bold text-white font-['Plus_Jakarta_Sans']">{stats.present}</p>
+        </div>
+        <div className="bg-[#0f1528]/80 backdrop-blur-md border border-red-500/20 shadow-[0_0_20px_rgba(239,68,68,0.1)] rounded-2xl p-5">
+          <p className="text-red-400 text-xs font-semibold font-['Geist_Mono'] mb-1">Absent Days</p>
+          <p className="text-3xl font-bold text-white font-['Plus_Jakarta_Sans']">{stats.absent}</p>
+        </div>
+        <div className="bg-[#0f1528]/80 backdrop-blur-md border border-indigo-500/20 shadow-[0_0_20px_rgba(99,102,241,0.1)] rounded-2xl p-5">
+          <p className="text-indigo-400 text-xs font-semibold font-['Geist_Mono'] mb-1">Total Hours</p>
+          <p className="text-3xl font-bold text-white font-['Plus_Jakarta_Sans']">{Math.round(stats.totalHrs * 10) / 10}<span className="text-sm text-[#8b99b8] ml-1 font-normal">hrs</span></p>
+        </div>
+        <div className="bg-[#0f1528]/80 backdrop-blur-md border border-white/5 shadow-xl rounded-2xl p-5">
+          <p className="text-[#8b99b8] text-xs font-semibold font-['Geist_Mono'] mb-1">Week Offs</p>
+          <p className="text-3xl font-bold text-white font-['Plus_Jakarta_Sans']">{stats.wo}</p>
+        </div>
+      </div>
+
+      <div className="bg-[#0f1528]/80 backdrop-blur-xl border border-indigo-500/20 shadow-[0_8px_32px_rgba(0,0,0,0.4)] rounded-2xl overflow-hidden text-white transition-all duration-300">
+        <div className="p-5 border-b border-white/[0.05] bg-gradient-to-r from-white/[0.02] to-transparent flex items-center justify-between">
+          <h2 className="text-base font-bold font-['Plus_Jakarta_Sans'] flex items-center gap-2">
+            <Calendar size={18} className="text-indigo-400" />
+            {monthLabel} Details
+          </h2>
+          <div className="flex items-center gap-2 bg-[#131b2f] p-1 rounded-lg border border-white/[0.05]">
+            <button onClick={() => setMonthOffset(m => m - 1)} className="p-1.5 hover:bg-white/10 rounded-md transition-colors"><ChevronLeft size={16} /></button>
+            <span className="text-xs font-semibold font-['Geist_Mono'] text-indigo-200 min-w-[110px] text-center">
+              {monthLabel}
+            </span>
+            <button onClick={() => setMonthOffset(m => m + 1)} disabled={monthOffset >= 0} className={`p-1.5 rounded-md transition-colors ${monthOffset >= 0 ? "opacity-30" : "hover:bg-white/10"}`}><ChevronRight size={16} /></button>
+          </div>
+        </div>
+        
+        <div className="overflow-hidden">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-white/[0.05] bg-[#131b2f]/50">
+                <th className="px-6 py-4 text-xs font-semibold text-indigo-200 font-['Plus_Jakarta_Sans'] uppercase tracking-wider w-[20%]">Date</th>
+                <th className="px-6 py-4 text-xs font-semibold text-indigo-200 font-['Plus_Jakarta_Sans'] uppercase tracking-wider w-[20%]">Status</th>
+                <th className="px-6 py-4 text-xs font-semibold text-indigo-200 font-['Plus_Jakarta_Sans'] uppercase tracking-wider w-[30%]">Timings</th>
+                <th className="px-6 py-4 text-xs font-semibold text-indigo-200 font-['Plus_Jakarta_Sans'] uppercase tracking-wider w-[30%]">Hours Worked</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/[0.02]">
+              {monthDates.map(d => {
+                const dateStr = [
+                  d.getFullYear(),
+                  String(d.getMonth() + 1).padStart(2, "0"),
+                  String(d.getDate()).padStart(2, "0")
+                ].join("-");
+                
+                const records = attendance.filter(a => a.employee === employeeName && a.date === dateStr);
+                const totalHours = Math.round(records.reduce((sum, r) => sum + r.hours, 0) * 10) / 10;
+                
+                // Sort records by clockIn to get first and last
+                const sortedRecords = [...records].sort((a, b) => new Date(a.clockIn).getTime() - new Date(b.clockIn).getTime());
+                const firstClockIn = sortedRecords.length > 0 ? new Date(sortedRecords[0].clockIn) : null;
+                const lastClockOut = sortedRecords.length > 0 && sortedRecords[sortedRecords.length - 1].clockOut 
+                  ? new Date(sortedRecords[sortedRecords.length - 1].clockOut!) 
+                  : null;
+                  
+                const formatTime = (date: Date | null) => {
+                  if (!date || isNaN(date.getTime())) return "--:--";
+                  return date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+                };
+                
+                // If it's a future date, show nothing
+                const isFuture = d.getTime() > new Date().getTime();
+                if (isFuture && d.getDate() !== new Date().getDate()) {
+                  return (
+                    <tr key={dateStr} className="bg-black/10">
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-4">
+                          <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/5 flex flex-col items-center justify-center">
+                            <span className="text-[10px] text-white/30 font-['Geist_Mono'] leading-tight">{d.toLocaleDateString("en-US", { month: "short" })}</span>
+                            <span className="text-sm font-bold text-white/30 font-['Plus_Jakarta_Sans'] leading-tight">{d.getDate()}</span>
+                          </div>
+                          <div>
+                            <p className="text-sm font-semibold font-['Plus_Jakarta_Sans'] text-white/30">{d.toLocaleDateString("en-US", { weekday: "long" })}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4" colSpan={3}><span className="text-white/20 text-xs italic">Future Date</span></td>
+                    </tr>
+                  );
+                }
+
+                const status = getAttendanceStatus(totalHours);
+                const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+                
+                let StatusDisplay = (
+                  <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-bold ${status.color}`}>
+                    {status.full}
+                  </div>
+                );
+
+                if (totalHours === 0 && isWeekend) {
+                  StatusDisplay = (
+                    <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-white/5 bg-white/5 text-[#8b99b8] text-xs font-bold`}>
+                      Week Off
+                    </div>
+                  );
+                }
+
+                return (
+                  <tr key={dateStr} className={`group transition-colors ${isWeekend ? 'bg-white/[0.01] hover:bg-indigo-500/[0.02]' : 'hover:bg-indigo-500/[0.04]'}`}>
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex flex-col items-center justify-center">
+                          <span className="text-[10px] text-indigo-300 font-['Geist_Mono'] leading-tight">{d.toLocaleDateString("en-US", { month: "short" })}</span>
+                          <span className="text-sm font-bold text-white font-['Plus_Jakarta_Sans'] leading-tight">{d.getDate()}</span>
+                        </div>
+                        <div>
+                          <p className={`text-sm font-semibold font-['Plus_Jakarta_Sans'] ${isWeekend ? 'text-[#8b99b8]' : 'text-white'}`}>{d.toLocaleDateString("en-US", { weekday: "long" })}</p>
+                          {isWeekend && <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono']">Weekend</p>}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      {StatusDisplay}
+                    </td>
+                    <td className="px-6 py-4">
+                      {totalHours > 0 ? (
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-['Geist_Mono'] text-white font-medium bg-white/5 px-2 py-1 rounded border border-white/10">{formatTime(firstClockIn)}</span>
+                          <span className="text-white/30 text-[10px]">-</span>
+                          <span className="text-xs font-['Geist_Mono'] text-white font-medium bg-white/5 px-2 py-1 rounded border border-white/10">{formatTime(lastClockOut)}</span>
+                        </div>
+                      ) : (
+                        <span className="text-[#8b99b8] text-xs font-['Geist_Mono']">-</span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className="flex-1 h-2 bg-[#131b2f] rounded-full overflow-hidden max-w-[120px] shadow-inner relative">
+                          <div 
+                            className={`h-full rounded-full transition-all duration-500 relative ${totalHours >= 8 ? 'bg-gradient-to-r from-emerald-600 to-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : totalHours >= 6 ? 'bg-gradient-to-r from-orange-600 to-orange-400 shadow-[0_0_10px_rgba(249,115,22,0.5)]' : totalHours > 0 ? 'bg-gradient-to-r from-amber-600 to-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.5)]' : 'bg-transparent'}`}
+                            style={{ width: `${Math.min(100, (totalHours / 8) * 100)}%` }}
+                          >
+                            {totalHours > 0 && <div className="absolute right-0 top-0 bottom-0 w-2 bg-white/40 rounded-full blur-[1px]"></div>}
+                          </div>
+                        </div>
+                        <span className="text-sm font-semibold font-['Geist_Mono'] text-indigo-100 min-w-[40px]">
+                          {totalHours > 0 ? `${Math.round(totalHours * 10) / 10}h` : '-'}
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        
+        {/* Legend */}
+        <div className="p-4 border-t border-white/[0.05] bg-black/20 flex items-center gap-5 flex-wrap text-[11px] font-medium font-['Geist_Mono'] text-[#a5b4fc]">
+          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div> Full Day (≥8h)</div>
+          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.5)]"></div> Short Leave (≥6h)</div>
+          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]"></div> Half Day (≥4.5h)</div>
+          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]"></div> Present (&lt;4.5h)</div>
+          <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]"></div> Absent (0h)</div>
+          <div className="flex items-center gap-2 ml-auto opacity-70">W/O = Week Off</div>
         </div>
       </div>
     </div>

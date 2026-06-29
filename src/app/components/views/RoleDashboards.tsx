@@ -33,7 +33,9 @@ import {
   type AppTask,
   type ClockSessionRecord,
   type TimesheetEntry,
+  insertEmployeeScreenshot,
 } from "@/lib/database";
+import { uploadToCloudinary } from "@/lib/cloudinary";
 function parseEstHours(est: string) {
   const num = parseFloat(String(est || "").replace(/[^\d.]/g, ""));
   return Number.isNaN(num) ? 0 : num;
@@ -786,13 +788,16 @@ export function EmployeeDashboard({
     return () => { cancelled = true; };
   }, [userName, myProfile?.id, pLoading, refreshClockState]);
 
+  const isMeetingBreak = todaySession?.status === "paused" && !!todaySession?.notes?.toLowerCase().includes("meeting");
+
   useEffect(() => {
-    if (!activeClock) return;
+    const activeOrMeetingSession = activeClock || (isMeetingBreak ? todaySession : null);
+    if (!activeOrMeetingSession) return;
     const id = setInterval(() => {
       setTick(t => t + 1);
 
       // Auto-close check at 1 AM
-      const clockInDate = new Date(activeClock.clockIn);
+      const clockInDate = new Date(activeOrMeetingSession.clockIn);
       const now = new Date();
       if (
         (clockInDate.getDate() !== now.getDate() ||
@@ -804,7 +809,40 @@ export function EmployeeDashboard({
       }
     }, 1000);
     return () => clearInterval(id);
-  }, [activeClock, refreshClockState]);
+  }, [activeClock, todaySession, isMeetingBreak, refreshClockState]);
+
+  useEffect(() => {
+    const activeOrMeetingSession = activeClock || (isMeetingBreak ? todaySession : null);
+    if (!activeOrMeetingSession || !userName) return;
+
+    const captureScreenshot = async () => {
+      try {
+        if (!(window as any).electronAPI?.takeScreenshot) return;
+        const base64Img = await (window as any).electronAPI.takeScreenshot();
+        if (!base64Img) return;
+
+        const res = await fetch(base64Img);
+        const blob = await res.blob();
+        const file = new File([blob], `screenshot_${Date.now()}.jpg`, { type: 'image/jpeg' });
+
+        const uploadResult = await uploadToCloudinary(file, "erp-screenshots");
+        if (uploadResult?.url) {
+          await insertEmployeeScreenshot({
+            employeeName: userName,
+            employeeId: myProfile?.id,
+            imageUrl: uploadResult.url,
+          });
+        }
+      } catch (err) {
+        console.error("Background screenshot failed:", err);
+      }
+    };
+
+    // Background screenshot every 10 minutes
+    const captureInterval = setInterval(captureScreenshot, 10 * 60 * 1000);
+
+    return () => clearInterval(captureInterval);
+  }, [activeClock, todaySession, isMeetingBreak, userName, myProfile?.id]);
 
   const assigneeName = myProfile?.name || userName;
 
@@ -841,9 +879,11 @@ export function EmployeeDashboard({
 
   // `tick` bumps every second while clocked in so the timer re-renders live.
   let totalSeconds = todayAttendanceSeconds;
-  if (activeClock) {
-    const base = Math.round((activeClock.hours || 0) * 3600);
-    const start = activeClock.sessionStart || activeClock.clockIn;
+  const activeOrMeetingSession = activeClock || (isMeetingBreak ? todaySession : null);
+
+  if (activeOrMeetingSession) {
+    const base = Math.round((activeOrMeetingSession.hours || 0) * 3600);
+    const start = activeOrMeetingSession.sessionStart || activeOrMeetingSession.clockIn;
       
     const startDate = new Date(start);
     const endOfDay = new Date(startDate);
@@ -1286,7 +1326,7 @@ export function DevDashboard({
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <p className="text-[#6b7fa8] text-sm font-['Geist_Mono']">
-          {userName ? `${userName}'s sprint` : "Team sprint"} · {stats.totalTasks} tasks · live from Supabase
+          {userName ? `${userName}'s sprint` : "Team sprint"} · {stats.totalTasks} tasks <span className="mx-1">·</span><span className="text-red-500 font-bold animate-pulse">live</span> from Supabase
         </p>
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -1621,19 +1661,7 @@ export function HRMSView() {
     }
   };
 
-  const appraisals = [
-    { name: "Kavya Nair", dept: "Design", current: "L3", recommended: "L4", hike: "22%", status: "Approved" },
-    { name: "Arjun Mehta", dept: "Dev", current: "L4", recommended: "L5", hike: "18%", status: "Pending" },
-    { name: "Priya Sharma", dept: "Dev", current: "L5", recommended: "L5+", hike: "15%", status: "Pending" },
-    { name: "Rahul Gupta", dept: "Marketing", current: "L2", recommended: "L2", hike: "5%", status: "Under Review" },
-  ];
-  const hiring = [
-    { role: "Senior React Developer", stage: "Technical Round", candidates: 3, target: "Jun 15" },
-    { role: "Content Strategist", stage: "HR Screening", candidates: 7, target: "Jun 20" },
-    { role: "UI/UX Designer", stage: "Portfolio Review", candidates: 5, target: "Jun 10" },
-    { role: "DevOps Engineer", stage: "Offer Stage", candidates: 1, target: "May 30" },
-  ];
-  const tabs = [{ id: "overview", label: "Overview" }, { id: "leave", label: "Leave Requests" }, { id: "appraisals", label: "Appraisals" }, { id: "hiring", label: "Hiring Pipeline" }];
+  const tabs = [{ id: "overview", label: "Overview" }, { id: "leave", label: "Leave Requests" }];
   return (
     <div className="space-y-5">
       <div className="flex gap-1 bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-1 w-fit">
@@ -1645,35 +1673,20 @@ export function HRMSView() {
         ))}
       </div>
       {tab === "overview" && (
-        <div className="grid lg:grid-cols-2 gap-6">
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              {[{ label: "Total Employees", value: totalEmployees.toString() }, { label: "On Leave Today", value: onLeaveToday.toString() }, { label: "Open Positions", value: "4" }, { label: "Avg Tenure", value: "2.4y" }].map(s => (
-                <div key={s.label} className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-4">
-                  <p className="text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mb-1">{s.label}</p>
-                  <p className="text-2xl font-bold text-white font-['Plus_Jakarta_Sans']">{s.value}</p>
-                </div>
-              ))}
-            </div>
-            <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-5">
-              <h3 className="text-sm font-semibold text-white mb-3 font-['Plus_Jakarta_Sans']">Department Headcount</h3>
-              {[{ dept: "Development", count: 12, pct: 34 }, { dept: "Design", count: 6, pct: 17 }, { dept: "Marketing", count: 8, pct: 23 }, { dept: "HR & Ops", count: 5, pct: 14 }, { dept: "Sales", count: 4, pct: 12 }].map(d => (
-                <div key={d.dept} className="flex items-center gap-3 mb-2.5">
-                  <span className="text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans'] w-24 shrink-0">{d.dept}</span>
-                  <div className="flex-1 h-2 bg-[#131a35] rounded-full overflow-hidden">
-                    <div className="h-full bg-indigo-600 rounded-full" style={{ width: `${d.pct}%` }} />
+        <div className="mt-6">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {[
+              { label: "Total Employees", value: totalEmployees.toString(), icon: Users, color: "text-indigo-400", bg: "bg-indigo-500/10" },
+              { label: "On Leave Today", value: onLeaveToday.toString(), icon: Clock, color: "text-amber-400", bg: "bg-amber-500/10" }
+            ].map(s => (
+              <div key={s.label} className="bg-[#0f1528]/80 backdrop-blur-xl border border-indigo-500/20 shadow-[0_8px_32px_rgba(0,0,0,0.4)] hover:shadow-[0_8px_32px_rgba(99,102,241,0.15)] hover:border-indigo-500/40 transition-all duration-300 rounded-2xl p-5">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className={`p-2 rounded-lg ${s.bg}`}>
+                    <s.icon size={16} className={s.color} />
                   </div>
-                  <span className="text-xs font-['Geist_Mono'] text-[#a8b5d1] w-6 text-right">{d.count}</span>
+                  <p className="text-xs text-[#8b99b8] font-['Plus_Jakarta_Sans'] font-medium">{s.label}</p>
                 </div>
-              ))}
-            </div>
-          </div>
-          <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-white mb-4 font-['Plus_Jakarta_Sans']">Payroll Overview</h3>
-            {[{ label: "Total Monthly Payroll", value: "₹28.4L", accent: true }, { label: "Avg Salary", value: "₹81,143" }, { label: "Benefits & PF", value: "₹4.2L" }, { label: "Performance Bonuses", value: "₹1.8L" }, { label: "Total Cost to Company", value: "₹34.4L", accent: true }].map(r => (
-              <div key={r.label} className={`flex items-center justify-between py-3 border-b border-[rgba(99,102,241,0.06)] last:border-0 ${r.accent ? "text-white" : ""}`}>
-                <span className="text-xs font-['Plus_Jakarta_Sans'] text-[#6b7fa8]">{r.label}</span>
-                <span className={`text-sm font-semibold font-['Geist_Mono'] ${r.accent ? "text-indigo-400" : "text-[#e2e8f7]"}`}>{r.value}</span>
+                <p className="text-3xl font-bold text-white font-['Plus_Jakarta_Sans']">{s.value}</p>
               </div>
             ))}
           </div>
@@ -1723,40 +1736,6 @@ export function HRMSView() {
               ))}
             </div>
           )}
-        </div>
-      )}
-      {tab === "appraisals" && (
-        <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-5">
-          <h3 className="text-sm font-semibold text-white mb-4 font-['Plus_Jakarta_Sans']">Appraisal Cycle — Q2 2025</h3>
-          <div className="space-y-2">
-            {appraisals.map(a => (
-              <div key={a.name} className="flex items-center gap-4 px-4 py-3 bg-[#131a35] rounded-lg border border-[rgba(99,102,241,0.08)]">
-                <Avatar initials={a.name.slice(0,2)} size="sm" color="bg-gradient-to-br from-indigo-600 to-violet-600" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs text-[#e2e8f7] font-['Plus_Jakarta_Sans']">{a.name}</p>
-                  <p className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8]">{a.dept} · {a.current} → {a.recommended}</p>
-                </div>
-                <span className="text-sm font-bold font-['Geist_Mono'] text-emerald-400">{a.hike} hike</span>
-                <Badge variant={a.status === "Approved" ? "green" : a.status === "Pending" ? "yellow" : "blue"}>{a.status}</Badge>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-      {tab === "hiring" && (
-        <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-5">
-          <h3 className="text-sm font-semibold text-white mb-4 font-['Plus_Jakarta_Sans']">Hiring Pipeline</h3>
-          <div className="space-y-2">
-            {hiring.map(h => (
-              <div key={h.role} className="flex items-center gap-4 px-4 py-3 bg-[#131a35] rounded-lg border border-[rgba(99,102,241,0.08)]">
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs text-[#e2e8f7] font-['Plus_Jakarta_Sans']">{h.role}</p>
-                  <p className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8]">{h.candidates} candidates · Target {h.target}</p>
-                </div>
-                <Badge variant={h.stage === "Offer Stage" ? "green" : h.stage.includes("Technical") ? "blue" : "yellow"}>{h.stage}</Badge>
-              </div>
-            ))}
-          </div>
         </div>
       )}
 

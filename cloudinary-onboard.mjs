@@ -2,9 +2,9 @@ import { v2 as cloudinary } from "cloudinary";
 
 // Configure Cloudinary (inline credentials)
 cloudinary.config({
-  cloud_name: "djrsq2xcu", // ← your cloud name
-  api_key: "845446792937775", // ← your API key
-  api_secret: "SqBIa1DOq5wU3Vtq6mQVeqLCwIk", // ← your API secret
+  cloud_name: "djyl2qvdc", // ← your cloud name
+  api_key: "877661512152286", // ← your API key
+  api_secret: "5XLPLzndoMSddHxb_WGx5Dau3bg", // ← your API secret
 });
 
 const sampleImageUrl =

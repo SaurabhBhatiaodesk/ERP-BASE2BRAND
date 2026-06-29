@@ -114,13 +114,16 @@ export function aggregateStageSeconds(
   };
 
   for (const row of history) {
+    // Skip the open row in history, because the live time is handled below using statusEnteredAt
+    if (!row.exited_at) continue;
+
     if (targetDate) {
        const overlap = getOverlapSeconds(row.entered_at, row.exited_at, targetDate);
        if (overlap > 0) {
          totals[row.to_status] = (totals[row.to_status] || 0) + overlap;
        }
     } else {
-      if (row.exited_at != null && row.duration_seconds != null) {
+      if (row.duration_seconds != null) {
         totals[row.to_status] = (totals[row.to_status] || 0) + row.duration_seconds;
       }
     }

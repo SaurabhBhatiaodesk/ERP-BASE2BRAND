@@ -95,7 +95,7 @@ function TaskStageBreakdown({ task, compact = false }: { task: AppTask; compact?
             <span className="text-[#a8b5d1] font-['Plus_Jakarta_Sans']">{entry.label}</span>
             <span className={`font-['Geist_Mono'] ${entry.isCurrent ? "text-amber-300" : "text-[#6b7fa8]"}`}>
               {formatStageDuration(entry.seconds)}
-              {entry.isCurrent ? " · live" : ""}
+              {entry.isCurrent ? <><span className="mx-1">·</span><span className="text-red-500 font-bold animate-pulse">live</span></> : ""}
             </span>
           </div>
         ))}
@@ -287,7 +287,7 @@ export function CRMView() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white font-['Plus_Jakarta_Sans']">CRM Pipeline</h1>
-          <p className="text-[#6b7fa8] text-sm font-['Geist_Mono'] mt-0.5">{leads.length} active leads · live from Supabase</p>
+          <p className="text-[#6b7fa8] text-sm font-['Geist_Mono'] mt-0.5">{leads.length} active leads <span className="mx-1">·</span><span className="text-red-500 font-bold animate-pulse">live</span> from Supabase</p>
         </div>
         <button
           onClick={openLeadForm}
@@ -944,7 +944,7 @@ export function WorkloadView({
     <div className="space-y-4">
       <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-5">
         <h3 className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans'] mb-1">Estimated Hours per Person</h3>
-        <p className="text-[#6b7fa8] text-xs font-['Geist_Mono'] mb-5">{sprintSubtitle ?? "Sprint · live from Supabase"}</p>
+        <p className="text-[#6b7fa8] text-xs font-['Geist_Mono'] mb-5">{sprintSubtitle ?? <>Sprint <span className="mx-1">·</span><span className="text-red-500 font-bold animate-pulse">live</span> from Supabase</>}</p>
         <ResponsiveContainer width="100%" height={180}>
           <BarChart data={workloadData.map(w => ({ name: w.name, hours: w.estHours, tasks: w.total }))} margin={{ left: -20 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(99,102,241,0.08)" />
@@ -1400,7 +1400,7 @@ export function TasksView({
           <div>
             <h1 className="text-2xl font-bold text-white font-['Plus_Jakarta_Sans']">Task Management</h1>
             <p className="text-[#6b7fa8] text-sm font-['Geist_Mono'] mt-0.5">
-              {taskSubtitle} · live from Supabase
+              {taskSubtitle} <span className="mx-1">·</span><span className="text-red-500 font-bold animate-pulse">live</span> from Supabase
             </p>
           </div>
         ) : (

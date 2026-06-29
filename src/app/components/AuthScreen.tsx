@@ -60,9 +60,6 @@ const authRoles = [
   { id: "ceo", label: "CEO / Admin", desc: "Full platform access", icon: Building2, color: "from-indigo-600 to-violet-600" },
   { id: "teamlead", label: "Team Leader", desc: "Team management & approvals", icon: Users, color: "from-indigo-500 to-blue-600" },
   { id: "employee", label: "Employee", desc: "Personal tasks & time tracking", icon: UserCheck, color: "from-violet-600 to-purple-700" },
-  { id: "developer", label: "Developer", desc: "Sprint, bugs & code metrics", icon: GitBranch, color: "from-blue-600 to-cyan-600" },
-  { id: "designer", label: "Designer", desc: "Projects, revisions & approvals", icon: Star, color: "from-pink-600 to-rose-600" },
-  { id: "marketing", label: "Marketing", desc: "Campaigns, leads & ROI", icon: TrendingUp, color: "from-amber-500 to-orange-600" },
   { id: "hr", label: "HR Manager", desc: "People, payroll & hiring", icon: Award, color: "from-emerald-500 to-teal-600" },
 ];
 
