@@ -758,6 +758,7 @@ export function EmployeeDashboard({
   const [clockError, setClockError] = useState("");
   const [clockSetupNeeded, setClockSetupNeeded] = useState(false);
   const [tick, setTick] = useState(0);
+  const [attendanceFetchTime, setAttendanceFetchTime] = useState(Date.now());
 
   const myProfile = useMemo(
     () => profiles.find(p => namesMatch(p.name, userName)),
@@ -772,9 +773,11 @@ export function EmployeeDashboard({
       fetchTodayAttendanceSeconds(userName, myProfile?.id),
       fetchWeekAttendanceHours(userName, myProfile?.id),
     ]);
+    const now = Date.now();
     setActiveClock(session);
     setTodaySession(today);
     setTodayAttendanceSeconds(todaySeconds);
+    setAttendanceFetchTime(now);
     setWeekHours(week);
     setClockSetupNeeded(!isClockSessionsTableReady());
   }, [userName, myProfile?.id]);
@@ -882,20 +885,7 @@ export function EmployeeDashboard({
   const activeOrMeetingSession = activeClock || (isMeetingBreak ? todaySession : null);
 
   if (activeOrMeetingSession) {
-    const base = Math.round((activeOrMeetingSession.hours || 0) * 3600);
-    const start = activeOrMeetingSession.sessionStart || activeOrMeetingSession.clockIn;
-      
-    const startDate = new Date(start);
-    const endOfDay = new Date(startDate);
-    endOfDay.setHours(23, 59, 59, 999);
-      
-    let endMs = Date.now();
-    if (endMs > endOfDay.getTime()) {
-      endMs = endOfDay.getTime();
-    }
-      
-    const live = Math.max(0, Math.floor((endMs - startDate.getTime()) / 1000));
-    totalSeconds = base + live;
+    totalSeconds += Math.max(0, Math.floor((Date.now() - attendanceFetchTime) / 1000));
   }
   void tick;
 

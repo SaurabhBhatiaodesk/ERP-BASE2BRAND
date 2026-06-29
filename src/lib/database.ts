@@ -2888,20 +2888,32 @@ export async function fetchTodayAttendanceSeconds(
   employeeName: string,
   employeeId?: string
 ): Promise<number> {
-  const row = await fetchTodayOfficeSession(employeeName, employeeId);
-  if (!row) return 0;
+  let eId = employeeId;
+  if (!eId) {
+    const profiles = await fetchEmployeeProfiles();
+    eId = profileIdByName(profiles, employeeName);
+  }
+  if (!eId) return 0;
 
-  let seconds = Math.round((row.hours || 0) * 3600);
+  const { start, end } = todayClockRange();
+  const sessions = await fetchEmployeeHistoricalSessions(eId, start, end);
+  if (!sessions || sessions.length === 0) return 0;
 
-  if (row.status === "active") {
-    const start = row.sessionStart || row.clockIn;
-    seconds += Math.max(
-      0,
-      Math.floor((Date.now() - new Date(start).getTime()) / 1000)
-    );
+  let totalSeconds = 0;
+  const nowMs = Date.now();
+
+  for (const session of sessions) {
+    const segments = session.segments || [];
+    for (const seg of segments) {
+      if (seg.kind === "working" || seg.kind === "meeting") {
+        const startedAt = new Date(seg.startedAt).getTime();
+        const endedAt = seg.endedAt ? new Date(seg.endedAt).getTime() : nowMs;
+        totalSeconds += Math.max(0, Math.floor((endedAt - startedAt) / 1000));
+      }
+    }
   }
 
-  return seconds;
+  return totalSeconds;
 }
 
 export type AttendanceEntry = {
