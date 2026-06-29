@@ -1889,15 +1889,22 @@ export async function assignProjectTeam(
 
   // Send Notifications
   if (newAssignments.length > 0) {
+    const { data: { user } } = await supabase.auth.getUser();
     const projName = oldProj?.name || "a project";
     for (const newId of newAssignments) {
-      await insertNotification({
-        recipientId: newId as string,
-        title: "Project Assigned",
-        message: `You have been assigned to project: ${projName}`,
-        type: "project_assigned",
-        referenceId: projectId
-      });
+      try {
+        await insertNotification({
+          recipientId: newId as string,
+          title: "Project Assigned",
+          message: `You have been assigned to project: ${projName}`,
+          type: "project_assigned",
+          // Don't pass referenceId if projectId is not a valid UUID (e.g. 'P123') to avoid postgres 22P02 error
+          referenceId: projectId.startsWith('P') ? undefined : projectId,
+          senderId: user?.id
+        });
+      } catch (notifErr) {
+        console.error("Failed to send notification:", notifErr);
+      }
     }
   }
 
@@ -3260,7 +3267,7 @@ export function isPersonalTaskRole(role: string) {
   if (!role) return true;
   const r = role.toLowerCase();
   // If not explicitly an admin/hr/ceo/lead, treat as a personal task role.
-  if (r.includes("ceo") || r.includes("admin") || r.includes("hr ") || r === "hr" || r.includes("team lead") || r.includes("manager")) {
+  if (r.includes("ceo") || r.includes("admin") || r.includes("hr ") || r === "hr" || r.includes("team lead") || r.includes("teamlead") || r.includes("manager")) {
     return false;
   }
   return true;

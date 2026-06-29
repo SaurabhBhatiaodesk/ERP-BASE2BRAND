@@ -12,7 +12,7 @@ import { StatCard, Avatar, Badge, CustomTooltip } from "../ui";
 import { DataLoading, DataError } from "../ui/DataStatus";
 import { revenueData, pieData, aiInsights, activityFeed } from "../../data";
 import { useEmployees, useEmployeeProfiles, useProjects, useLeaveRequests } from "@/hooks/useSupabaseData";
-import { addProjectTask, updateLeaveStatus } from "@/lib/database";
+import { addProjectTask, updateLeaveStatus, insertNotification } from "@/lib/database";
 import { saveQuickAction } from "@/lib/quickActions";
 
 function formatIso(d = new Date()) {
@@ -117,12 +117,24 @@ export function CEODashboard() {
         });
       } else if (qaModal === "call") {
         if (!qaSelect) throw new Error("Please select an employee.");
+        
+        const callMessage = qaInput.trim() || "Please come to my cabin";
+        
         await saveQuickAction({
           type: "call",
           employee: qaSelect,
-          message: qaInput.trim() || "Please come to my cabin",
+          message: callMessage,
           phone: selectedProfile?.phone,
         });
+
+        if (selectedProfile?.id) {
+          await insertNotification({
+            recipientId: selectedProfile.id,
+            title: "CEO Calling",
+            message: callMessage,
+            type: "call"
+          });
+        }
       } else if (qaModal === "meeting") {
         if (!qaInput.trim()) throw new Error("Please enter a meeting title.");
         if (!qaDate) throw new Error("Please select a date.");
@@ -137,11 +149,30 @@ export function CEODashboard() {
         });
       } else if (qaModal === "broadcast") {
         if (!qaInput.trim()) throw new Error("Please enter a message.");
+        
+        const broadcastMsg = qaInput.trim();
+        const audience = qaSelect || "All Staff";
+        
         await saveQuickAction({
           type: "broadcast",
-          message: qaInput.trim(),
-          audience: qaSelect || "All Staff",
+          message: broadcastMsg,
+          audience,
         });
+
+        const targets = audience === "All Staff" 
+          ? assignableEmployees 
+          : assignableEmployees.filter(p => p.dept === audience);
+          
+        await Promise.all(targets.map(p => {
+          if (p.id) {
+            return insertNotification({
+              recipientId: p.id,
+              title: `Broadcast: ${audience}`,
+              message: broadcastMsg,
+              type: "broadcast"
+            });
+          }
+        }));
       }
 
       setQaDone(true);
@@ -179,28 +210,6 @@ export function CEODashboard() {
           <button className="flex items-center gap-2 px-3 py-2 bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-lg text-[#a8b5d1] text-xs hover:border-indigo-500/40 transition-colors whitespace-nowrap">
             <Calendar size={13} /> Last 7 days <ChevronDown size={13} />
           </button>
-          <div className="relative w-fit shrink-0" ref={qaMenuRef}>
-            <button
-              onClick={() => setShowQA(v => !v)}
-              className="flex items-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white text-xs transition-colors font-['Plus_Jakarta_Sans'] whitespace-nowrap"
-            >
-              <Plus size={13} /> Quick Action <ChevronDown size={11} className={`transition-transform ${showQA ? "rotate-180" : ""}`} />
-            </button>
-            {showQA && (
-              <div className="absolute right-0 top-full mt-1.5 min-w-full w-max bg-[#0d1326] border border-[rgba(99,102,241,0.2)] rounded-xl shadow-2xl z-50 overflow-hidden py-1">
-                {quickActions.map(a => (
-                  <button
-                    key={a.id}
-                    onClick={() => { setQaModal(a.id); setShowQA(false); }}
-                    className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-white/[0.04] transition-colors text-left whitespace-nowrap"
-                  >
-                    <a.icon size={14} className={`${a.color} shrink-0`} />
-                    <span className="text-xs text-[#e2e8f7] font-['Plus_Jakarta_Sans']">{a.label}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
         </div>
       </div>
 

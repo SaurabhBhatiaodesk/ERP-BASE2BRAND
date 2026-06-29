@@ -13,8 +13,8 @@ import {
 } from "@/lib/database";
 import { SHIFT_START_OPTIONS, formatShiftStartLabel } from "@/lib/shiftTimeline";
 import { ProfilePhotoUpload } from "../ProfilePhotoUpload";
-import { APP_ROLE_OPTIONS, isAdminRole, isExecutiveProfile } from "@/lib/auth";
-import { namesMatch } from "@/lib/database";
+import { APP_ROLE_OPTIONS, isAdminRole, isExecutiveProfile, signUpWithRole } from "@/lib/auth";
+import { namesMatch, isPersonalTaskRole } from "@/lib/database";
 import {
   isValidEmail,
   isValidPhone,
@@ -905,7 +905,7 @@ export function RegistrationFormsView({
   const [empForm, setEmpForm] = useState({
     name: "", email: "", phone: "", dept: "", role: "", appRole: "employee",
     manager: "", salary: "", joining: "", location: "", profileImageUrl: "",
-    shiftStart: "10:00",
+    shiftStart: "10:00", password: "",
   });
   const [clientForm, setClientForm] = useState({ company: "", contact: "", title: "", email: "", phone: "", industry: "", location: "", value: "", temp: "warm", source: "", notes: "" });
   const [projectForm, setProjectForm] = useState({ name: "", client: "", dept: "", start: "", end: "", budget: "", priority: "Medium", desc: "" });
@@ -915,7 +915,7 @@ export function RegistrationFormsView({
     memberIds: [] as string[],
   });
 
-  const managerOptions = [...new Set(["CEO Admin", ...profiles.map(p => p.name)])];
+  const managerOptions = [...new Set(["CEO Admin", ...profiles.filter(p => !isPersonalTaskRole(p.role || p.app_role || "")).map(p => p.name)])];
   const clientOptions = leads.map(l => l.company);
   const assignableEmployees = useMemo(
     () => profiles.filter(p => !isExecutiveProfile(p)),
@@ -963,7 +963,6 @@ export function RegistrationFormsView({
     const errors: Record<string, string> = {};
     if (!isValidName(projectForm.name)) errors.name = "Enter project name.";
     if (!projectForm.start) errors.start = "Start date is required.";
-    if (!projectForm.end) errors.end = "Deadline is required.";
     if (projectForm.start && projectForm.end && !isValidDateRange(projectForm.start, projectForm.end)) {
       errors.end = "Deadline must be on or after start date.";
     }
@@ -989,12 +988,23 @@ export function RegistrationFormsView({
     try {
       if (activeForm === "employee") {
         if (!validateEmployeeForm()) throw new Error("Please fix the highlighted fields.");
+        if (empForm.password) {
+          try {
+            await signUpWithRole(empForm.email, empForm.password, empForm.appRole as any, {
+              full_name: empForm.name,
+              department: empForm.dept,
+              designation: empForm.role,
+            });
+          } catch (err) {
+            console.error("Auth signup failed, but continuing profile creation", err);
+          }
+        }
         await createEmployee(empForm);
         refreshProfiles();
         setEmpForm({
           name: "", email: "", phone: "", dept: "", role: "", appRole: "employee",
           manager: "", salary: "", joining: "", location: "", profileImageUrl: "",
-          shiftStart: "10:00",
+          shiftStart: "10:00", password: "",
         });
         setSuccessMsg("Employee saved to database!");
       } else if (activeForm === "client") {
@@ -1116,6 +1126,10 @@ export function RegistrationFormsView({
               {fieldErrors.email && <p className={fieldErrorCls}>{fieldErrors.email}</p>}
             </div>
             <div>
+              <label className={labelCls}>Password (Optional)</label>
+              <input value={empForm.password} onChange={e => setEmpForm({...empForm, password: e.target.value})} placeholder="Set a login password" type="text" className={inputCls} />
+            </div>
+            <div>
               <label className={labelCls}>Phone Number</label>
               <input value={empForm.phone} onChange={e => setEmpForm({...empForm, phone: e.target.value})} placeholder="+91 98765 43210" className={`${inputCls} ${fieldErrors.phone ? "border-rose-500/50" : ""}`} />
               {fieldErrors.phone && <p className={fieldErrorCls}>{fieldErrors.phone}</p>}
@@ -1154,7 +1168,7 @@ export function RegistrationFormsView({
               <label className={labelCls}>Work Location</label>
               <select value={empForm.location} onChange={e => setEmpForm({...empForm, location: e.target.value})} className={selectCls}>
                 <option value="">Select location</option>
-                {["Bangalore","Mumbai","Delhi","Hyderabad","Remote","Hybrid"].map(l => <option key={l} value={l}>{l}</option>)}
+                {["Bangalore","Mumbai","Delhi","Hyderabad","Mohali, Punjab","Remote","Hybrid"].map(l => <option key={l} value={l}>{l}</option>)}
               </select>
             </div>
             <div>
@@ -1320,7 +1334,7 @@ export function RegistrationFormsView({
               {fieldErrors.start && <p className={fieldErrorCls}>{fieldErrors.start}</p>}
             </div>
             <div>
-              <label className={labelCls}>Deadline *</label>
+              <label className={labelCls}>Deadline</label>
               <input value={projectForm.end} onChange={e => setProjectForm({...projectForm, end: e.target.value})} type="date" className={`${inputCls} ${fieldErrors.end ? "border-rose-500/50" : ""}`} />
               {fieldErrors.end && <p className={fieldErrorCls}>{fieldErrors.end}</p>}
             </div>

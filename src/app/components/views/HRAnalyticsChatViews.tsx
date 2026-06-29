@@ -4,8 +4,9 @@ import {
   Hash, Phone, Search, Send, Megaphone, X,
   MessageCircle, UserPlus, Paperclip, FileText, Loader2,
   CheckCheck, AlertCircle, Download, ExternalLink, Smile, Settings2, Edit, ImagePlay,
-  ChevronLeft, ChevronRight
+  ChevronLeft, ChevronRight, Eye
 } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer
@@ -979,15 +980,15 @@ function MessageBubble({
   deliveryStatus?: MessageDeliveryStatus;
 }) {
   const bubbleBase = isOwn
-    ? "bg-gradient-to-br from-indigo-600 to-violet-600 text-white rounded-2xl rounded-br-sm shadow-lg shadow-indigo-900/20"
-    : "bg-[#151d38] text-[#e2e8f7] border border-[rgba(99,102,241,0.12)] rounded-2xl rounded-bl-sm";
+    ? "bg-[#7c3aed] text-white rounded-[24px] rounded-br-sm shadow-[0_8px_20px_rgba(124,58,237,0.25)]"
+    : "bg-white/[0.04] text-[#e2e8f7] border border-white/[0.08] rounded-[24px] rounded-bl-sm shadow-[0_8px_20px_rgba(0,0,0,0.15)] backdrop-blur-md";
 
-  const timeClass = isOwn ? "text-indigo-200/70" : "text-[#6b7fa8]";
+  const timeClass = isOwn ? "text-white/75" : "text-[#6b7fa8]";
 
   const content = (
     <>
       {message.messageType === "image" && message.mediaUrl ? (
-        <div>
+        <div className="mb-1">
           <a href={message.mediaUrl} target="_blank" rel="noopener noreferrer">
             <img
               src={message.mediaUrl}
@@ -996,30 +997,41 @@ function MessageBubble({
             />
           </a>
           {message.content && message.content !== message.fileName && (
-            <p className="text-sm mt-2 leading-relaxed whitespace-pre-wrap">{message.content}</p>
+            <p className="text-[15px] mt-2 leading-relaxed whitespace-pre-wrap">{message.content}</p>
           )}
         </div>
       ) : message.messageType === "file" && message.mediaUrl ? (
-        <ChatFileAttachment message={message} isOwn={isOwn} timeClass={timeClass} />
+        <div className="mb-1">
+          <ChatFileAttachment message={message} isOwn={isOwn} timeClass={timeClass} />
+        </div>
       ) : (
-        <LinkifyText text={message.content} isOwn={isOwn} />
+        <div className="text-[15px] leading-relaxed font-['Plus_Jakarta_Sans']">
+          <LinkifyText text={message.content} isOwn={isOwn} />
+        </div>
       )}
-      <div className={`flex items-center justify-end gap-1.5 mt-1 ${timeClass}`}>
+      <div className={`flex items-center justify-end gap-1 mt-1.5 ${timeClass}`}>
         {message.isBroadcast && (
-          <span className="inline-flex items-center gap-0.5 text-[9px] font-['Geist_Mono'] opacity-80">
-            <Megaphone size={9} /> Broadcast
+          <span className="inline-flex items-center gap-0.5 text-[10px] font-['Geist_Mono'] opacity-80 mr-1">
+            <Megaphone size={10} /> Broadcast
           </span>
         )}
-        <span className="text-[10px] font-['Geist_Mono']">{formatMessageTime(message.createdAt)}</span>
-        {isOwn && deliveryStatus && <MessageStatusTicks status={deliveryStatus} />}
+        <span className="text-[11px] font-['Plus_Jakarta_Sans'] font-medium flex items-center gap-1">
+          {isOwn && <Eye size={12} className="opacity-70" />}
+          <span className="ml-0.5 opacity-90">{formatMessageTime(message.createdAt)}</span>
+        </span>
+        {isOwn && deliveryStatus && (
+          <div className="ml-1 opacity-90">
+            <MessageStatusTicks status={deliveryStatus} />
+          </div>
+        )}
       </div>
     </>
   );
 
   if (isOwn) {
     return (
-      <div className="flex justify-end items-end gap-2.5 pl-12">
-        <div className={`max-w-[78%] px-3.5 py-2.5 ${bubbleBase}`}>{content}</div>
+      <div className="flex justify-end items-end gap-2.5 pl-12 mb-4">
+        <div className={`max-w-[78%] px-4 py-3 relative ${bubbleBase}`}>{content}</div>
         <Avatar
           initials={initialsFromName(message.senderName)}
           src={photoUrl || undefined}
@@ -1030,7 +1042,7 @@ function MessageBubble({
   }
 
   return (
-    <div className="flex justify-start gap-2.5 pr-12">
+    <div className="flex justify-start items-end gap-2.5 pr-12 mb-4">
       <Avatar
         initials={initialsFromName(message.senderName)}
         src={photoUrl || undefined}
@@ -1038,11 +1050,11 @@ function MessageBubble({
       />
       <div className="min-w-0 max-w-[78%]">
         {showSenderName && (
-          <p className="text-[11px] font-semibold text-indigo-300 mb-1 font-['Plus_Jakarta_Sans'] px-1">
+          <p className="text-[11px] text-[#6b7fa8] mb-1 font-['Plus_Jakarta_Sans'] font-semibold ml-2">
             {message.senderName}
           </p>
         )}
-        <div className={`px-3.5 py-2.5 ${bubbleBase}`}>{content}</div>
+        <div className={`px-4 py-3 relative ${bubbleBase}`}>{content}</div>
       </div>
     </div>
   );
@@ -1082,6 +1094,8 @@ export function ChatView({
   const [sendError, setSendError] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [channelSearchQuery, setChannelSearchQuery] = useState("");
+  const [contactSearchQuery, setContactSearchQuery] = useState("");
   const [showNewGroup, setShowNewGroup] = useState(false);
   const [showNewDm, setShowNewDm] = useState(false);
   const [groupName, setGroupName] = useState("");
@@ -1093,6 +1107,7 @@ export function ChatView({
   const [gifSearch, setGifSearch] = useState("");
   const [gifResults, setGifResults] = useState<any[]>([]);
   const [gifLoading, setGifLoading] = useState(false);
+  const [latestMsgs, setLatestMsgs] = useState<Record<string, { content: string, isOwn: boolean, time: string }>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sendingRef = useRef(false);
@@ -1124,10 +1139,14 @@ export function ChatView({
     [channels]
   );
 
-  const tabChannels = useMemo(
-    () => chatChannels.filter(c => c.channelType === activeTab),
-    [chatChannels, activeTab]
-  );
+  const tabChannels = useMemo(() => {
+    let list = chatChannels.filter(c => c.channelType === activeTab);
+    const q = channelSearchQuery.trim().toLowerCase();
+    if (q) {
+      list = list.filter(c => c.displayName.toLowerCase().includes(q));
+    }
+    return list;
+  }, [chatChannels, activeTab, channelSearchQuery]);
 
   const activeChannel = useMemo(
     () => tabChannels.find(c => c.id === activeChannelId) ?? tabChannels[0] ?? null,
@@ -1162,10 +1181,14 @@ export function ChatView({
   const tablesMissing = channelsError ? isMissingChatTables(channelsError) : false;
   const cloudinaryReady = isCloudinaryConfigured();
 
-  const otherProfiles = useMemo(
-    () => profiles.filter(p => p.id !== currentUser?.id),
-    [profiles, currentUser?.id]
-  );
+  const otherProfiles = useMemo(() => {
+    let list = profiles.filter(p => p.id !== currentUser?.id);
+    const q = contactSearchQuery.trim().toLowerCase();
+    if (q) {
+      list = list.filter(p => p.name.toLowerCase().includes(q) || (p.role && p.role.toLowerCase().includes(q)));
+    }
+    return list;
+  }, [profiles, currentUser?.id, contactSearchQuery]);
 
   const memberCount = activeChannel?.memberIds.length || 0;
 
@@ -1465,6 +1488,40 @@ export function ChatView({
     );
   }
 
+  useEffect(() => {
+    if (tabChannels.length === 0) return;
+    let cancelled = false;
+    async function fetchLatest() {
+      const channelIds = tabChannels.map(c => c.id);
+      const { data } = await supabase
+        .from("chat_messages")
+        .select("channel_id, content, message_type, sender_id, sender_name, created_at")
+        .in("channel_id", channelIds)
+        .order("created_at", { ascending: false })
+        .limit(300);
+      
+      if (cancelled || !data) return;
+      const map: Record<string, { content: string, isOwn: boolean, time: string }> = {};
+      for (const row of data) {
+         if (!map[row.channel_id]) {
+            const isOwn = Boolean(
+              currentUser &&
+                ((row.sender_id && row.sender_id === currentUser.id) ||
+                  namesMatch(row.sender_name, currentUser.name))
+            );
+            let text = row.content || "";
+            if (!text) {
+               text = row.message_type === "image" ? "🖼️ Photo" : "📎 Attachment";
+            }
+            map[row.channel_id] = { content: text, isOwn, time: row.created_at };
+         }
+      }
+      setLatestMsgs(map);
+    }
+    fetchLatest();
+    return () => { cancelled = true; };
+  }, [tabChannels, messages, currentUser]);
+
   if (channelsLoading && chatChannels.length === 0) return <DataLoading label="Loading chat..." />;
   if (channelsError && !tablesMissing) return <DataError message={channelsError} />;
 
@@ -1479,6 +1536,7 @@ export function ChatView({
     { id: "group", label: "Groups" },
   ];
 
+
   return (
     <div className="space-y-0">
       {tablesMissing && <ChatSetupBanner />}
@@ -1490,8 +1548,8 @@ export function ChatView({
         </div>
       )}
 
-      <div className="flex gap-4 h-[calc(100vh-160px)]">
-        <div className="w-56 bg-[#080c1f] border border-[rgba(99,102,241,0.1)] rounded-xl flex flex-col overflow-hidden shrink-0">
+      <div className="flex gap-4 h-[calc(100vh-160px)] relative">
+        <div className="w-64 bg-gradient-to-b from-[#0a0f25] to-[#050814] border border-white/[0.05] rounded-2xl flex flex-col overflow-hidden shrink-0 shadow-2xl relative z-10">
           <div className="p-3 border-b border-[rgba(99,102,241,0.1)]">
             <div className="flex items-center justify-between mb-2">
               <p className="text-xs font-semibold text-white font-['Plus_Jakarta_Sans']">Messages</p>
@@ -1522,7 +1580,17 @@ export function ChatView({
             </div>
           </div>
 
-          <div className="px-2 py-2 border-b border-[rgba(99,102,241,0.08)]">
+          <div className="px-2 py-2 border-b border-[rgba(99,102,241,0.08)] space-y-2">
+            <div className="relative">
+              <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-indigo-400/70" />
+              <input
+                type="text"
+                placeholder={`Search ${activeTab === "dm" ? "direct messages" : "groups"}...`}
+                value={channelSearchQuery}
+                onChange={e => setChannelSearchQuery(e.target.value)}
+                className="w-full bg-[#080c1f] border border-[rgba(99,102,241,0.15)] rounded-lg pl-7 pr-3 py-1.5 text-xs text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-indigo-500/40 transition-colors font-['Plus_Jakarta_Sans']"
+              />
+            </div>
             {activeTab === "group" && (
               <button
                 type="button"
@@ -1562,24 +1630,46 @@ export function ChatView({
                   key={ch.id}
                   type="button"
                   onClick={() => selectChannel(ch)}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-xs font-['Geist_Mono'] transition-colors flex items-center justify-between gap-2 ${
+                  className={`w-full text-left px-3 py-2.5 rounded-xl text-xs font-['Plus_Jakarta_Sans'] font-medium transition-all duration-300 flex items-center justify-between gap-2 border ${
                     isActive
-                      ? "bg-indigo-600/20 text-indigo-300"
-                      : "text-[#6b7fa8] hover:text-[#a8b5d1] hover:bg-white/[0.03]"
+                      ? "bg-gradient-to-r from-indigo-500/20 to-violet-500/10 text-indigo-300 border-indigo-500/30 shadow-[0_0_15px_rgba(99,102,241,0.15)]"
+                      : "border-transparent text-[#6b7fa8] hover:text-[#e2e8f7] hover:bg-white/[0.03]"
                   }`}
                 >
-                  <span className="truncate flex items-center gap-1.5 min-w-0">
-                    {ch.channelType === "dm" ? (
+                  {ch.channelType === "dm" && (
+                    <div className="shrink-0 mr-1.5">
                       <Avatar
                         initials={initialsFromName(label)}
                         src={peerProfile?.profileImageUrl || undefined}
                         size="sm"
                       />
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between">
+                      <span className="truncate flex items-center gap-1.5 text-[13px] font-bold text-white font-['Plus_Jakarta_Sans']">
+                        {ch.channelType !== "dm" && <Icon size={12} className="shrink-0 text-indigo-400" />}
+                        <span className="truncate">{label}</span>
+                      </span>
+                      {latestMsgs[ch.id] && (
+                        <span className="shrink-0 text-[10px] text-[#6b7fa8] ml-2">
+                           {formatMessageTime(latestMsgs[ch.id].time)}
+                        </span>
+                      )}
+                    </div>
+                    {latestMsgs[ch.id] ? (
+                      <div className="flex items-center gap-1 mt-1 text-[#a8b5d1]">
+                        {latestMsgs[ch.id].isOwn && (
+                           <CheckCheck size={12} className="text-[#8362ff]" />
+                        )}
+                        <span className="truncate text-[11px] font-['Plus_Jakarta_Sans']">
+                           {latestMsgs[ch.id].isOwn ? "You: " : ""}{latestMsgs[ch.id].content}
+                        </span>
+                      </div>
                     ) : (
-                      <Icon size={12} className="shrink-0" />
+                      <p className="text-[11px] text-[#6b7fa8] mt-1 italic font-['Plus_Jakarta_Sans']">No messages yet</p>
                     )}
-                    <span className="truncate">{label}</span>
-                  </span>
+                  </div>
                   {unread > 0 && !isActive && (
                     <span className="shrink-0 text-[10px] bg-indigo-600 text-white px-1.5 py-0.5 rounded-full">
                       {unread}
@@ -1596,8 +1686,8 @@ export function ChatView({
             )}
           </div>
 
-          <div className="p-3 border-t border-[rgba(99,102,241,0.1)]">
-            <div className="flex items-center gap-2 p-2 bg-[#131a35] rounded-lg">
+          <div className="p-3 border-t border-white/[0.05]">
+            <div className="flex items-center gap-3 p-2.5 bg-white/[0.02] border border-white/[0.05] rounded-xl">
               <Avatar
                 initials={displayInitials}
                 src={currentUser?.profileImageUrl || undefined}
@@ -1611,8 +1701,8 @@ export function ChatView({
           </div>
         </div>
 
-        <div className="flex-1 bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl flex flex-col overflow-hidden">
-          <div className="p-4 border-b border-[rgba(99,102,241,0.1)] flex items-center justify-between shrink-0 gap-3">
+        <div className="flex-1 bg-gradient-to-br from-[#0d1326] to-[#080c1a] border border-white/[0.08] rounded-2xl flex flex-col overflow-hidden shadow-[0_0_50px_rgba(99,102,241,0.05)] relative">
+          <div className="p-4 border-b border-white/[0.05] flex items-center justify-between shrink-0 gap-3 bg-white/[0.02] backdrop-blur-xl z-10">
             <div className="flex items-center gap-2 min-w-0">
               {activeChannel?.channelType === "dm" && activeDmPeer ? (
                 <Avatar
@@ -1684,7 +1774,7 @@ export function ChatView({
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-4 py-5 space-y-3 bg-[#080c1a]/50">
+          <div className="flex-1 overflow-y-auto px-5 py-6 space-y-2 relative z-0">
             {messagesLoading && messages.length === 0 && (
               <DataLoading label="Loading messages..." />
             )}
@@ -1692,12 +1782,16 @@ export function ChatView({
               <DataError message={messagesError} />
             )}
             {!messagesLoading && filteredMessages.length === 0 && (
-              <div className="text-center py-16">
-                <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-indigo-600/15 flex items-center justify-center">
-                  <MessageCircle size={22} className="text-indigo-400" />
+              <div className="flex-1 flex flex-col items-center justify-center h-full min-h-[400px] relative">
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-72 h-72 bg-indigo-500/10 rounded-full blur-[80px] pointer-events-none"></div>
+                <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-indigo-500 to-violet-500 flex items-center justify-center mb-6 shadow-[0_0_40px_rgba(99,102,241,0.5)] relative z-10 rotate-3 transition-transform hover:rotate-6">
+                  <MessageCircle size={28} className="text-white" />
                 </div>
-                <p className="text-sm text-[#a8b5d1] font-['Plus_Jakarta_Sans']">
-                  {searchQuery ? "No messages match your search." : "No messages yet. Say hello!"}
+                <h3 className="text-xl font-bold text-white font-['Plus_Jakarta_Sans'] relative z-10">
+                  {searchQuery ? "No matches found" : "Start a Conversation"}
+                </h3>
+                <p className="text-sm text-[#a8b5d1] mt-2 font-['Plus_Jakarta_Sans'] relative z-10 text-center max-w-xs">
+                  {searchQuery ? "Try a different search term" : "Send a message to break the ice and start collaborating."}
                 </p>
               </div>
             )}
@@ -1724,9 +1818,9 @@ export function ChatView({
             <div ref={messagesEndRef} />
           </div>
 
-          <div className="p-4 border-t border-[rgba(99,102,241,0.1)] shrink-0 space-y-2">
-            {sendError && <p className="text-xs text-rose-400">{sendError}</p>}
-            <div className="flex items-center gap-2 bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-3 py-3 focus-within:border-indigo-500/40 transition-colors">
+          <div className="p-4 shrink-0 space-y-2 bg-white/[0.02] backdrop-blur-xl border-t border-white/[0.05] z-10">
+            {sendError && <p className="text-xs text-rose-400 pl-4">{sendError}</p>}
+            <div className="flex items-center gap-2 bg-[#131a35]/80 border border-white/[0.08] rounded-full px-4 py-2.5 focus-within:border-indigo-500/50 focus-within:bg-[#181f3a] focus-within:shadow-[0_0_20px_rgba(99,102,241,0.15)] transition-all duration-300">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -1948,6 +2042,16 @@ export function ChatView({
               <button type="button" onClick={() => setShowNewDm(false)} className="text-[#6b7fa8] hover:text-white">
                 <X size={16} />
               </button>
+            </div>
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-indigo-400/70" />
+              <input
+                type="text"
+                placeholder="Search contacts..."
+                value={contactSearchQuery}
+                onChange={e => setContactSearchQuery(e.target.value)}
+                className="w-full bg-[#080c1f] border border-[rgba(99,102,241,0.15)] rounded-lg pl-9 pr-3 py-2 text-xs text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-indigo-500/40 transition-colors font-['Plus_Jakarta_Sans']"
+              />
             </div>
             <div className="max-h-64 overflow-y-auto space-y-1">
               {otherProfiles.map(p => (

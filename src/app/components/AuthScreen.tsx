@@ -108,8 +108,16 @@ export function AuthScreen({ onLogin }: { onLogin: (role: string, name: string) 
     setError("");
 
     // Request notification permission immediately on user interaction
-    if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
-      Notification.requestPermission().catch(() => {});
+    if (typeof window !== "undefined" && "Notification" in window) {
+      if (Notification.permission === "denied") {
+        alert("Notifications are blocked in your browser. Please click the lock icon in the URL bar to allow them.");
+      } else if (Notification.permission === "default") {
+        try {
+          await Notification.requestPermission();
+        } catch (e) {
+          console.error("Notification permission error:", e);
+        }
+      }
     }
 
     try {
@@ -141,8 +149,16 @@ export function AuthScreen({ onLogin }: { onLogin: (role: string, name: string) 
     setError("");
 
     // Request notification permission immediately on user interaction
-    if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
-      Notification.requestPermission().catch(() => {});
+    if (typeof window !== "undefined" && "Notification" in window) {
+      if (Notification.permission === "denied") {
+        alert("Notifications are blocked in your browser. Please click the lock icon in the URL bar to allow them.");
+      } else if (Notification.permission === "default") {
+        try {
+          await Notification.requestPermission();
+        } catch (e) {
+          console.error("Notification permission error:", e);
+        }
+      }
     }
 
     const appRole = (selectedRole || "employee") as AppRoleId;

@@ -1123,12 +1123,17 @@ export function TasksView({
     }
     if (filters.search.trim()) {
       const q = filters.search.toLowerCase();
-      result = result.filter(t =>
-        t.title.toLowerCase().includes(q) ||
-        t.assignee.toLowerCase().includes(q) ||
-        t.project.toLowerCase().includes(q) ||
-        (t.workNotes || "").toLowerCase().includes(q)
-      );
+      const isExactAssigneeName = taskAssignees.some(a => a.toLowerCase() === q || a.toLowerCase().split(' ')[0] === q);
+      
+      if (isExactAssigneeName) {
+        result = result.filter(t => t.assignee.toLowerCase().includes(q));
+      } else {
+        result = result.filter(t =>
+          t.title.toLowerCase().includes(q) ||
+          t.assignee.toLowerCase().includes(q) ||
+          t.project.toLowerCase().includes(q)
+        );
+      }
     }
     return result;
   }, [displayTasks, filters, fixedProjectId]);

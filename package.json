@@ -18,7 +18,8 @@
     "asar": false,
     "compression": "store",
     "directories": {
-      "output": "build-release"
+      "output": "build-release",
+      "buildResources": "assets"
     },
     "nsis": {
       "oneClick": true,

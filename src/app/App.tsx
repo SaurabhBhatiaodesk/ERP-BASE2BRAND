@@ -35,6 +35,7 @@ import { AICopilotView } from "./components/views/AICopilotView";
 import { useElectronIdleTracker } from "@/hooks/useElectronIdleTracker";
 import { useNotifications } from "@/hooks/useNotifications";
 import { playBeep } from "@/lib/audio";
+import { FloatingQuickActions } from "./components/FloatingQuickActions";
 
 type RoleId = "ceo" | "teamlead" | "employee" | "developer" | "designer" | "marketing" | "hr";
 
@@ -56,6 +57,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "hrms", label: "HRMS", icon: Award },
     { id: "profiles", label: "Employee Profiles", icon: UserCheck },
     { id: "timesheet", label: "Time Sheet", icon: Clock },
+    { id: "timereports", label: "Time Reports", icon: Calendar },
     { id: "productivity", label: "AI Productivity", icon: Monitor },
     { id: "analytics", label: "Analytics", icon: BarChart3 },
     { id: "revenue", label: "Revenue & KPI", icon: DollarSign },
@@ -112,7 +114,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "employee", label: "My Dashboard", icon: LayoutDashboard },
     { id: "hr", label: "HR Overview", icon: Users },
     { id: "recruitment", label: "Recruitment", icon: Briefcase },
-    { id: "timesheet", label: "Time Reports", icon: Calendar },
+    { id: "timesheet", label: "Time Sheet", icon: Clock },
     { id: "hrms", label: "HRMS", icon: Award },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
@@ -127,7 +129,7 @@ const viewTitles: Record<string, string> = {
   developer: "Dev Hub", designer: "Design Hub", marketing: "Marketing Hub",
   revenue: "Revenue & KPI", hrms: "HRMS",
   profiles: "Employee Profiles", clientdetail: "Client Profiles",
-  timesheet: "Time Reports", productivity: "AI Productivity", register: "Register & Add",
+  timesheet: "Time Sheet", timereports: "Time Reports", productivity: "AI Productivity", register: "Register & Add",
   projects: "Projects & Work", leaves: "Apply Leave",
   settings: "Settings", notifications: "Notifications",
   broadcast: "Broadcast", projectworkspace: "Project", projectdetail: "Project Details", invoices: "Invoices & Billing",
@@ -334,6 +336,26 @@ export default function App() {
   const sidebarMenuRef = useRef<HTMLDivElement>(null);
   const navRestoredRef = useRef(false);
 
+  const [notificationPermission, setNotificationPermission] = useState<string>("default");
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      setNotificationPermission(Notification.permission);
+    }
+  }, []);
+
+  const requestNotificationAccess = async () => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      const perm = await Notification.requestPermission();
+      setNotificationPermission(perm);
+      if (perm === "granted" && currentProfile?.id) {
+         import("@/lib/firebase").then(({ requestFirebaseToken }) => {
+            requestFirebaseToken(currentProfile.id, "BFsN6ecy2D12X0vjN6zIt8BtV50Q4uGhmk9Dd3mZElGvXzRqxP5ROx1ZK5adB_YYbTU57H_h7CijF4QXF9hxKyk").catch(console.error);
+         });
+      }
+    }
+  };
+
   const { data: profiles, refresh: refreshProfiles } = useEmployeeProfiles();
   const currentProfile = useMemo(
     () => findProfileForUser(profiles, userName, userEmail),
@@ -383,11 +405,44 @@ export default function App() {
     }
 
     checkAndBeep();
+    checkAndBeep();
     return () => {
       cancelled = true;
       if (id) clearInterval(id);
     };
   }, [idleSeconds > 180, userRole, currentProfile]);
+
+  // Global Realtime Listener for Desktop Notifications
+  useEffect(() => {
+    if (!currentProfile?.id || typeof window === "undefined" || !("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+
+    const channel = supabase
+      .channel("desktop-notifications")
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "notifications",
+          filter: `recipient_id=eq.${currentProfile.id}`
+        },
+        (payload) => {
+          const newNotif = payload.new;
+          if (newNotif) {
+            new Notification(newNotif.title || "Base2Brand ERP", {
+              body: newNotif.message || "You have a new notification",
+              icon: "/assets/icon.png", // Attempt to load app icon if available
+            });
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentProfile?.id]);
 
   const navItems = useMemo(() => {
     const base = roleNavMap[userRole] ?? roleNavMap.ceo;
@@ -436,11 +491,17 @@ export default function App() {
     }
 
     supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (session?.user) {
-        const role = await syncAuthUser(session.user);
-        if (role) restoreNavOnce(role);
+      try {
+        if (session?.user) {
+          const role = await syncAuthUser(session.user);
+          if (role) restoreNavOnce(role);
+        }
+      } catch (err) {
+        console.error("Failed to sync auth session:", err);
+        // Session exists but sync failed (likely network issue), let them retry or handle gracefully
+      } finally {
+        if (!cancelled) setAuthLoading(false);
       }
-      if (!cancelled) setAuthLoading(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -581,14 +642,13 @@ export default function App() {
         />
       );
       case "timesheet": 
-        if (isPersonalTaskRole(userRole)) {
-          return (
-            <TimesheetView 
-              userRole={userRole}
-              userName={userName}
-            />
-          );
-        }
+        return (
+          <TimesheetView 
+            userRole={userRole}
+            userName={userName}
+          />
+        );
+      case "timereports":
         return (
           <TimesheetViewRoot
             onNavigate={(view, options) => {
@@ -942,6 +1002,25 @@ export default function App() {
                     <span className="font-['Plus_Jakarta_Sans']">Edit Profile</span>
                   </button>
                   <button
+                    onClick={async () => {
+                      setShowHeaderMenu(false);
+                      if (Notification.permission === "granted") {
+                        alert("App is allowed to send notifications! Sending a test notification now. If you don't see it, please ensure 'Base2Brand ERP' is turned ON in your Windows Notification Settings.");
+                      } else if (Notification.permission === "denied") {
+                        alert("Notifications are blocked! Please allow them in your browser/app settings.");
+                      } else {
+                        await requestNotificationAccess();
+                      }
+                      if (Notification.permission === "granted") {
+                         new Notification("Notifications Enabled", { body: "You are all set to receive alerts!" });
+                      }
+                    }}
+                    className="w-full flex items-center gap-2.5 px-4 py-3 text-sm text-[#a8b5d1] hover:bg-white/[0.04] transition-colors"
+                  >
+                    <Bell size={14} />
+                    <span className="font-['Plus_Jakarta_Sans']">Enable Notifications</span>
+                  </button>
+                  <button
                     onClick={handleLogout}
                     className="w-full flex items-center gap-2.5 px-4 py-3 text-sm text-red-400 hover:bg-red-500/10 transition-colors"
                   >
@@ -955,27 +1034,33 @@ export default function App() {
         </header>
 
         {/* Content */}
-        <main className="flex-1 overflow-y-auto p-4 lg:p-6">
+        <main className="flex-1 overflow-y-auto p-4 lg:p-6 relative">
+          {notificationPermission === "default" && (
+            <div className="mb-4 bg-indigo-600/10 border border-indigo-500/20 rounded-xl p-4 flex items-center justify-between">
+              <div className="flex items-center gap-3 text-indigo-200">
+                <Bell className="w-5 h-5 text-indigo-400" />
+                <div className="text-sm font-['Plus_Jakarta_Sans']">
+                  <p className="font-semibold text-white">Enable Notifications</p>
+                  <p className="text-xs text-[#a8b5d1] mt-0.5">Allow notifications to receive important alerts and messages from your team.</p>
+                </div>
+              </div>
+              <button 
+                onClick={requestNotificationAccess}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg transition-colors font-['Plus_Jakarta_Sans'] whitespace-nowrap ml-4"
+              >
+                Allow
+              </button>
+            </div>
+          )}
           {renderView()}
         </main>
       </div>
 
-      {/* AI Assistant panel */}
-      {showAI && <AIAssistantPanel onClose={() => setShowAI(false)} />}
+      {/* Floating Quick Actions */}
+      <FloatingQuickActions roleLabel={roleLabel} />
       
       {/* Toast Notifications */}
       <Toaster position="bottom-right" richColors theme="dark" />
-
-      {/* AI Floating Button */}
-      <div className="fixed bottom-6 right-6 z-40">
-        <button onClick={() => setShowAI(v => !v)}
-          className={`w-12 h-12 bg-gradient-to-br from-indigo-600 to-violet-600 rounded-full shadow-lg shadow-indigo-600/30 flex items-center justify-center hover:shadow-indigo-600/50 hover:scale-105 transition-all duration-200 ${showAI ? "ring-2 ring-indigo-400 ring-offset-2 ring-offset-[#06091a]" : ""}`}>
-          <Brain size={20} className="text-white" />
-        </button>
-        {!showAI && (
-          <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full text-[9px] text-white font-bold flex items-center justify-center font-['Geist_Mono']">4</span>
-        )}
-      </div>
 
       <style>{`
         ::-webkit-scrollbar { width: 4px; height: 4px; }

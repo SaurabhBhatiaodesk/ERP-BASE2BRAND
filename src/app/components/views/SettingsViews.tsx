@@ -6,8 +6,9 @@ import {
 } from "lucide-react";
 import { Avatar, Badge } from "../ui";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
-import { useProjects } from "@/hooks/useSupabaseData";
-
+import { useProjects, useEmployeeProfiles } from "@/hooks/useSupabaseData";
+import { insertNotification } from "@/lib/database";
+import { saveQuickAction } from "@/lib/quickActions";
 export function SettingsPage() {
   const [section, setSection] = useState("profile");
   const [saved, setSaved] = useState(false);
@@ -275,28 +276,57 @@ export function NotificationsCenterView({
   );
 }
 
-const pastAnnouncements = [
-  { id: 1, title: "Q1 Results — Record Revenue!", body: "Team Base2Brand hit ₹96L in Q1, our best quarter ever. Special performance bonuses will be processed this Friday. Thank you for your incredible work!", author: "CEO Admin", time: "May 22, 11:00 AM", audience: "All Staff", priority: "High", read: 34 },
-  { id: 2, title: "New Leave Policy Effective June 1", body: "Please review the updated leave policy in the HR portal. Key change: carry-forward limit increased from 12 to 18 days.", author: "Sneha Reddy", time: "May 19, 2:30 PM", audience: "All Staff", priority: "Normal", read: 31 },
-  { id: 3, title: "Dev Team — Sprint #15 Kickoff", body: "Sprint #15 starts May 27. Please complete your task estimates in the system by EOD Friday.", author: "Priya Sharma", time: "May 18, 9:00 AM", audience: "Development", priority: "Normal", read: 11 },
-];
+const pastAnnouncements: any[] = [];
 
 export function BroadcastView() {
+  const { data: profiles } = useEmployeeProfiles();
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [audience, setAudience] = useState("All Staff");
   const [priority, setPriority] = useState("Normal");
   const [sent, setSent] = useState(false);
   const [announcements, setAnnouncements] = useState(pastAnnouncements);
+  const [sending, setSending] = useState(false);
 
-  function send() {
+  async function send() {
     if (!title.trim() || !body.trim()) return;
-    setAnnouncements(prev => [{
-      id: prev.length + 1, title, body, author: "CEO Admin",
-      time: "Just now", audience, priority, read: 0,
-    }, ...prev]);
-    setTitle(""); setBody("");
-    setSent(true); setTimeout(() => setSent(false), 3000);
+    setSending(true);
+    try {
+      await saveQuickAction({
+        type: "broadcast",
+        message: body,
+        audience,
+        title,
+        priority
+      });
+
+      const assignableEmployees = profiles.filter(p => p.dept !== "Executive" && p.name !== "CEO Admin");
+      const targets = audience === "All Staff" 
+        ? assignableEmployees 
+        : assignableEmployees.filter(p => p.dept === audience);
+
+      await Promise.all(targets.map(p => {
+        if (p.id) {
+          return insertNotification({
+            recipientId: p.id,
+            title: title || `Broadcast: ${audience}`,
+            message: body,
+            type: "broadcast"
+          });
+        }
+      }));
+
+      setAnnouncements(prev => [{
+        id: prev.length + 1, title, body, author: "CEO Admin",
+        time: "Just now", audience, priority, read: 0,
+      }, ...prev]);
+      setTitle(""); setBody("");
+      setSent(true); setTimeout(() => setSent(false), 3000);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSending(false);
+    }
   }
 
   return (
@@ -350,10 +380,9 @@ export function BroadcastView() {
           </div>
           <div className="flex items-center justify-between pt-2">
             <p className="text-[11px] text-[#6b7fa8] font-['Plus_Jakarta_Sans']">Notification will be sent via in-app, email, and Slack.</p>
-            <button onClick={send}
-              className="px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-semibold rounded-xl transition-all font-['Plus_Jakarta_Sans'] shadow-lg shadow-indigo-600/20">
-              Send Broadcast →
-            </button>
+            <button onClick={send} disabled={sending} className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2.5 rounded-xl text-sm font-semibold transition-colors font-['Plus_Jakarta_Sans'] flex items-center gap-2 shadow-lg shadow-indigo-600/20 disabled:opacity-50">
+            {sending ? "Sending..." : "Send Broadcast"} <Send size={14} />
+          </button>
           </div>
         </div>
       </div>

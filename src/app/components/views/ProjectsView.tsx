@@ -414,7 +414,7 @@ function EditProjectModal({
       onSuccess();
     } catch (err) {
       console.error(err);
-      alert("Failed to update project team.");
+      alert("Failed to update project team: " + (err instanceof Error ? err.message : JSON.stringify(err)));
     } finally {
       setSubmitting(false);
     }

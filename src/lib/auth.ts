@@ -29,9 +29,6 @@ export const APP_ROLE_OPTIONS: { id: AppRoleId; label: string }[] = [
   { id: "ceo", label: "CEO / Admin" },
   { id: "teamlead", label: "Team Leader" },
   { id: "employee", label: "Employee" },
-  { id: "developer", label: "Developer" },
-  { id: "designer", label: "Designer" },
-  { id: "marketing", label: "Marketing" },
   { id: "hr", label: "HR Manager" },
 ];
 
