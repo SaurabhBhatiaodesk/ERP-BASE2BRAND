@@ -814,9 +814,10 @@ export function EmployeeDashboard({
     return () => clearInterval(id);
   }, [activeClock, todaySession, isMeetingBreak, refreshClockState]);
 
+  const activeOrMeetingSessionId = activeClock?.id || (isMeetingBreak ? todaySession?.id : null);
+
   useEffect(() => {
-    const activeOrMeetingSession = activeClock || (isMeetingBreak ? todaySession : null);
-    if (!activeOrMeetingSession || !userName) return;
+    if (!activeOrMeetingSessionId || !userName) return;
 
     const captureScreenshot = async () => {
       try {
@@ -841,11 +842,16 @@ export function EmployeeDashboard({
       }
     };
 
-    // Background screenshot every 10 minutes
+    // Capture immediately (after 10s delay to let system load)
+    const initialTimeout = setTimeout(captureScreenshot, 10000);
+    // Then every 10 minutes
     const captureInterval = setInterval(captureScreenshot, 10 * 60 * 1000);
 
-    return () => clearInterval(captureInterval);
-  }, [activeClock, todaySession, isMeetingBreak, userName, myProfile?.id]);
+    return () => {
+      clearTimeout(initialTimeout);
+      clearInterval(captureInterval);
+    };
+  }, [activeOrMeetingSessionId, userName, myProfile?.id]);
 
   const assigneeName = myProfile?.name || userName;
 

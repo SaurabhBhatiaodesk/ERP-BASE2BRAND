@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, powerMonitor, desktopCapturer } from 'electron';
+import { app, BrowserWindow, ipcMain, powerMonitor, desktopCapturer, systemPreferences } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -64,10 +64,17 @@ app.whenReady().then(() => {
   // Handle IPC request for screenshot
   ipcMain.handle('take-screenshot', async () => {
     try {
+      if (process.platform === 'darwin') {
+        const status = systemPreferences.getMediaAccessStatus('screen');
+        if (status !== 'granted') {
+          return null; // Return null silently to avoid repeatedly triggering OS prompts if denied
+        }
+      }
+
       const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1920, height: 1080 } });
       if (sources.length > 0) {
-        // Return base64 encoded image
-        return sources[0].thumbnail.toDataURL();
+        // Return base64 encoded image compressed as JPEG (quality 60) for fast uploads
+        return 'data:image/jpeg;base64,' + sources[0].thumbnail.toJPEG(60).toString('base64');
       }
       return null;
     } catch (err) {

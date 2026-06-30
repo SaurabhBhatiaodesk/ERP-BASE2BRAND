@@ -98,6 +98,8 @@ export function aggregateStageSeconds(
   currentStatus: string,
   statusEnteredAt?: string | null,
   targetDate?: string, // Format: YYYY-MM-DD
+  assigneeId?: string | null,
+  attendanceSessions?: any[] // Using any[] to avoid circular import, will rely on duck typing {employeeId, clockIn, clockOut}
 ): Record<string, number> {
   const totals: Record<string, number> = {};
 
@@ -113,6 +115,32 @@ export function aggregateStageSeconds(
     return Math.floor((overlapEnd - overlapStart) / 1000);
   };
 
+  const getAttendanceOverlapSeconds = (enteredAt: string, exitedAt: string | null) => {
+    const start = new Date(enteredAt).getTime();
+    const end = exitedAt ? new Date(exitedAt).getTime() : Date.now();
+    
+    if (!assigneeId || !attendanceSessions || attendanceSessions.length === 0) {
+      return Math.floor((end - start) / 1000);
+    }
+
+    const employeeSessions = attendanceSessions.filter(s => s.employeeId === assigneeId);
+    if (employeeSessions.length === 0) {
+      return Math.floor((end - start) / 1000);
+    }
+
+    let totalOverlapMs = 0;
+    for (const session of employeeSessions) {
+      const sessionStart = new Date(session.clockIn).getTime();
+      const sessionEnd = session.clockOut ? new Date(session.clockOut).getTime() : Date.now();
+
+      if (start > sessionEnd || end < sessionStart) continue;
+      const overlapStart = Math.max(start, sessionStart);
+      const overlapEnd = Math.min(end, sessionEnd);
+      totalOverlapMs += (overlapEnd - overlapStart);
+    }
+    return Math.floor(totalOverlapMs / 1000);
+  };
+
   for (const row of history) {
     // Skip the open row in history, because the live time is handled below using statusEnteredAt
     if (!row.exited_at) continue;
@@ -123,7 +151,10 @@ export function aggregateStageSeconds(
          totals[row.to_status] = (totals[row.to_status] || 0) + overlap;
        }
     } else {
-      if (row.duration_seconds != null) {
+      // Re-calculate duration with attendance intersection if available, otherwise use DB duration
+      if (attendanceSessions && assigneeId) {
+        totals[row.to_status] = (totals[row.to_status] || 0) + getAttendanceOverlapSeconds(row.entered_at, row.exited_at);
+      } else if (row.duration_seconds != null) {
         totals[row.to_status] = (totals[row.to_status] || 0) + row.duration_seconds;
       }
     }
@@ -136,10 +167,7 @@ export function aggregateStageSeconds(
         totals[currentStatus] = (totals[currentStatus] || 0) + overlap;
       }
     } else {
-      const live = Math.max(
-        0,
-        Math.floor((Date.now() - new Date(statusEnteredAt).getTime()) / 1000),
-      );
+      const live = Math.max(0, getAttendanceOverlapSeconds(statusEnteredAt, null));
       totals[currentStatus] = (totals[currentStatus] || 0) + live;
     }
   }

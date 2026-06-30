@@ -427,6 +427,7 @@ async function recordTaskStatusChange(input: {
   fromStatus: string;
   toStatus: string;
   movedById?: string | null;
+  fallbackEnteredAt?: string;
 }): Promise<string> {
   const now = new Date().toISOString();
 
@@ -450,6 +451,23 @@ async function recordTaskStatusChange(input: {
       .update({ exited_at: now, duration_seconds: duration })
       .eq("id", open.id);
     if (closeError) throw closeError;
+  } else if (input.fallbackEnteredAt) {
+    const duration = Math.max(
+      0,
+      Math.floor((Date.now() - new Date(input.fallbackEnteredAt).getTime()) / 1000),
+    );
+    const { error: fallbackError } = await supabase.from("task_status_history").insert({
+      id: newStageHistoryId(),
+      task_id: input.taskId,
+      project_id: input.projectId,
+      from_status: null,
+      to_status: input.fromStatus,
+      entered_at: input.fallbackEnteredAt,
+      exited_at: now,
+      duration_seconds: duration,
+      moved_by: input.movedById || null,
+    });
+    if (fallbackError) throw fallbackError;
   }
 
   const { error: insertError } = await supabase.from("task_status_history").insert({
@@ -472,15 +490,32 @@ async function enrichTasksWithStageHistory(tasks: AppTask[]): Promise<AppTask[]>
   }
 
   const taskIds = tasks.map(t => t.taskId);
-  const { data, error } = await supabase
-    .from("task_status_history")
-    .select("*")
-    .in("task_id", taskIds)
-    .order("entered_at", { ascending: true });
-  if (error) return tasks;
+  let allData: any[] = [];
+  let from = 0;
+  const PAGE_SIZE = 1000;
+  let hasMore = true;
+
+  while (hasMore) {
+    const { data, error } = await supabase
+      .from("task_status_history")
+      .select("*")
+      .in("task_id", taskIds)
+      .order("entered_at", { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    
+    if (error) return tasks;
+    
+    if (data && data.length > 0) {
+      allData = allData.concat(data);
+      from += PAGE_SIZE;
+      if (data.length < PAGE_SIZE) hasMore = false;
+    } else {
+      hasMore = false;
+    }
+  }
 
   const byTask = new Map<string, TaskStageHistoryRow[]>();
-  for (const row of (data || []) as TaskStageHistoryRow[]) {
+  for (const row of allData as TaskStageHistoryRow[]) {
     const list = byTask.get(row.task_id) || [];
     list.push(row);
     byTask.set(row.task_id, list);
@@ -2078,6 +2113,7 @@ export async function updateProjectTask(input: {
         fromStatus: previousStatus,
         toStatus: taskStatus,
         movedById: input.movedById || assigneeId || current.assignee_id,
+        fallbackEnteredAt: statusEnteredAt,
       });
     }
 
@@ -2729,11 +2765,20 @@ export async function clockOutEmployee(input: {
     .single();
   if (fetchError) handleClockSessionsError(fetchError);
 
+  if (session.status === "completed") {
+    return { session: mapClockSession(session), hours: Number(session.hours) || 0 };
+  }
+
   const reason = input.reason || "end_day";
   const endDay = reason === "end_day";
   const clockOutMs = input.forceTimeMs || Date.now();
-  const segmentStart = session.session_start || session.clock_in;
-  const segmentHours = calculateSessionHours(segmentStart, clockOutMs);
+  
+  let segmentHours = 0;
+  if (session.status === "active" || (session.status === "paused" && session.notes?.toLowerCase().includes("meeting"))) {
+    const segmentStart = session.session_start || session.clock_in;
+    segmentHours = calculateSessionHours(segmentStart, clockOutMs);
+  }
+
   const totalHours =
     Math.round(((Number(session.hours) || 0) + segmentHours) * 10000) / 10000;
 

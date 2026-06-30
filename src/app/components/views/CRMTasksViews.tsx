@@ -11,7 +11,7 @@ import {
 import { Avatar, Badge } from "../ui";
 import { TaskStagePills } from "../TaskStagePills";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
-import { useEmployeeProfiles, useLeads, useProjectTasks, useProjects } from "@/hooks/useSupabaseData";
+import { useEmployeeProfiles, useLeads, useProjectTasks, useProjects, useAttendance } from "@/hooks/useSupabaseData";
 import {
   addProjectTask,
   createLead,
@@ -60,7 +60,7 @@ function parseEstHours(est: string) {
   return Number.isNaN(num) ? "4" : String(num);
 }
 
-function TaskStageBreakdown({ task, compact = false }: { task: AppTask; compact?: boolean }) {
+function TaskStageBreakdown({ task, compact = false, attendanceSessions }: { task: AppTask; compact?: boolean; attendanceSessions?: any[] }) {
   const enteredAt = effectiveStatusEnteredAt(task);
 
   if (compact) {
@@ -71,12 +71,14 @@ function TaskStageBreakdown({ task, compact = false }: { task: AppTask; compact?
           history={task.stageHistory}
           statusEnteredAt={enteredAt}
           compact
+          assigneeId={task.assigneeId}
+          attendanceSessions={attendanceSessions}
         />
       </div>
     );
   }
 
-  const totals = aggregateStageSeconds(task.stageHistory, task.status, enteredAt);
+  const totals = aggregateStageSeconds(task.stageHistory, task.status, enteredAt, undefined, task.assigneeId, attendanceSessions);
   const rows = getVisibleStageEntries(task.status, totals, task.stageHistory);
   if (rows.length === 0) return null;
 
@@ -529,9 +531,11 @@ export function CRMView() {
 function KanbanCard({
   task,
   onTaskClick,
+  attendanceSessions,
 }: {
   task: AppTask;
   onTaskClick?: (task: AppTask) => void;
+  attendanceSessions?: any[];
 }) {
   const [{ isDragging }, drag] = useDrag(
     () => ({
@@ -566,7 +570,7 @@ function KanbanCard({
       {task.est && task.est !== "—" && (
         <p className="text-[10px] text-emerald-400 font-['Geist_Mono'] mb-2">{task.est} worked</p>
       )}
-      <TaskStageBreakdown task={task} compact />
+      <TaskStageBreakdown task={task} compact attendanceSessions={attendanceSessions} />
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
           <Avatar initials={task.assignee.split(" ").map(n => n[0]).join("")} size="sm" />
@@ -588,6 +592,7 @@ function KanbanColumn({
   onMoveTask,
   onTaskClick,
   getColId,
+  attendanceSessions,
 }: {
   col: any;
   label: string;
@@ -596,6 +601,7 @@ function KanbanColumn({
   onMoveTask: (task: AppTask, col: any) => void;
   onTaskClick?: (task: AppTask) => void;
   getColId?: (t: AppTask) => string;
+  attendanceSessions?: any[];
 }) {
   const getCol = getColId || ((t: AppTask) => t.status);
   const colTasks = tasks.filter(t => getCol(t) === col);
@@ -625,7 +631,7 @@ function KanbanColumn({
         }`}
       >
         {colTasks.map(task => (
-          <KanbanCard key={task.taskId} task={task} onTaskClick={onTaskClick} />
+          <KanbanCard key={task.taskId} task={task} onTaskClick={onTaskClick} attendanceSessions={attendanceSessions} />
         ))}
         <button
           type="button"
@@ -647,6 +653,7 @@ export function KanbanView({
   onMoveTask,
   onTaskClick,
   getColId,
+  attendanceSessions,
 }: {
   tasks: AppTask[];
   columns: any[];
@@ -655,6 +662,7 @@ export function KanbanView({
   onMoveTask: (task: AppTask, col: any) => void;
   onTaskClick?: (task: AppTask) => void;
   getColId?: (t: AppTask) => string;
+  attendanceSessions?: any[];
 }) {
   const labelFor = getColumnLabel ?? (col => COL_LABELS[col as TaskColumn] || col);
   const gridClass = KANBAN_GRID_COLS[columns.length] || "grid-cols-4";
@@ -678,6 +686,7 @@ export function KanbanView({
             onMoveTask={onMoveTask}
             onTaskClick={onTaskClick}
             getColId={getColId}
+            attendanceSessions={attendanceSessions}
           />
         ))}
       </div>
@@ -1037,6 +1046,7 @@ export function TasksView({
   const { data: tasks, loading, error, refresh } = useProjectTasks();
   const { data: projects } = useProjects();
   const { data: profiles } = useEmployeeProfiles();
+  const { data: attendanceSessions } = useAttendance();
   const [view, setView] = useState<TaskView>("kanban");
   const [kanbanGrouping, setKanbanGrouping] = useState<"status" | "assignee">("status");
   const [dragTasks, setDragTasks] = useState<AppTask[] | null>(null);
@@ -1566,6 +1576,7 @@ export function TasksView({
               getColId={(t: AppTask) => t.assignee}
               onMoveTask={handleMoveTask}
               onTaskClick={openEditTask}
+              attendanceSessions={attendanceSessions}
             />
           ) : (
             <KanbanView
@@ -1575,6 +1586,7 @@ export function TasksView({
               onAddCard={openNewTask}
               onMoveTask={handleMoveTask}
               onTaskClick={openEditTask}
+              attendanceSessions={attendanceSessions}
             />
           )
       )}
@@ -1752,7 +1764,7 @@ export function TasksView({
                     : "Optional now — hours + notes appear in Time Reports in any status."}
                 </p>
               </div>
-              {editingTaskLive && <TaskStageBreakdown task={editingTaskLive} />}
+              {editingTaskLive && <TaskStageBreakdown task={editingTaskLive} attendanceSessions={attendanceSessions} />}
             </div>
             <div className="flex justify-end gap-2 mt-6">
               <button type="button" onClick={() => { setShowForm(false); setEditingTask(null); }} className="px-4 py-2 text-xs text-[#6b7fa8] hover:text-white">Cancel</button>
