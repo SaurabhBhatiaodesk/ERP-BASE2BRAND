@@ -29,6 +29,7 @@ create table if not exists public.project_tasks (
   due text,
   est text,
   work_notes text not null default '',
+  task_date text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

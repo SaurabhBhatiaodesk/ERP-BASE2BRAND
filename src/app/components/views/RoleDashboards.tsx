@@ -822,7 +822,13 @@ export function EmployeeDashboard({
         refreshClockState();
       }
     }, 1000);
-    return () => clearInterval(id);
+    const syncId = setInterval(() => {
+      void refreshClockState();
+    }, 30_000);
+    return () => {
+      clearInterval(id);
+      clearInterval(syncId);
+    };
   }, [timerSessionId, activeClock, todaySession, refreshClockState]);
 
   const assigneeName = myProfile?.name || userName;
@@ -1097,14 +1103,14 @@ export function EmployeeDashboard({
             <span className="text-[10px] text-[#6b7fa8] font-['Plus_Jakarta_Sans']">open in Projects & Work</span>
           </div>
           <p className="text-[10px] text-indigo-400/70 font-['Plus_Jakarta_Sans'] mb-4">
-            Created today · assigned to you · tap to open project
+            Task date is today · assigned to you · edit Task Date to show on another day
           </p>
           {tLoading ? (
             <DataLoading label="Loading today's tasks..." />
           ) : tError ? (
             <DataError message={tError} />
           ) : myTasks.length === 0 ? (
-            <DataEmpty message="No tasks added today. Check Projects & Work for all your work." />
+            <DataEmpty message="No tasks for today. Edit Task Date on a task or add one in Projects & Work." />
           ) : (
             <div className="space-y-2">
               {myTasks.map(t => {

@@ -164,7 +164,7 @@ export function TimesheetView({
   const { data: profiles, loading: pLoading, error: pError } = useEmployeeProfiles();
   const { data: projects, loading: prLoading, error: prError, refresh: refreshProjects } = useProjects();
   const { data: entries, loading: tLoading, error: tError, refresh: refreshTimesheets } = useTimesheets();
-  const { data: attendance, loading: aLoading, error: aError } = useAttendance();
+  const { data: attendance, loading: aLoading, error: aError, refresh: refreshAttendance } = useAttendance();
 
   const defaultRange = useMemo(() => getDefaultRange(), []);
   const [rangeDays, setRangeDays] = useState<7 | 30 | 60 | "custom">(30);
@@ -211,6 +211,20 @@ export function TimesheetView({
     }
     onNavConsumed?.();
   }, [initialTab, initialProjectId, onNavConsumed]);
+
+  const hasLiveOfficeSession = useMemo(() => {
+    const today = formatLocalDate(new Date());
+    return attendance.some(
+      a => a.date === today && (a.status === "active" || a.status === "paused"),
+    );
+  }, [attendance]);
+
+  useEffect(() => {
+    if (timeTab !== "office" || !hasLiveOfficeSession) return;
+    void refreshAttendance();
+    const id = window.setInterval(() => refreshAttendance(), 15_000);
+    return () => window.clearInterval(id);
+  }, [timeTab, hasLiveOfficeSession, refreshAttendance]);
 
   const activeEmployee = useMemo(() => {
     if (personFilter === "everyone") {

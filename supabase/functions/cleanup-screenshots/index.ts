@@ -50,13 +50,25 @@ serve(async (req) => {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - RETENTION_DAYS);
 
-    const { data: oldScreenshots, error: fetchError } = await supabase
-      .from("employee_screenshots")
-      .select("id, image_url")
-      .lt("captured_at", cutoff.toISOString());
+    const oldScreenshots: { id: string; image_url: string }[] = [];
+    let from = 0;
+    const PAGE_SIZE = 1000;
+    while (true) {
+      const { data, error: fetchError } = await supabase
+        .from("employee_screenshots")
+        .select("id, image_url")
+        .lt("captured_at", cutoff.toISOString())
+        .order("captured_at", { ascending: true })
+        .range(from, from + PAGE_SIZE - 1);
 
-    if (fetchError) throw fetchError;
-    if (!oldScreenshots || oldScreenshots.length === 0) {
+      if (fetchError) throw fetchError;
+      if (!data?.length) break;
+      oldScreenshots.push(...data);
+      if (data.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
+
+    if (oldScreenshots.length === 0) {
       return new Response(
         JSON.stringify({ message: `No screenshots older than ${RETENTION_DAYS} days.` }),
         { headers: { "Content-Type": "application/json" } },

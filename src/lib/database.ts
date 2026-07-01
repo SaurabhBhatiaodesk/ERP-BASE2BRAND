@@ -301,6 +301,7 @@ export type AppTask = {
   est: string;
   workNotes: string;
   createdAt: string;
+  taskDate: string;
   statusEnteredAt: string;
   stageHistory: TaskStageHistoryRow[];
 };
@@ -322,6 +323,7 @@ export type DbProjectTaskRow = {
   due: string | null;
   est: string | null;
   work_notes: string;
+  task_date?: string | null;
   created_at?: string;
   updated_at?: string;
   status_entered_at?: string | null;
@@ -360,6 +362,50 @@ async function probeProjectRelations(): Promise<boolean> {
   const { error } = await supabase.from("project_members").select("id").limit(1);
   projectRelationsReady = !error || !isMissingProjectRelationsTable(error);
   return projectRelationsReady;
+}
+
+/** PostgREST returns at most 1000 rows per request — paginate all bulk reads. */
+const SUPABASE_PAGE_SIZE = 1000;
+const SUPABASE_IN_CHUNK_SIZE = 80;
+
+type SupabasePageResult<T> = { data: T[] | null; error: unknown };
+
+function chunkForInFilter<T>(items: T[], size = SUPABASE_IN_CHUNK_SIZE): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+async function fetchAllPaginated<T>(
+  fetchPage: (from: number, pageSize: number) => Promise<SupabasePageResult<T>>
+): Promise<T[]> {
+  const all: T[] = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await fetchPage(from, SUPABASE_PAGE_SIZE);
+    if (error) throw error;
+    if (!data?.length) break;
+    all.push(...data);
+    if (data.length < SUPABASE_PAGE_SIZE) break;
+    from += SUPABASE_PAGE_SIZE;
+  }
+  return all;
+}
+
+async function fetchAllPaginatedInChunks<T>(
+  ids: string[],
+  fetchChunkPage: (chunk: string[], from: number, pageSize: number) => Promise<SupabasePageResult<T>>
+): Promise<T[]> {
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  if (!uniqueIds.length) return [];
+  const all: T[] = [];
+  for (const chunk of chunkForInFilter(uniqueIds)) {
+    const rows = await fetchAllPaginated((from, pageSize) => fetchChunkPage(chunk, from, pageSize));
+    all.push(...rows);
+  }
+  return all;
 }
 
 export async function isProjectRelationsReady() {
@@ -490,28 +536,18 @@ async function enrichTasksWithStageHistory(tasks: AppTask[]): Promise<AppTask[]>
   }
 
   const taskIds = tasks.map(t => t.taskId);
-  let allData: any[] = [];
-  let from = 0;
-  const PAGE_SIZE = 1000;
-  let hasMore = true;
-
-  while (hasMore) {
-    const { data, error } = await supabase
-      .from("task_status_history")
-      .select("*")
-      .in("task_id", taskIds)
-      .order("entered_at", { ascending: true })
-      .range(from, from + PAGE_SIZE - 1);
-    
-    if (error) return tasks;
-    
-    if (data && data.length > 0) {
-      allData = allData.concat(data);
-      from += PAGE_SIZE;
-      if (data.length < PAGE_SIZE) hasMore = false;
-    } else {
-      hasMore = false;
-    }
+  let allData: TaskStageHistoryRow[] = [];
+  try {
+    allData = await fetchAllPaginatedInChunks(taskIds, (chunk, from, pageSize) =>
+      supabase
+        .from("task_status_history")
+        .select("*")
+        .in("task_id", chunk)
+        .order("entered_at", { ascending: true })
+        .range(from, from + pageSize - 1)
+    );
+  } catch {
+    return tasks;
   }
 
   const byTask = new Map<string, TaskStageHistoryRow[]>();
@@ -600,6 +636,7 @@ function mapProjectTaskRowToAppTask(
     est: row.est || "—",
     workNotes: row.work_notes || "",
     createdAt: row.created_at || taskCreatedAtFromId(taskId) || "",
+    taskDate: row.task_date?.trim() || formatLocalDateIso(new Date(row.created_at || taskCreatedAtFromId(taskId) || Date.now())),
     statusEnteredAt: row.status_entered_at === null ? "paused" : (row.status_entered_at || row.created_at || taskCreatedAtFromId(taskId) || ""),
     stageHistory: [],
   };
@@ -616,6 +653,27 @@ function taskCreatedAtFromId(taskId: string): string | null {
 export function resolveTaskCreatedAt(task: AppTask) {
   if (task.createdAt) return task.createdAt;
   return taskCreatedAtFromId(task.taskId) || "";
+}
+
+/** YYYY-MM-DD — which day this task appears on employee Today's Tasks. */
+export function resolveTaskDate(task: AppTask): string {
+  if (task.taskDate?.trim()) return task.taskDate.trim();
+  const created = resolveTaskCreatedAt(task);
+  if (created) return formatLocalDateIso(new Date(created));
+  return formatLocalDateIso(new Date());
+}
+
+export function taskDateToDateInput(taskDate?: string | null) {
+  if (taskDate?.trim() && /^\d{4}-\d{2}-\d{2}$/.test(taskDate.trim())) return taskDate.trim();
+  if (taskDate?.trim()) {
+    const d = new Date(taskDate);
+    if (!Number.isNaN(d.getTime())) return formatLocalDateIso(d);
+  }
+  return formatLocalDateIso(new Date());
+}
+
+function normalizeTaskDateInput(dateStr?: string) {
+  return taskDateToDateInput(dateStr);
 }
 
 // ─── Mappers ─────────────────────────────────────────────────────────────────
@@ -658,18 +716,23 @@ export function normalizeTaskStatusForStorage(status?: string) {
 // ─── Leave Requests ─────────────────────────────────────────────────────────
 
 export async function fetchLeaveRequests(): Promise<LeaveRequest[]> {
-  const { data, error } = await supabase
-    .from("leave_requests")
-    .select("*")
-    .order("created_at", { ascending: false });
-
-  if (error) {
-    if (error.code === "42P01") return []; // Table doesn't exist yet
+  let data: DbLeaveRequest[];
+  try {
+    data = await fetchAllPaginated((from, pageSize) =>
+      supabase
+        .from("leave_requests")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .range(from, from + pageSize - 1)
+    );
+  } catch (error) {
+    const e = error as { code?: string };
+    if (e.code === "42P01") return [];
     console.error("fetchLeaveRequests error:", error);
     return [];
   }
 
-  return (data as DbLeaveRequest[]).map(row => ({
+  return data.map(row => ({
     id: row.id,
     employeeId: row.employee_id,
     employeeName: row.employee_name,
@@ -1064,6 +1127,7 @@ export function flattenDbProjectTasks(projects: DbProject[]): AppTask[] {
           est: t.est || "—",
           workNotes: t.workNotes || "",
           createdAt: taskCreatedAtFromId(taskId) || "",
+          taskDate: taskDateToDateInput(taskCreatedAtFromId(taskId) || undefined),
           statusEnteredAt: taskCreatedAtFromId(taskId) || "",
           stageHistory: [],
         };
@@ -1122,31 +1186,33 @@ export function isTaskCreatedToday(createdAt?: string) {
   return formatLocalDateIso(created) === formatLocalDateIso(new Date());
 }
 
-/** Employee dashboard: tasks assigned to this employee that were created today. */
-export function isEmployeeDashboardTask(task: AppTask) {
-  return isTaskCreatedToday(resolveTaskCreatedAt(task));
+export function isTaskDateToday(task: AppTask) {
+  return resolveTaskDate(task) === formatLocalDateIso(new Date());
 }
 
-/** Daily Kanban list for a date — tasks assigned to the employee and created that day. */
+/** Employee dashboard: tasks whose task_date is today. */
+export function isEmployeeDashboardTask(task: AppTask) {
+  return isTaskDateToday(task);
+}
+
+/** Daily Kanban / shift list for a date — tasks with matching task_date. */
 export function isTaskInKanbanListForDate(task: AppTask, dateStr: string) {
-  const created = resolveTaskCreatedAt(task);
-  if (!created) return false;
-  return formatLocalDateIso(new Date(created)) === dateStr;
+  return resolveTaskDate(task) === dateStr;
 }
 
 export function sortTodayTasks(tasks: AppTask[]) {
   const order: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
   return [...tasks].sort((a, b) => {
-    const aCreated = new Date(resolveTaskCreatedAt(a) || 0).getTime();
-    const bCreated = new Date(resolveTaskCreatedAt(b) || 0).getTime();
-    if (aCreated !== bCreated) return bCreated - aCreated;
+    const aDate = resolveTaskDate(a);
+    const bDate = resolveTaskDate(b);
+    if (aDate !== bDate) return bDate.localeCompare(aDate);
     if (a.status === "done" && b.status !== "done") return 1;
     if (b.status === "done" && a.status !== "done") return -1;
     return (order[a.priority] ?? 9) - (order[b.priority] ?? 9);
   });
 }
 
-/** Employee dashboard: tasks assigned to this employee created today. */
+/** Employee dashboard: tasks assigned to this employee with task_date = today. */
 export async function fetchTodayTasksForEmployee(input: {
   employeeId: string;
   employeeName?: string;
@@ -1162,29 +1228,29 @@ export async function fetchTodayTasksForEmployee(input: {
 
 export async function fetchProjectTasks(): Promise<AppTask[]> {
   if (await probeProjectRelations()) {
-    const [{ data: taskRows, error: taskError }, { data: projects, error: projectError }] =
-      await Promise.all([
-        supabase.from("project_tasks").select("*"),
-        supabase.from("projects").select("id, name"),
-      ]);
-    if (taskError) throw taskError;
-    if (projectError) throw projectError;
+    const [taskRows, projects] = await Promise.all([
+      fetchAllPaginated<DbProjectTaskRow>((from, pageSize) =>
+        supabase.from("project_tasks").select("*").range(from, from + pageSize - 1)
+      ),
+      fetchAllPaginated<{ id: string; name: string }>((from, pageSize) =>
+        supabase.from("projects").select("id, name").range(from, from + pageSize - 1)
+      ),
+    ]);
 
     const profiles = await fetchEmployeeProfiles();
-    const projectNames = new Map(
-      ((projects || []) as { id: string; name: string }[]).map(p => [p.id, p.name])
-    );
+    const projectNames = new Map(projects.map(p => [p.id, p.name]));
 
     return enrichTasksWithStageHistory(
-      ((taskRows || []) as DbProjectTaskRow[]).map(row =>
+      taskRows.map(row =>
         mapProjectTaskRowToAppTask(row, projectNames.get(row.project_id) || "—", profiles)
       )
     );
   }
 
-  const { data, error } = await supabase.from("projects").select("*");
-  if (error) throw error;
-  return flattenDbProjectTasks(data as DbProject[]);
+  const rows = await fetchAllPaginated<DbProject>((from, pageSize) =>
+    supabase.from("projects").select("*").range(from, from + pageSize - 1)
+  );
+  return flattenDbProjectTasks(rows);
 }
 
 export function extractTimesheetEntries(projects: DbProject[]): TimesheetEntry[] {
@@ -1356,49 +1422,67 @@ async function updateEmployeeProfileRow(id: string, payload: Record<string, unkn
 // ─── Fetchers ────────────────────────────────────────────────────────────────
 
 export async function fetchEmployees(): Promise<Employee[]> {
-  const { data, error } = await supabase
-    .from("employee_profiles")
-    .select("*")
-    .order("score", { ascending: false });
-  if (error) throw error;
-  return (data as DbEmployeeProfile[]).map(profileToEmployee);
+  const data = await fetchAllPaginated<DbEmployeeProfile>((from, pageSize) =>
+    supabase
+      .from("employee_profiles")
+      .select("*")
+      .order("score", { ascending: false })
+      .range(from, from + pageSize - 1)
+  );
+  return data.map(profileToEmployee);
 }
 
 export async function fetchLeads(): Promise<Lead[]> {
-  const { data, error } = await supabase
-    .from("leads")
-    .select("*")
-    .order("created_at", { ascending: false });
-  if (error) throw error;
-  return (data as DbLead[]).map(mapLead);
+  const data = await fetchAllPaginated<DbLead>((from, pageSize) =>
+    supabase
+      .from("leads")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .range(from, from + pageSize - 1)
+  );
+  return data.map(mapLead);
 }
 
 export async function fetchLeadsAsClients(): Promise<ClientProfile[]> {
-  const { data, error } = await supabase
-    .from("leads")
-    .select("*")
-    .order("created_at", { ascending: false });
-  if (error) throw error;
-  return (data as DbLead[]).map(mapLeadToClient);
+  const data = await fetchAllPaginated<DbLead>((from, pageSize) =>
+    supabase
+      .from("leads")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .range(from, from + pageSize - 1)
+  );
+  return data.map(mapLeadToClient);
 }
 
 async function fetchProjectsRelational(rows: DbProject[], profiles: EmployeeProfile[]): Promise<Project[]> {
   const projectIds = rows.map(r => r.id);
   if (projectIds.length === 0) return [];
 
-  const [{ data: members }, { data: taskRows }] = await Promise.all([
-    supabase.from("project_members").select("project_id, employee_id, role").in("project_id", projectIds),
-    supabase.from("project_tasks").select("project_id, title, status, assignee_id, due").in("project_id", projectIds),
+  const [members, taskRows] = await Promise.all([
+    fetchAllPaginatedInChunks<DbProjectMemberRow>(projectIds, (chunk, from, pageSize) =>
+      supabase
+        .from("project_members")
+        .select("project_id, employee_id, role")
+        .in("project_id", chunk)
+        .range(from, from + pageSize - 1)
+    ),
+    fetchAllPaginatedInChunks<DbProjectTaskRow>(projectIds, (chunk, from, pageSize) =>
+      supabase
+        .from("project_tasks")
+        .select("project_id, title, status, assignee_id, due")
+        .in("project_id", chunk)
+        .range(from, from + pageSize - 1)
+    ),
   ]);
 
   const membersByProject = new Map<string, DbProjectMemberRow[]>();
-  for (const m of (members || []) as DbProjectMemberRow[]) {
+  for (const m of members) {
     if (!membersByProject.has(m.project_id)) membersByProject.set(m.project_id, []);
     membersByProject.get(m.project_id)!.push(m);
   }
 
   const tasksByProject = new Map<string, DbProjectTaskRow[]>();
-  for (const t of (taskRows || []) as DbProjectTaskRow[]) {
+  for (const t of taskRows) {
     if (!tasksByProject.has(t.project_id)) tasksByProject.set(t.project_id, []);
     tasksByProject.get(t.project_id)!.push(t);
   }
@@ -1439,12 +1523,13 @@ async function fetchProjectsRelational(rows: DbProject[], profiles: EmployeeProf
 }
 
 export async function fetchProjects(): Promise<Project[]> {
-  const { data, error } = await supabase
-    .from("projects")
-    .select("*")
-    .order("created_at", { ascending: false });
-  if (error) throw error;
-  const rows = data as DbProject[];
+  const rows = await fetchAllPaginated<DbProject>((from, pageSize) =>
+    supabase
+      .from("projects")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .range(from, from + pageSize - 1)
+  );
 
   const profiles = await fetchEmployeeProfiles();
 
@@ -1473,12 +1558,14 @@ export async function updateProjectDetails(
 }
 
 export async function fetchEmployeeProfiles(): Promise<EmployeeProfile[]> {
-  const { data, error } = await supabase
-    .from("employee_profiles")
-    .select("*")
-    .order("created_at", { ascending: false });
-  if (error) throw error;
-  return (data as DbEmployeeProfile[]).map(mapEmployeeProfile);
+  const data = await fetchAllPaginated<DbEmployeeProfile>((from, pageSize) =>
+    supabase
+      .from("employee_profiles")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .range(from, from + pageSize - 1)
+  );
+  return data.map(mapEmployeeProfile);
 }
 
 export async function fetchEmployeeProfileByEmail(email: string): Promise<EmployeeProfile | null> {
@@ -1496,12 +1583,18 @@ export async function fetchEmployeeProfileByEmail(email: string): Promise<Employ
 }
 
 export async function fetchATSVacancies(): Promise<ATSVacancy[]> {
-  const { data, error } = await supabase.from("ats_vacancies").select("*").order("created_at", { ascending: false });
-  if (error) {
+  try {
+    return await fetchAllPaginated<ATSVacancy>((from, pageSize) =>
+      supabase
+        .from("ats_vacancies")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .range(from, from + pageSize - 1)
+    );
+  } catch (error) {
     console.error("fetchATSVacancies error:", error);
     return [];
   }
-  return data as ATSVacancy[];
 }
 
 export async function addATSVacancy(vacancy: Omit<ATSVacancy, "id">) {
@@ -1522,12 +1615,18 @@ export async function updateATSVacancyStatus(id: string, status: string) {
 }
 
 export async function fetchATSInterviews(): Promise<ATSInterview[]> {
-  const { data, error } = await supabase.from("ats_interviews").select("*").order("created_at", { ascending: false });
-  if (error) {
+  try {
+    return await fetchAllPaginated<ATSInterview>((from, pageSize) =>
+      supabase
+        .from("ats_interviews")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .range(from, from + pageSize - 1)
+    );
+  } catch (error) {
     console.error("fetchATSInterviews error:", error);
     return [];
   }
-  return data as ATSInterview[];
 }
 
 export async function addATSInterview(interview: Omit<ATSInterview, "id">) {
@@ -1566,20 +1665,24 @@ async function syncRelationalTimesheetForTask(
 }
 
 async function fetchTimesheetEntriesRelational(): Promise<TimesheetEntry[]> {
-  const [{ data: projects }, { data: sheetRows }, { data: taskRows }] = await Promise.all([
-    supabase.from("projects").select("id, name"),
-    supabase.from("timesheet_entries").select("*"),
-    supabase.from("project_tasks").select("*"),
+  const [projects, sheetRows, taskRows] = await Promise.all([
+    fetchAllPaginated<{ id: string; name: string }>((from, pageSize) =>
+      supabase.from("projects").select("id, name").range(from, from + pageSize - 1)
+    ),
+    fetchAllPaginated<DbTimesheetEntryRow>((from, pageSize) =>
+      supabase.from("timesheet_entries").select("*").range(from, from + pageSize - 1)
+    ),
+    fetchAllPaginated<DbProjectTaskRow>((from, pageSize) =>
+      supabase.from("project_tasks").select("*").range(from, from + pageSize - 1)
+    ),
   ]);
 
   const profiles = await fetchEmployeeProfiles();
-  const projectMap = new Map(
-    ((projects || []) as { id: string; name: string }[]).map(p => [p.id, p.name])
-  );
-  const taskMap = new Map(((taskRows || []) as DbProjectTaskRow[]).map(t => [t.id, t]));
+  const projectMap = new Map(projects.map(p => [p.id, p.name]));
+  const taskMap = new Map(taskRows.map(t => [t.id, t]));
   const entries: TimesheetEntry[] = [];
 
-  for (const row of (sheetRows || []) as DbTimesheetEntryRow[]) {
+  for (const row of sheetRows) {
     const linkedTask = row.linked_task_id ? taskMap.get(row.linked_task_id) : undefined;
     const employeeName = profileNameById(profiles, row.employee_id) || "—";
     const entryId = row.id;
@@ -1601,7 +1704,7 @@ async function fetchTimesheetEntriesRelational(): Promise<TimesheetEntry[]> {
     });
   }
 
-  for (const task of (taskRows || []) as DbProjectTaskRow[]) {
+  for (const task of taskRows) {
     if (!taskHasLoggedTime(task)) continue;
     const syncedId = `ts-task-${task.id}`;
     if (entries.some(e => e.id === syncedId || e.taskId === task.id)) continue;
@@ -1635,10 +1738,9 @@ export async function fetchTimesheetEntries(): Promise<TimesheetEntry[]> {
     return fetchTimesheetEntriesRelational();
   }
 
-  const { data, error } = await supabase.from("projects").select("*");
-  if (error) throw error;
-
-  const projects = [...(data as DbProject[])];
+  const projects = await fetchAllPaginated<DbProject>((from, pageSize) =>
+    supabase.from("projects").select("*").range(from, from + pageSize - 1)
+  );
   for (let i = 0; i < projects.length; i++) {
     const project = projects[i];
     let tasks = (project.tasks || []).filter(t => !isClockAttendanceTimesheetEntry(t));
@@ -1950,22 +2052,31 @@ export async function assignProjectTeam(
     }
   }
 
-  const { data: allProjects } = await supabase.from("projects").select("id,name,team,lead,team_ids,lead_id");
-  if (!allProjects) return;
+  const allProjects = await fetchAllPaginated<Pick<DbProject, "id" | "name" | "team" | "lead" | "team_ids" | "lead_id">>(
+    (from, pageSize) =>
+      supabase
+        .from("projects")
+        .select("id,name,team,lead,team_ids,lead_id")
+        .range(from, from + pageSize - 1)
+  );
+  if (!allProjects.length) return;
 
   if (await probeProjectRelations()) {
-    const { data: allMembers } = await supabase.from("project_members").select("project_id, employee_id");
+    const allMembers = await fetchAllPaginated<DbProjectMemberRow>((from, pageSize) =>
+      supabase
+        .from("project_members")
+        .select("project_id, employee_id")
+        .range(from, from + pageSize - 1)
+    );
     for (const profile of profiles) {
-      const count = ((allMembers || []) as DbProjectMemberRow[]).filter(
-        m => m.employee_id === profile.id
-      ).length;
+      const count = allMembers.filter(m => m.employee_id === profile.id).length;
       await supabase.from("employee_profiles").update({ projects: count }).eq("id", profile.id);
     }
     return;
   }
 
   for (const profile of profiles) {
-    const count = (allProjects as DbProject[]).filter(p => {
+    const count = allProjects.filter(p => {
       const parsed = parseTeamFromDb(p.team, profiles);
       return (
         parsed.names.some(m => namesMatch(m, profile.name)) ||
@@ -1988,6 +2099,7 @@ export async function addProjectTask(input: {
   due?: string;
   est?: string;
   workNotes?: string;
+  taskDate?: string;
 }) {
   const dueIso = dueInputToStorageIso(input.due) || "—";
   const dueFormatted = dueIso !== "—"
@@ -2000,6 +2112,7 @@ export async function addProjectTask(input: {
 
   if (await probeProjectRelations()) {
     const now = new Date().toISOString();
+    const taskDate = normalizeTaskDateInput(input.taskDate);
     const row: DbProjectTaskRow = {
       id: taskId,
       project_id: input.projectId,
@@ -2010,6 +2123,7 @@ export async function addProjectTask(input: {
       due: dueIso !== "—" ? dueIso : null,
       est: input.est ? `${input.est.replace(/h$/i, "")}h` : "4h",
       work_notes: input.workNotes?.trim() || "",
+      task_date: taskDate,
       status_entered_at: now,
     };
     const { error } = await supabase.from("project_tasks").insert(row);
@@ -2090,6 +2204,7 @@ export async function updateProjectTask(input: {
   due?: string;
   est?: string;
   workNotes?: string;
+  taskDate?: string;
   statusOnly?: boolean;
   movedById?: string | null;
 }) {
@@ -2112,6 +2227,7 @@ export async function updateProjectTask(input: {
     const current = existing as DbProjectTaskRow;
     const previousStatus = normalizeTaskStatusForStorage(current.status);
     let statusEnteredAt = current.status_entered_at || current.created_at || new Date().toISOString();
+    const taskDate = input.taskDate ? normalizeTaskDateInput(input.taskDate) : undefined;
 
     if (previousStatus !== taskStatus && (await probeTaskStageTracking())) {
       statusEnteredAt = await recordTaskStatusChange({
@@ -2129,6 +2245,7 @@ export async function updateProjectTask(input: {
           ...current,
           status: taskStatus,
           status_entered_at: statusEnteredAt,
+          ...(taskDate ? { task_date: taskDate } : {}),
           updated_at: new Date().toISOString(),
         }
       : {
@@ -2141,6 +2258,7 @@ export async function updateProjectTask(input: {
           est: input.est ? `${input.est.replace(/h$/i, "")}h` : current.est,
           work_notes: input.workNotes !== undefined ? input.workNotes.trim() : current.work_notes,
           status_entered_at: statusEnteredAt,
+          task_date: taskDate ?? current.task_date ?? normalizeTaskDateInput(current.created_at),
           updated_at: new Date().toISOString(),
         };
 
@@ -2332,23 +2450,29 @@ async function fetchSegmentsForSessions(
   const map = new Map<string, ClockSessionSegment[]>();
   if (!sessionIds.length || !(await probeClockSegments())) return map;
 
-  const { data, error } = await supabase
-    .from("clock_session_segments")
-    .select("*")
-    .in("session_id", sessionIds)
-    .order("started_at", { ascending: true });
+  try {
+    const rows = await fetchAllPaginatedInChunks<Record<string, unknown>>(
+      sessionIds,
+      (chunk, from, pageSize) =>
+        supabase
+          .from("clock_session_segments")
+          .select("*")
+          .in("session_id", chunk)
+          .order("started_at", { ascending: true })
+          .range(from, from + pageSize - 1)
+    );
 
-  if (error) {
+    for (const row of rows) {
+      const seg = mapClockSegment(row);
+      const list = map.get(seg.sessionId) || [];
+      list.push(seg);
+      map.set(seg.sessionId, list);
+    }
+  } catch (error) {
     if (isMissingClockSegmentsTable(error)) return map;
     throw error;
   }
 
-  for (const row of data || []) {
-    const seg = mapClockSegment(row);
-    const list = map.get(seg.sessionId) || [];
-    list.push(seg);
-    map.set(seg.sessionId, list);
-  }
   return map;
 }
 
@@ -2424,6 +2548,21 @@ function mapClockSession(row: {
     projectId: row.project_id ?? null,
     notes: row.notes ?? null,
   };
+}
+
+type ClockSessionDbRow = Parameters<typeof mapClockSession>[0];
+
+async function fetchPaginatedClockSessions(
+  fetchPage: (from: number, pageSize: number) => Promise<SupabasePageResult<ClockSessionDbRow>>
+): Promise<ClockSessionRecord[]> {
+  const rows = await fetchAllPaginated(fetchPage);
+  clockSessionsTableReady = true;
+  const sessions = rows.map(mapClockSession);
+  const segmentsBySession = await fetchSegmentsForSessions(sessions.map(s => s.id));
+  return sessions.map(s => ({
+    ...s,
+    segments: segmentsBySession.get(s.id) || [],
+  }));
 }
 
 function todayClockRange() {
@@ -2617,13 +2756,17 @@ export async function pauseEmployeeTaskTimers(employeeName: string, employeeId?:
   const assigneeId = employeeId || profileIdByName(profiles, employeeName);
   if (!assigneeId) return;
 
-  const { data: tasks, error } = await supabase
-    .from("project_tasks")
-    .select("id, project_id, status")
-    .eq("assignee_id", assigneeId)
-    .neq("status", "done");
-  
-  if (error || !tasks || tasks.length === 0) return;
+  const tasks = await fetchAllPaginated<{ id: string; project_id: string; status: string | null }>(
+    (from, pageSize) =>
+      supabase
+        .from("project_tasks")
+        .select("id, project_id, status")
+        .eq("assignee_id", assigneeId)
+        .neq("status", "done")
+        .range(from, from + pageSize - 1)
+  );
+
+  if (!tasks.length) return;
   const now = new Date().toISOString();
 
   for (const task of tasks) {
@@ -2653,13 +2796,17 @@ export async function resumeEmployeeTaskTimers(employeeName: string, employeeId?
   const assigneeId = employeeId || profileIdByName(profiles, employeeName);
   if (!assigneeId) return;
 
-  const { data: tasks, error } = await supabase
-    .from("project_tasks")
-    .select("id, project_id, status")
-    .eq("assignee_id", assigneeId)
-    .neq("status", "done");
-  
-  if (error || !tasks || tasks.length === 0) return;
+  const tasks = await fetchAllPaginated<{ id: string; project_id: string; status: string | null }>(
+    (from, pageSize) =>
+      supabase
+        .from("project_tasks")
+        .select("id, project_id, status")
+        .eq("assignee_id", assigneeId)
+        .neq("status", "done")
+        .range(from, from + pageSize - 1)
+  );
+
+  if (!tasks.length) return;
 
   for (const task of tasks) {
     const enteredAt = await openInitialTaskStatusSegment({
@@ -2847,29 +2994,31 @@ export async function fetchEmployeeScreenshots(
   employeeId?: string,
   date?: Date
 ): Promise<EmployeeScreenshot[]> {
-  let query = supabase.from("employee_screenshots").select("*");
-  if (employeeId) {
-    query = query.eq("employee_id", employeeId);
-  } else {
-    query = query.ilike("employee_name", employeeName);
-  }
+  try {
+    return await fetchAllPaginated<EmployeeScreenshot>((from, pageSize) => {
+      let query = supabase.from("employee_screenshots").select("*");
+      if (employeeId) {
+        query = query.eq("employee_id", employeeId);
+      } else {
+        query = query.ilike("employee_name", employeeName);
+      }
 
-  if (date) {
-    const start = new Date(date);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(date);
-    end.setHours(23, 59, 59, 999);
-    query = query.gte("captured_at", start.toISOString()).lte("captured_at", end.toISOString());
-  }
+      if (date) {
+        const start = new Date(date);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(date);
+        end.setHours(23, 59, 59, 999);
+        query = query.gte("captured_at", start.toISOString()).lte("captured_at", end.toISOString());
+      }
 
-  query = query.order("captured_at", { ascending: false });
-
-  const { data, error } = await query;
-  if (error) {
+      return query
+        .order("captured_at", { ascending: false })
+        .range(from, from + pageSize - 1);
+    });
+  } catch (error) {
     console.error("Failed to fetch screenshots:", error);
     return [];
   }
-  return data as EmployeeScreenshot[];
 }
 
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri"] as const;
@@ -2899,23 +3048,25 @@ export async function fetchWeekAttendanceHours(
     WEEKDAY_LABELS.map(day => [day, 0])
   );
 
-  let query = supabase
-    .from("clock_sessions")
-    .select("clock_in, hours, status, session_start")
-    .gte("clock_in", monday.toISOString())
-    .lte("clock_in", friday.toISOString());
-
-  query = applyEmployeeClockFilter(query, employeeName, employeeId);
-
-  const { data, error } = await query;
-  if (error) {
+  let data: { clock_in: string; hours: number | null; status: string; session_start?: string | null }[];
+  try {
+    data = await fetchAllPaginated((from, pageSize) => {
+      let q = supabase
+        .from("clock_sessions")
+        .select("clock_in, hours, status, session_start")
+        .gte("clock_in", monday.toISOString())
+        .lte("clock_in", friday.toISOString());
+      q = applyEmployeeClockFilter(q, employeeName, employeeId);
+      return q.range(from, from + pageSize - 1);
+    });
+  } catch (error) {
     if (isMissingClockSessionsTable(error)) {
       return WEEKDAY_LABELS.map(day => ({ day, h: 0 }));
     }
     throw error;
   }
 
-  for (const row of data || []) {
+  for (const row of data) {
     const dayIndex = weekdayIndexFromDate(new Date(row.clock_in));
     if (dayIndex > 4) continue;
     const dayName = WEEKDAY_LABELS[dayIndex];
@@ -2943,6 +3094,41 @@ export function isEmployeeTimerSegment(seg: ClockSessionSegment): boolean {
     return label.includes("idle") || seg.label === "System Idle";
   }
   return false;
+}
+
+/** Same total as employee dashboard timer — working + meeting + idle (live open segments included). */
+export function calculateSessionAttendanceSeconds(
+  session: ClockSessionRecord,
+  nowMs = Date.now(),
+): number {
+  const segments = session.segments || [];
+  if (segments.length > 0) {
+    let totalSeconds = 0;
+    for (const seg of segments) {
+      if (!isEmployeeTimerSegment(seg)) continue;
+      const startedAt = new Date(seg.startedAt).getTime();
+      const endedAt = seg.endedAt ? new Date(seg.endedAt).getTime() : nowMs;
+      totalSeconds += Math.max(0, Math.floor((endedAt - startedAt) / 1000));
+    }
+    return totalSeconds;
+  }
+
+  let hours = Number(session.hours) || 0;
+  if (session.status === "active") {
+    const start = session.sessionStart || session.clockIn;
+    hours += calculateSessionHours(start, nowMs);
+  } else if (session.status === "paused") {
+    const notes = (session.notes || "").toLowerCase();
+    if (notes.includes("meeting") || notes.includes("idle") || session.notes === "System Idle") {
+      const start = session.sessionStart || session.clockIn;
+      hours += calculateSessionHours(start, nowMs);
+    }
+  }
+  return Math.max(0, Math.round(hours * 3600));
+}
+
+export function calculateSessionAttendanceHours(session: ClockSessionRecord, nowMs = Date.now()) {
+  return Math.round((calculateSessionAttendanceSeconds(session, nowMs) / 3600) * 10000) / 10000;
 }
 
 export type AttendanceTimeWindow = {
@@ -2995,13 +3181,7 @@ export async function fetchTodayAttendanceSeconds(
   const nowMs = Date.now();
 
   for (const session of sessions) {
-    const segments = session.segments || [];
-    for (const seg of segments) {
-      if (!isEmployeeTimerSegment(seg)) continue;
-      const startedAt = new Date(seg.startedAt).getTime();
-      const endedAt = seg.endedAt ? new Date(seg.endedAt).getTime() : nowMs;
-      totalSeconds += Math.max(0, Math.floor((endedAt - startedAt) / 1000));
-    }
+    totalSeconds += calculateSessionAttendanceSeconds(session, nowMs);
   }
 
   return totalSeconds;
@@ -3021,49 +3201,39 @@ export type AttendanceEntry = {
 
 /** Today's clock sessions for all employees (team shift tracker). */
 export async function fetchEmployeeHistoricalSessions(employeeId: string, startDateIso: string, endDateIso: string): Promise<ClockSessionRecord[]> {
-  const { data, error } = await supabase
-    .from("clock_sessions")
-    .select("*")
-    .eq("employee_id", employeeId)
-    .gte("clock_in", startDateIso)
-    .lte("clock_in", endDateIso)
-    .order("clock_in", { ascending: false });
-
-  if (error) {
+  try {
+    return await fetchPaginatedClockSessions((from, pageSize) =>
+      supabase
+        .from("clock_sessions")
+        .select("*")
+        .eq("employee_id", employeeId)
+        .gte("clock_in", startDateIso)
+        .lte("clock_in", endDateIso)
+        .order("clock_in", { ascending: false })
+        .range(from, from + pageSize - 1)
+    );
+  } catch (error) {
     if (isMissingClockSessionsTable(error)) return [];
     throw error;
   }
-
-  clockSessionsTableReady = true;
-  const sessions = (data || []).map(mapClockSession);
-  const segmentsBySession = await fetchSegmentsForSessions(sessions.map(s => s.id));
-  return sessions.map(s => ({
-    ...s,
-    segments: segmentsBySession.get(s.id) || [],
-  }));
 }
 
 export async function fetchTodayTeamClockSessions(): Promise<ClockSessionRecord[]> {
   const { start, end } = todayClockRange();
-  const { data, error } = await supabase
-    .from("clock_sessions")
-    .select("*")
-    .gte("clock_in", start)
-    .lte("clock_in", end)
-    .order("clock_in", { ascending: true });
-
-  if (error) {
+  try {
+    return await fetchPaginatedClockSessions((from, pageSize) =>
+      supabase
+        .from("clock_sessions")
+        .select("*")
+        .gte("clock_in", start)
+        .lte("clock_in", end)
+        .order("clock_in", { ascending: true })
+        .range(from, from + pageSize - 1)
+    );
+  } catch (error) {
     if (isMissingClockSessionsTable(error)) return [];
     throw error;
   }
-
-  clockSessionsTableReady = true;
-  const sessions = (data || []).map(mapClockSession);
-  const segmentsBySession = await fetchSegmentsForSessions(sessions.map(s => s.id));
-  return sessions.map(s => ({
-    ...s,
-    segments: segmentsBySession.get(s.id) || [],
-  }));
 }
 
 export function clockRangeForDate(dateStr: string) {
@@ -3075,54 +3245,48 @@ export function clockRangeForDate(dateStr: string) {
 
 export async function fetchTeamClockSessionsByDate(dateStr: string): Promise<ClockSessionRecord[]> {
   const { start, end } = clockRangeForDate(dateStr);
-  const { data, error } = await supabase
-    .from("clock_sessions")
-    .select("*")
-    .gte("clock_in", start)
-    .lte("clock_in", end)
-    .order("clock_in", { ascending: true });
-
-  if (error) {
+  try {
+    return await fetchPaginatedClockSessions((from, pageSize) =>
+      supabase
+        .from("clock_sessions")
+        .select("*")
+        .gte("clock_in", start)
+        .lte("clock_in", end)
+        .order("clock_in", { ascending: true })
+        .range(from, from + pageSize - 1)
+    );
+  } catch (error) {
     if (isMissingClockSessionsTable(error)) return [];
     throw error;
   }
-
-  clockSessionsTableReady = true;
-  const sessions = (data || []).map(mapClockSession);
-  const segmentsBySession = await fetchSegmentsForSessions(sessions.map(s => s.id));
-  return sessions.map(s => ({
-    ...s,
-    segments: segmentsBySession.get(s.id) || [],
-  }));
 }
 
 /** Office clock in/out rows for Timesheet / CEO attendance view. */
 export async function fetchAttendanceEntries(): Promise<AttendanceEntry[]> {
-  const { data, error } = await supabase
-    .from("clock_sessions")
-    .select("*")
-    .order("clock_in", { ascending: false });
-
-  if (error) {
+  let sessions: ClockSessionRecord[];
+  try {
+    sessions = await fetchPaginatedClockSessions((from, pageSize) =>
+      supabase
+        .from("clock_sessions")
+        .select("*")
+        .order("clock_in", { ascending: false })
+        .range(from, from + pageSize - 1)
+    );
+  } catch (error) {
     if (isMissingClockSessionsTable(error)) return [];
     throw error;
   }
 
-  clockSessionsTableReady = true;
+  const nowMs = Date.now();
 
-  return (data || []).map(row => {
-    const session = mapClockSession(row);
-    let hours = Number(session.hours) || 0;
-    if (session.status === "active") {
-      const start = session.sessionStart || session.clockIn;
-      hours += calculateSessionHours(start, Date.now());
-    }
+  return sessions.map(session => {
+    const hours = calculateSessionAttendanceHours(session, nowMs);
     return {
       id: session.id,
       employee: session.employeeName,
       employeeId: session.employeeId,
       date: formatClockDate(new Date(session.clockIn)),
-      hours: Math.round(hours * 10000) / 10000,
+      hours,
       clockIn: session.clockIn,
       clockOut: session.clockOut,
       status: session.status,
@@ -3696,23 +3860,34 @@ export async function fetchChatChannels(): Promise<ChatChannel[]> {
 }
 
 export async function fetchChatChannelsForUser(userId: string): Promise<ChatChannel[]> {
-  const [{ data: channels, error: channelError }, { data: members, error: memberError }, profiles] =
-    await Promise.all([
-      supabase.from("chat_channels").select("*").order("created_at", { ascending: true }),
-      supabase.from("chat_channel_members").select("channel_id, user_id"),
-      fetchEmployeeProfiles(),
-    ]);
-  if (channelError) throw channelError;
-  if (memberError && !isMissingChatTables(memberError)) throw memberError;
+  const [channels, members, profiles] = await Promise.all([
+    fetchAllPaginated<DbChatChannel>((from, pageSize) =>
+      supabase
+        .from("chat_channels")
+        .select("*")
+        .order("created_at", { ascending: true })
+        .range(from, from + pageSize - 1)
+    ),
+    fetchAllPaginated<{ channel_id: string; user_id: string }>((from, pageSize) =>
+      supabase
+        .from("chat_channel_members")
+        .select("channel_id, user_id")
+        .range(from, from + pageSize - 1)
+    ).catch(error => {
+      if (isMissingChatTables(error)) return [];
+      throw error;
+    }),
+    fetchEmployeeProfiles(),
+  ]);
 
   const membersByChannel = new Map<string, string[]>();
-  for (const m of (members || []) as { channel_id: string; user_id: string }[]) {
+  for (const m of members) {
     if (!membersByChannel.has(m.channel_id)) membersByChannel.set(m.channel_id, []);
     membersByChannel.get(m.channel_id)!.push(m.user_id);
   }
 
   const profileName = new Map(profiles.map(p => [p.id, p.name]));
-  const visible = ((channels || []) as DbChatChannel[]).filter(row => {
+  const visible = channels.filter(row => {
     const type = mapChatChannelType(row.channel_type);
     if (type === "team") return false;
     if (!userId) return type === "group" || type === "dm";

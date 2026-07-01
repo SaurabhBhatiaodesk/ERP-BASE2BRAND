@@ -25,6 +25,8 @@ import {
   namesMatch,
   updateProjectTask,
   updateProjectTaskStatus,
+  taskDateToDateInput,
+  resolveTaskDate,
   type AppTask,
   type AttendanceTimeWindow,
   type EmployeeProfile,
@@ -1189,6 +1191,7 @@ export function TasksView({
     status: "todo" as TaskColumn,
     priority: "medium",
     due: formatIso(),
+    taskDate: formatIso(),
     est: "4",
     workNotes: "",
   });
@@ -1405,6 +1408,7 @@ export function TasksView({
       due: formatIso(),
       est: "4",
       workNotes: "",
+      taskDate: formatIso(),
     });
     setFormError("");
     setShowForm(true);
@@ -1420,6 +1424,7 @@ export function TasksView({
       status: task.status as TaskColumn,
       priority: task.priority,
       due: parseDueToIso(task.due),
+      taskDate: taskDateToDateInput(resolveTaskDate(task)),
       est: parseEstHours(task.est),
       workNotes: task.workNotes || "",
     });
@@ -1521,6 +1526,7 @@ export function TasksView({
           status: form.status,
           priority: form.priority,
           due: form.due,
+          taskDate: form.taskDate,
           est: form.est,
           workNotes: form.workNotes,
           movedById: currentProfile?.id,
@@ -1534,6 +1540,7 @@ export function TasksView({
           status: form.status,
           priority: form.priority,
           due: form.due,
+          taskDate: form.taskDate,
           est: form.est,
           workNotes: form.workNotes,
         });
@@ -1881,6 +1888,24 @@ export function TasksView({
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
+                  <label className={labelCls}>Due Date</label>
+                  <input type="date" value={form.due} onChange={e => setForm({ ...form, due: e.target.value })} className={inputCls} />
+                </div>
+                <div>
+                  <label className={labelCls}>Task Date *</label>
+                  <input
+                    type="date"
+                    value={form.taskDate}
+                    onChange={e => setForm({ ...form, taskDate: e.target.value })}
+                    className={inputCls}
+                  />
+                </div>
+              </div>
+              <p className="text-[10px] text-[#6b7fa8] font-['Plus_Jakarta_Sans'] -mt-2">
+                Task Date controls Today&apos;s Tasks on dashboard. Set tomorrow to carry incomplete work forward.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
                   <label className={labelCls}>Priority</label>
                   <select value={form.priority} onChange={e => setForm({ ...form, priority: e.target.value })} className={inputCls}>
                     <option value="urgent">Urgent</option>
@@ -1889,10 +1914,7 @@ export function TasksView({
                     <option value="low">Low</option>
                   </select>
                 </div>
-                <div>
-                  <label className={labelCls}>Due Date</label>
-                  <input type="date" value={form.due} onChange={e => setForm({ ...form, due: e.target.value })} className={inputCls} />
-                </div>
+                <div />
               </div>
               <div>
                 <label className={labelCls}>
