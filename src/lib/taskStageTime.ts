@@ -92,6 +92,119 @@ export function shortStageLabel(status: string): string {
   return formatTaskStatusLabel(status);
 }
 
+export const TASK_WORK_STAGES = ["in-progress", "ready-for-testing", "review"] as const;
+
+export type AttendanceOverlapWindow = {
+  employeeId: string | null;
+  clockIn: string;
+  clockOut: string | null;
+};
+
+function normalizeAssigneeId(id?: string | null) {
+  return id?.trim() || "";
+}
+
+/** Merge overlapping clock windows so segment overlap is never double-counted. */
+export function mergeAttendanceWindows(windows: AttendanceOverlapWindow[]): AttendanceOverlapWindow[] {
+  if (windows.length <= 1) return windows;
+
+  const byEmployee = new Map<string, AttendanceOverlapWindow[]>();
+  for (const window of windows) {
+    const id = normalizeAssigneeId(window.employeeId) || "__unknown__";
+    const list = byEmployee.get(id) || [];
+    list.push(window);
+    byEmployee.set(id, list);
+  }
+
+  const merged: AttendanceOverlapWindow[] = [];
+  const now = Date.now();
+
+  for (const [id, list] of byEmployee) {
+    const intervals = list
+      .map(w => ({
+        start: new Date(w.clockIn).getTime(),
+        end: w.clockOut ? new Date(w.clockOut).getTime() : now,
+        employeeId: w.employeeId,
+      }))
+      .filter(w => w.end > w.start)
+      .sort((a, b) => a.start - b.start);
+
+    const stacked: typeof intervals = [];
+    for (const interval of intervals) {
+      const last = stacked[stacked.length - 1];
+      if (!last || interval.start > last.end) {
+        stacked.push({ ...interval });
+      } else {
+        last.end = Math.max(last.end, interval.end);
+      }
+    }
+
+    for (const interval of stacked) {
+      merged.push({
+        employeeId: id === "__unknown__" ? null : id,
+        clockIn: new Date(interval.start).toISOString(),
+        clockOut: interval.end >= now - 1000 ? null : new Date(interval.end).toISOString(),
+      });
+    }
+  }
+
+  return merged;
+}
+
+/** Total clocked-in seconds for one employee on a date (working + meeting + idle windows). */
+export function attendanceWindowsTotalSeconds(
+  windows: AttendanceOverlapWindow[],
+  assigneeId?: string | null,
+  targetDate?: string,
+): number {
+  const id = normalizeAssigneeId(assigneeId);
+  if (!id || windows.length === 0) return 0;
+
+  const merged = mergeAttendanceWindows(windows);
+  const dateStr = targetDate || new Date().toLocaleDateString("en-CA");
+  const dayStart = new Date(`${dateStr}T00:00:00`).getTime();
+  const dayEnd = new Date(`${dateStr}T23:59:59.999`).getTime();
+  const now = Date.now();
+
+  return merged
+    .filter(w => normalizeAssigneeId(w.employeeId) === id)
+    .reduce((sum, w) => {
+      let start = new Date(w.clockIn).getTime();
+      let end = w.clockOut ? new Date(w.clockOut).getTime() : now;
+      start = Math.max(start, dayStart);
+      end = Math.min(end, dayEnd);
+      if (end <= start) return sum;
+      return sum + Math.floor((end - start) / 1000);
+    }, 0);
+}
+
+export function taskWorkStageSeconds(totals: Record<string, number>) {
+  return TASK_WORK_STAGES.reduce((sum, stage) => sum + (totals[stage] || 0), 0);
+}
+
+/** Prevent task work stages from exceeding total clock-in time for the day. */
+export function capWorkStageTotals(
+  totals: Record<string, number>,
+  maxSeconds?: number,
+): Record<string, number> {
+  if (!maxSeconds || maxSeconds <= 0) return totals;
+
+  const workTotal = taskWorkStageSeconds(totals);
+  if (workTotal <= maxSeconds) return totals;
+
+  const next = { ...totals };
+  let overflow = workTotal - maxSeconds;
+  for (const stage of TASK_WORK_STAGES) {
+    const current = next[stage] || 0;
+    if (current <= 0) continue;
+    const cut = Math.min(current, overflow);
+    next[stage] = current - cut;
+    overflow -= cut;
+    if (overflow <= 0) break;
+  }
+  return next;
+}
+
 /** Closed segments from history + live time in the current column. */
 export function aggregateStageSeconds(
   history: TaskStageHistoryRow[],
@@ -99,11 +212,15 @@ export function aggregateStageSeconds(
   statusEnteredAt?: string | null,
   targetDate?: string, // Format: YYYY-MM-DD
   assigneeId?: string | null,
-  attendanceSessions?: { employeeId: string | null; clockIn: string; clockOut: string | null }[]
+  attendanceSessions?: AttendanceOverlapWindow[]
 ): Record<string, number> {
   const totals: Record<string, number> = {};
   const todayIso = new Date().toLocaleDateString("en-CA");
-  const useAttendance = Boolean(assigneeId && attendanceSessions && attendanceSessions.length > 0);
+  const scopedAssigneeId = normalizeAssigneeId(assigneeId);
+  const attendanceScoped = Boolean(scopedAssigneeId);
+  const mergedAttendance = attendanceSessions?.length
+    ? mergeAttendanceWindows(attendanceSessions)
+    : attendanceSessions;
 
   const segmentEndMs = (exitedAt: string | null, targetDateStr?: string) => {
     if (exitedAt) return new Date(exitedAt).getTime();
@@ -126,11 +243,15 @@ export function aggregateStageSeconds(
       end = Math.min(end, dayEnd);
     }
 
-    if (!useAttendance) {
+    if (!attendanceScoped) {
       return Math.floor((end - start) / 1000);
     }
 
-    const employeeSessions = attendanceSessions!.filter(s => s.employeeId === assigneeId);
+    if (!attendanceSessions?.length) return 0;
+
+    const employeeSessions = mergedAttendance!.filter(
+      s => normalizeAssigneeId(s.employeeId) === scopedAssigneeId,
+    );
     if (employeeSessions.length === 0) return 0;
 
     let totalOverlapMs = 0;
@@ -149,10 +270,14 @@ export function aggregateStageSeconds(
   for (const row of history) {
     if (!row.exited_at) continue;
 
-    const overlap = getStageOverlapSeconds(row.entered_at, row.exited_at, targetDate);
-    if (overlap > 0) {
-      totals[row.to_status] = (totals[row.to_status] || 0) + overlap;
-    } else if (!useAttendance && !targetDate && row.duration_seconds != null) {
+    let seconds = getStageOverlapSeconds(row.entered_at, row.exited_at, targetDate);
+    // Closed segments are frozen at move time — never grow after leaving the column.
+    if (row.duration_seconds != null && row.duration_seconds >= 0) {
+      seconds = Math.min(seconds, row.duration_seconds);
+    }
+    if (seconds > 0) {
+      totals[row.to_status] = (totals[row.to_status] || 0) + seconds;
+    } else if (!attendanceScoped && !targetDate && row.duration_seconds != null) {
       totals[row.to_status] = (totals[row.to_status] || 0) + row.duration_seconds;
     }
   }

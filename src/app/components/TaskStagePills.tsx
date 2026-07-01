@@ -54,6 +54,7 @@ export function TaskStagePills({
   size = "sm",
   assigneeId,
   attendanceSessions,
+  targetDate,
 }: {
   status: string;
   history: TaskStageHistoryRow[];
@@ -63,8 +64,9 @@ export function TaskStagePills({
   size?: PillSize;
   assigneeId?: string | null;
   attendanceSessions?: any[];
+  targetDate?: string;
 }) {
-  const totals = totalsProp ?? aggregateStageSeconds(history, status, statusEnteredAt, undefined, assigneeId, attendanceSessions);
+  const totals = totalsProp ?? aggregateStageSeconds(history, status, statusEnteredAt, targetDate, assigneeId, attendanceSessions);
   const entries = getVisibleStageEntries(status, totals, history);
   if (entries.length === 0) return null;
 

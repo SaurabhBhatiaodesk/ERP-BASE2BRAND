@@ -11,10 +11,14 @@ import {
 import { Avatar, Badge } from "../ui";
 import { TaskStagePills } from "../TaskStagePills";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
-import { useEmployeeProfiles, useLeads, useProjectTasks, useProjects, useAttendance } from "@/hooks/useSupabaseData";
+import { useEmployeeProfiles, useLeads, useProjectTasks, useProjects } from "@/hooks/useSupabaseData";
 import {
   addProjectTask,
+  clockRangeForDate,
+  clockSessionsToAttendanceWindows,
   createLead,
+  fetchEmployeeHistoricalSessions,
+  fetchTeamClockSessionsByDate,
   filterTasksForUser,
   getEmployeeProjects,
   isPersonalTaskRole,
@@ -22,6 +26,8 @@ import {
   updateProjectTask,
   updateProjectTaskStatus,
   type AppTask,
+  type AttendanceTimeWindow,
+  type EmployeeProfile,
 } from "@/lib/database";
 import {
   isValidEmail,
@@ -32,11 +38,14 @@ import {
 import { getSprintSummary, formatTaskManagementSubtitle } from "@/lib/sprint";
 import {
   aggregateStageSeconds,
+  attendanceWindowsTotalSeconds,
+  capWorkStageTotals,
   effectiveStatusEnteredAt,
   formatStageDuration,
   formatStageEnteredAt,
   getVisibleStageEntries,
   shortStageLabel,
+  taskWorkStageSeconds,
 } from "@/lib/taskStageTime";
 
 const inputCls = "w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-4 py-2.5 text-sm text-[#e2e8f7] outline-none focus:border-indigo-500/50 font-['Plus_Jakarta_Sans']";
@@ -60,8 +69,67 @@ function parseEstHours(est: string) {
   return Number.isNaN(num) ? "4" : String(num);
 }
 
-function TaskStageBreakdown({ task, compact = false, attendanceSessions }: { task: AppTask; compact?: boolean; attendanceSessions?: any[] }) {
+function resolveTaskAssigneeId(
+  task: AppTask,
+  assigneeIdOverride?: string | null,
+  profiles?: EmployeeProfile[],
+) {
+  if (task.assigneeId?.trim()) return task.assigneeId.trim();
+  if (assigneeIdOverride?.trim()) return assigneeIdOverride.trim();
+  if (profiles && task.assignee) {
+    return profiles.find(p => namesMatch(p.name, task.assignee))?.id?.trim() || null;
+  }
+  return null;
+}
+
+function taskStageTotalsForKanban(
+  task: AppTask,
+  targetDate: string,
+  attendanceWindows: AttendanceTimeWindow[],
+  assigneeIdOverride?: string | null,
+  profiles?: EmployeeProfile[],
+) {
+  const assigneeId = resolveTaskAssigneeId(task, assigneeIdOverride, profiles);
   const enteredAt = effectiveStatusEnteredAt(task);
+  const rawTotals = aggregateStageSeconds(
+    task.stageHistory,
+    task.status,
+    enteredAt,
+    targetDate,
+    assigneeId,
+    attendanceWindows,
+  );
+  const maxSeconds = attendanceWindowsTotalSeconds(attendanceWindows, assigneeId, targetDate);
+  return capWorkStageTotals(rawTotals, maxSeconds);
+}
+
+function TaskStageBreakdown({
+  task,
+  compact = false,
+  attendanceSessions,
+  targetDate,
+  assigneeIdOverride,
+  profiles,
+  stageTotals,
+}: {
+  task: AppTask;
+  compact?: boolean;
+  attendanceSessions?: AttendanceTimeWindow[];
+  targetDate?: string;
+  assigneeIdOverride?: string | null;
+  profiles?: EmployeeProfile[];
+  stageTotals?: Record<string, number>;
+}) {
+  const enteredAt = effectiveStatusEnteredAt(task);
+  const assigneeId = resolveTaskAssigneeId(task, assigneeIdOverride, profiles);
+  const todayIso = targetDate ?? new Date().toLocaleDateString("en-CA");
+  const totals = stageTotals ?? taskStageTotalsForKanban(
+    task,
+    todayIso,
+    attendanceSessions || [],
+    assigneeIdOverride,
+    profiles,
+  );
 
   if (compact) {
     return (
@@ -71,14 +139,15 @@ function TaskStageBreakdown({ task, compact = false, attendanceSessions }: { tas
           history={task.stageHistory}
           statusEnteredAt={enteredAt}
           compact
-          assigneeId={task.assigneeId}
+          assigneeId={assigneeId}
           attendanceSessions={attendanceSessions}
+          targetDate={todayIso}
+          totals={totals}
         />
       </div>
     );
   }
 
-  const totals = aggregateStageSeconds(task.stageHistory, task.status, enteredAt, undefined, task.assigneeId, attendanceSessions);
   const rows = getVisibleStageEntries(task.status, totals, task.stageHistory);
   if (rows.length === 0) return null;
 
@@ -106,6 +175,10 @@ function TaskStageBreakdown({ task, compact = false, attendanceSessions }: { tas
         status={task.status}
         history={task.stageHistory}
         statusEnteredAt={enteredAt}
+        assigneeId={assigneeId}
+        attendanceSessions={attendanceSessions}
+        targetDate={todayIso}
+        totals={totals}
       />
       {task.stageHistory.length > 0 && (
         <div className="pt-2 border-t border-amber-500/10 space-y-1.5 max-h-36 overflow-y-auto">
@@ -532,11 +605,24 @@ function KanbanCard({
   task,
   onTaskClick,
   attendanceSessions,
+  targetDate,
+  assigneeIdOverride,
+  profiles,
+  liveTick,
 }: {
   task: AppTask;
   onTaskClick?: (task: AppTask) => void;
-  attendanceSessions?: any[];
+  attendanceSessions?: AttendanceTimeWindow[];
+  targetDate: string;
+  assigneeIdOverride?: string | null;
+  profiles?: EmployeeProfile[];
+  liveTick?: number;
 }) {
+  const stageTotals = useMemo(
+    () => taskStageTotalsForKanban(task, targetDate, attendanceSessions || [], assigneeIdOverride, profiles),
+    [task, targetDate, attendanceSessions, assigneeIdOverride, profiles, liveTick],
+  );
+  const trackedSeconds = taskWorkStageSeconds(stageTotals);
   const [{ isDragging }, drag] = useDrag(
     () => ({
       type: KANBAN_TASK,
@@ -567,10 +653,20 @@ function KanbanCard({
         </p>
       )}
       <p className="text-[10px] text-indigo-400 font-['Geist_Mono'] mb-2">{task.project}</p>
-      {task.est && task.est !== "—" && (
-        <p className="text-[10px] text-emerald-400 font-['Geist_Mono'] mb-2">{task.est} worked</p>
+      {trackedSeconds > 0 && (
+        <p className="text-[10px] text-emerald-400 font-['Geist_Mono'] mb-2">
+          {formatStageDuration(trackedSeconds)} worked
+        </p>
       )}
-      <TaskStageBreakdown task={task} compact attendanceSessions={attendanceSessions} />
+      <TaskStageBreakdown
+        task={task}
+        compact
+        attendanceSessions={attendanceSessions}
+        targetDate={targetDate}
+        assigneeIdOverride={assigneeIdOverride}
+        profiles={profiles}
+        stageTotals={stageTotals}
+      />
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
           <Avatar initials={task.assignee.split(" ").map(n => n[0]).join("")} size="sm" />
@@ -593,6 +689,10 @@ function KanbanColumn({
   onTaskClick,
   getColId,
   attendanceSessions,
+  targetDate,
+  assigneeIdOverride,
+  profiles,
+  liveTick,
 }: {
   col: any;
   label: string;
@@ -601,7 +701,11 @@ function KanbanColumn({
   onMoveTask: (task: AppTask, col: any) => void;
   onTaskClick?: (task: AppTask) => void;
   getColId?: (t: AppTask) => string;
-  attendanceSessions?: any[];
+  attendanceSessions?: AttendanceTimeWindow[];
+  targetDate: string;
+  assigneeIdOverride?: string | null;
+  profiles?: EmployeeProfile[];
+  liveTick?: number;
 }) {
   const getCol = getColId || ((t: AppTask) => t.status);
   const colTasks = tasks.filter(t => getCol(t) === col);
@@ -631,7 +735,16 @@ function KanbanColumn({
         }`}
       >
         {colTasks.map(task => (
-          <KanbanCard key={task.taskId} task={task} onTaskClick={onTaskClick} attendanceSessions={attendanceSessions} />
+          <KanbanCard
+            key={task.taskId}
+            task={task}
+            onTaskClick={onTaskClick}
+            attendanceSessions={attendanceSessions}
+            targetDate={targetDate}
+            assigneeIdOverride={assigneeIdOverride}
+            profiles={profiles}
+            liveTick={liveTick}
+          />
         ))}
         <button
           type="button"
@@ -654,6 +767,10 @@ export function KanbanView({
   onTaskClick,
   getColId,
   attendanceSessions,
+  targetDate,
+  assigneeIdOverride,
+  profiles,
+  liveTick,
 }: {
   tasks: AppTask[];
   columns: any[];
@@ -662,8 +779,13 @@ export function KanbanView({
   onMoveTask: (task: AppTask, col: any) => void;
   onTaskClick?: (task: AppTask) => void;
   getColId?: (t: AppTask) => string;
-  attendanceSessions?: any[];
+  attendanceSessions?: AttendanceTimeWindow[];
+  targetDate: string;
+  assigneeIdOverride?: string | null;
+  profiles?: EmployeeProfile[];
+  liveTick?: number;
 }) {
+  const todayIso = targetDate;
   const labelFor = getColumnLabel ?? (col => COL_LABELS[col as TaskColumn] || col);
   const gridClass = KANBAN_GRID_COLS[columns.length] || "grid-cols-4";
   const wideBoard = columns.length >= 5;
@@ -687,6 +809,10 @@ export function KanbanView({
             onTaskClick={onTaskClick}
             getColId={getColId}
             attendanceSessions={attendanceSessions}
+            targetDate={todayIso}
+            assigneeIdOverride={assigneeIdOverride}
+            profiles={profiles}
+            liveTick={liveTick}
           />
         ))}
       </div>
@@ -1046,7 +1172,8 @@ export function TasksView({
   const { data: tasks, loading, error, refresh } = useProjectTasks();
   const { data: projects } = useProjects();
   const { data: profiles } = useEmployeeProfiles();
-  const { data: attendanceSessions } = useAttendance();
+  const targetDate = useMemo(() => new Date().toLocaleDateString("en-CA"), []);
+  const [clockSessions, setClockSessions] = useState<Awaited<ReturnType<typeof fetchTeamClockSessionsByDate>>>([]);
   const [view, setView] = useState<TaskView>("kanban");
   const [kanbanGrouping, setKanbanGrouping] = useState<"status" | "assignee">("status");
   const [dragTasks, setDragTasks] = useState<AppTask[] | null>(null);
@@ -1068,22 +1195,48 @@ export function TasksView({
   const [showFilter, setShowFilter] = useState(false);
   const [filters, setFilters] = useState<TaskFilters>(emptyTaskFilters);
   const filterRef = useRef<HTMLDivElement>(null);
-  const [, setLiveTick] = useState(0);
-
-  useEffect(() => {
-    const id = window.setInterval(() => setLiveTick(t => t + 1), 60000);
-    return () => window.clearInterval(id);
-  }, []);
+  const [liveTick, setLiveTick] = useState(0);
 
   const personalView = isPersonalTaskRole(userRole);
+  const currentProfile = useMemo(
+    () => profiles.find(p => namesMatch(p.name, userName)),
+    [profiles, userName]
+  );
+
+  const refreshClockSessions = useCallback(async () => {
+    try {
+      const { start, end } = clockRangeForDate(targetDate);
+      if (personalView && currentProfile?.id) {
+        const rows = await fetchEmployeeHistoricalSessions(currentProfile.id, start, end);
+        setClockSessions(rows);
+        return;
+      }
+      const rows = await fetchTeamClockSessionsByDate(targetDate);
+      setClockSessions(rows);
+    } catch {
+      /* keep last known sessions */
+    }
+  }, [targetDate, personalView, currentProfile?.id]);
+
+  useEffect(() => {
+    void refreshClockSessions();
+    const refreshId = window.setInterval(() => void refreshClockSessions(), 30_000);
+    const tickId = window.setInterval(() => setLiveTick(t => t + 1), 15_000);
+    return () => {
+      window.clearInterval(refreshId);
+      window.clearInterval(tickId);
+    };
+  }, [refreshClockSessions]);
+
+  const attendanceWindows = useMemo(
+    () => clockSessionsToAttendanceWindows(clockSessions),
+    [clockSessions],
+  );
+
   const kanbanColumns = useMemo(() => getKanbanColumnsForRole(userRole), [userRole]);
   const getKanbanLabel = useCallback(
     (col: TaskColumn) => getKanbanColumnLabel(col),
     []
-  );
-  const currentProfile = useMemo(
-    () => profiles.find(p => namesMatch(p.name, userName)),
-    [profiles, userName]
   );
 
   const availableProjects = useMemo(() => {
@@ -1576,7 +1729,11 @@ export function TasksView({
               getColId={(t: AppTask) => t.assignee}
               onMoveTask={handleMoveTask}
               onTaskClick={openEditTask}
-              attendanceSessions={attendanceSessions}
+              attendanceSessions={attendanceWindows}
+              targetDate={targetDate}
+              assigneeIdOverride={currentProfile?.id}
+              profiles={profiles}
+              liveTick={liveTick}
             />
           ) : (
             <KanbanView
@@ -1586,7 +1743,11 @@ export function TasksView({
               onAddCard={openNewTask}
               onMoveTask={handleMoveTask}
               onTaskClick={openEditTask}
-              attendanceSessions={attendanceSessions}
+              attendanceSessions={attendanceWindows}
+              targetDate={targetDate}
+              assigneeIdOverride={currentProfile?.id}
+              profiles={profiles}
+              liveTick={liveTick}
             />
           )
       )}
@@ -1764,7 +1925,15 @@ export function TasksView({
                     : "Optional now — hours + notes appear in Time Reports in any status."}
                 </p>
               </div>
-              {editingTaskLive && <TaskStageBreakdown task={editingTaskLive} attendanceSessions={attendanceSessions} />}
+              {editingTaskLive && (
+                <TaskStageBreakdown
+                  task={editingTaskLive}
+                  attendanceSessions={attendanceWindows}
+                  targetDate={targetDate}
+                  assigneeIdOverride={currentProfile?.id}
+                  profiles={profiles}
+                />
+              )}
             </div>
             <div className="flex justify-end gap-2 mt-6">
               <button type="button" onClick={() => { setShowForm(false); setEditingTask(null); }} className="px-4 py-2 text-xs text-[#6b7fa8] hover:text-white">Cancel</button>
