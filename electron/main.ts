@@ -67,16 +67,36 @@ app.whenReady().then(() => {
       if (process.platform === 'darwin') {
         const status = systemPreferences.getMediaAccessStatus('screen');
         if (status !== 'granted') {
-          return null; // Return null silently to avoid repeatedly triggering OS prompts if denied
+          return null;
         }
       }
 
-      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1920, height: 1080 } });
-      if (sources.length > 0) {
-        // Return base64 encoded image compressed as JPEG (quality 60) for fast uploads
-        return 'data:image/jpeg;base64,' + sources[0].thumbnail.toJPEG(60).toString('base64');
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: 1280, height: 720 },
+        fetchWindowIcons: false,
+      });
+
+      if (!sources.length) {
+        console.error('Screenshot: no screen sources available');
+        return null;
       }
-      return null;
+
+      const screenSource = sources
+        .filter(source => source.id.startsWith('screen:') || /screen|display|entire/i.test(source.name))
+        .sort((a, b) => {
+          const aSize = a.thumbnail.getSize();
+          const bSize = b.thumbnail.getSize();
+          return (bSize.width * bSize.height) - (aSize.width * aSize.height);
+        })[0] ?? sources[0];
+
+      const jpeg = screenSource.thumbnail.toJPEG(70);
+      if (!jpeg.length || jpeg.length < 1500) {
+        console.error('Screenshot: blank or invalid capture');
+        return null;
+      }
+
+      return 'data:image/jpeg;base64,' + jpeg.toString('base64');
     } catch (err) {
       console.error("Screenshot error:", err);
       return null;

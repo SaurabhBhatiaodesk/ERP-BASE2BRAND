@@ -13,6 +13,10 @@ import {
   fetchTeamClockSessionsByDate,
   initialsFromName,
   isClockSessionsTableReady,
+  isTaskInKanbanListForDate,
+  clockSessionsToAttendanceWindows,
+  namesMatch,
+  type AttendanceTimeWindow,
   type ClockSessionRecord,
   type AppTask,
   clockOutEmployee,
@@ -273,18 +277,38 @@ function TaskStageList({ tasks, max = 4, large = false, targetDate }: { tasks: S
   );
 }
 
-function TaskStageDetail({ task, compact = false, large = false, targetDate, maxActiveSeconds }: { task: ShiftActiveTask; compact?: boolean; large?: boolean; targetDate?: string, maxActiveSeconds?: number }) {
-  // Use undefined for targetDate to calculate all-time cumulative Kanban stage times.
-  const totals = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, undefined);
+function TaskStageDetail({
+  task,
+  compact = false,
+  large = false,
+  targetDate,
+  maxActiveSeconds,
+  assigneeId,
+  attendanceSessions,
+}: {
+  task: ShiftActiveTask;
+  compact?: boolean;
+  large?: boolean;
+  targetDate?: string;
+  maxActiveSeconds?: number;
+  assigneeId?: string;
+  attendanceSessions?: AttendanceTimeWindow[];
+}) {
+  const totals = aggregateStageSeconds(
+    task.stageHistory,
+    task.status,
+    task.statusEnteredAt,
+    targetDate,
+    assigneeId,
+    attendanceSessions,
+  );
   
   if (maxActiveSeconds !== undefined && (task.status === "in-progress" || task.status === "progress")) {
-    const todayStr = new Date().toLocaleDateString("en-CA");
+    const dateStr = targetDate || new Date().toLocaleDateString("en-CA");
     const firstHistory = task.stageHistory.find(r => r.to_status === task.status);
     const firstEntered = firstHistory ? firstHistory.entered_at : task.statusEnteredAt;
     
-    // Only cap if the task first entered "in-progress" today. If it was in-progress before today, 
-    // the cumulative time naturally exceeds today's work time, so we shouldn't cap it.
-    if (firstEntered && firstEntered.startsWith(todayStr)) {
+    if (firstEntered && firstEntered.startsWith(dateStr)) {
       if ((totals[task.status] || 0) > maxActiveSeconds) {
         totals[task.status] = maxActiveSeconds;
       }
@@ -428,32 +452,39 @@ function TaskStageBar({
   targetDate,
   nowMin,
   maxActiveSeconds,
+  assigneeId,
+  attendanceSessions,
 }: {
   task: ShiftActiveTask;
   shiftWindow: { left: number; width: number };
   targetDate?: string;
   nowMin: number;
   maxActiveSeconds?: number;
+  assigneeId?: string;
+  attendanceSessions?: AttendanceTimeWindow[];
 }) {
-  const totalsForToday = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, targetDate);
-  const totalsAllTime = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, undefined);
+  const totals = aggregateStageSeconds(
+    task.stageHistory,
+    task.status,
+    task.statusEnteredAt,
+    targetDate,
+    assigneeId,
+    attendanceSessions,
+  );
 
   if (maxActiveSeconds !== undefined && (task.status === "in-progress" || task.status === "progress")) {
-    const todayStr = new Date().toLocaleDateString("en-CA");
+    const dateStr = targetDate || new Date().toLocaleDateString("en-CA");
     const firstHistory = task.stageHistory.find(r => r.to_status === task.status);
     const firstEntered = firstHistory ? firstHistory.entered_at : task.statusEnteredAt;
     
-    if (firstEntered && firstEntered.startsWith(todayStr)) {
-      if ((totalsForToday[task.status] || 0) > maxActiveSeconds) {
-        totalsForToday[task.status] = maxActiveSeconds;
-      }
-      if ((totalsAllTime[task.status] || 0) > maxActiveSeconds) {
-        totalsAllTime[task.status] = maxActiveSeconds;
+    if (firstEntered && firstEntered.startsWith(dateStr)) {
+      if ((totals[task.status] || 0) > maxActiveSeconds) {
+        totals[task.status] = maxActiveSeconds;
       }
     }
   }
 
-  const segments = buildProportionalStageSegments(totalsAllTime);
+  const segments = buildProportionalStageSegments(totals);
   const currentStageMeta = stageMeta[task.status as (typeof STAGE_ORDER)[number]];
 
   return (
@@ -518,7 +549,7 @@ function TaskStageBar({
         )}
       </div>
       <div className="flex flex-wrap gap-x-2 gap-y-0.5">
-        {getAllStageEntries(task.status, totalsAllTime).map(entry => {
+        {getAllStageEntries(task.status, totals).map(entry => {
           const meta = stageMeta[entry.status as (typeof STAGE_ORDER)[number]];
           if (entry.seconds <= 0 && !entry.isCurrent) return null;
           return (
@@ -539,7 +570,19 @@ function TaskStageBar({
   );
 }
 
-export function StageTimelineBar({ emp, nowMin, targetDate }: { emp: ShiftEmployee; nowMin: number; targetDate?: string }) {
+export function StageTimelineBar({
+  emp,
+  nowMin,
+  targetDate,
+  attendanceSessions,
+  allTasks,
+}: {
+  emp: ShiftEmployee;
+  nowMin: number;
+  targetDate?: string;
+  attendanceSessions?: AttendanceTimeWindow[];
+  allTasks?: AppTask[];
+}) {
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 5;
 
@@ -550,10 +593,30 @@ export function StageTimelineBar({ emp, nowMin, targetDate }: { emp: ShiftEmploy
     .filter(b => b.kind === "working" || b.kind === "meeting")
     .reduce((sum, b) => sum + Math.max(0, (b.end !== null ? b.end : nowMin) - b.start), 0);
   const maxActiveSeconds = workingMins * 60;
+
+  const kanbanTaskIds = useMemo(() => {
+    if (!targetDate || !allTasks?.length) return null;
+    return new Set(
+      allTasks
+        .filter(t =>
+          (t.assigneeId === emp.id || namesMatch(t.assignee, emp.name)) &&
+          isTaskInKanbanListForDate(t, targetDate)
+        )
+        .map(t => t.taskId)
+    );
+  }, [allTasks, emp.id, emp.name, targetDate]);
   
   const sortedTasks = useMemo(() => {
     const list = (emp.trackedTasks || []).filter(task => {
-      const totals = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, targetDate);
+      if (kanbanTaskIds && !kanbanTaskIds.has(task.taskId)) return false;
+      const totals = aggregateStageSeconds(
+        task.stageHistory,
+        task.status,
+        task.statusEnteredAt,
+        targetDate,
+        emp.id,
+        attendanceSessions,
+      );
       return Object.values(totals).reduce((a, b) => a + b, 0) > 0;
     });
     return list.sort((a, b) => {
@@ -561,15 +624,15 @@ export function StageTimelineBar({ emp, nowMin, targetDate }: { emp: ShiftEmploy
       const bProg = b.status === "in-progress" ? 1 : 0;
       if (aProg !== bProg) return bProg - aProg;
 
-      const aTotals = aggregateStageSeconds(a.stageHistory, a.status, a.statusEnteredAt, targetDate);
-      const bTotals = aggregateStageSeconds(b.stageHistory, b.status, b.statusEnteredAt, targetDate);
+      const aTotals = aggregateStageSeconds(a.stageHistory, a.status, a.statusEnteredAt, targetDate, emp.id, attendanceSessions);
+      const bTotals = aggregateStageSeconds(b.stageHistory, b.status, b.statusEnteredAt, targetDate, emp.id, attendanceSessions);
       
       const aHasInProgress = (aTotals["in-progress"] || 0) > 0 ? 1 : 0;
       const bHasInProgress = (bTotals["in-progress"] || 0) > 0 ? 1 : 0;
       
       return bHasInProgress - aHasInProgress;
     });
-  }, [emp.trackedTasks, targetDate]);
+  }, [emp.trackedTasks, emp.id, targetDate, attendanceSessions, kanbanTaskIds]);
 
   const totalPages = Math.ceil(sortedTasks.length / PAGE_SIZE);
   const visibleTasks = sortedTasks.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -596,7 +659,16 @@ export function StageTimelineBar({ emp, nowMin, targetDate }: { emp: ShiftEmploy
         </div>
         {visibleTasks.length > 0 ? (
           visibleTasks.map(task => (
-          <TaskStageBar key={task.taskId} task={task} shiftWindow={shiftWindow} targetDate={targetDate} nowMin={nowMin} maxActiveSeconds={maxActiveSeconds} />
+          <TaskStageBar
+            key={task.taskId}
+            task={task}
+            shiftWindow={shiftWindow}
+            targetDate={targetDate}
+            nowMin={nowMin}
+            maxActiveSeconds={maxActiveSeconds}
+            assigneeId={emp.id}
+            attendanceSessions={attendanceSessions}
+          />
         ))
       ) : (
         <div className="relative h-8 bg-[#111828] rounded-lg overflow-hidden">
@@ -677,36 +749,81 @@ export function TimelineBar({ emp, nowMin }: { emp: ShiftEmployee; nowMin: numbe
   );
 }
 
-export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks, targetDate }: { emp: ShiftEmployee; onClose: () => void; nowMin: number; allTasks: AppTask[]; targetDate: string }) {
+export function EmployeeDetailPanel({
+  emp,
+  onClose,
+  nowMin,
+  allTasks,
+  targetDate,
+  attendanceSessions,
+}: {
+  emp: ShiftEmployee;
+  onClose: () => void;
+  nowMin: number;
+  allTasks: AppTask[];
+  targetDate: string;
+  attendanceSessions?: AttendanceTimeWindow[];
+}) {
   const [tab, setTab] = useState<"live" | "history" | "screenshots">("live");
   const [historyRange, setHistoryRange] = useState<number>(7);
   const [page, setPage] = useState(1);
+  const [taskStageDate, setTaskStageDate] = useState(() => new Date().toLocaleDateString("en-CA"));
+  const [, setTaskStageTick] = useState(0);
   const { historyDays, loading: historyLoading } = useEmployeeVisualHistory(emp, historyRange, allTasks);
+
+  const todayIso = new Date().toLocaleDateString("en-CA");
+  const isTaskStageToday = taskStageDate === todayIso;
+
+  useEffect(() => {
+    setTaskStageDate(targetDate);
+  }, [targetDate, emp.id]);
+
+  useEffect(() => {
+    if (!isTaskStageToday) return;
+    const id = setInterval(() => setTaskStageTick(t => t + 1), 60_000);
+    return () => clearInterval(id);
+  }, [isTaskStageToday]);
 
   const PAGE_SIZE = 7;
   const totalPages = Math.ceil(historyDays.length / PAGE_SIZE);
   const visibleDays = historyDays.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   const tasksForToday = useMemo(() => {
-    const activeTasks = emp.trackedTasks.filter(task => {
-      const totals = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, targetDate);
-      return Object.values(totals).reduce((a, b) => a + b, 0) > 0;
-    });
+    const kanbanTaskIds = new Set(
+      allTasks
+        .filter(t =>
+          (t.assigneeId === emp.id || namesMatch(t.assignee, emp.name)) &&
+          isTaskInKanbanListForDate(t, taskStageDate)
+        )
+        .map(t => t.taskId)
+    );
+
+    const activeTasks = emp.trackedTasks.filter(task => kanbanTaskIds.has(task.taskId));
 
     return activeTasks.sort((a, b) => {
       const aIsInProgress = a.status === "in-progress" ? 1 : 0;
       const bIsInProgress = b.status === "in-progress" ? 1 : 0;
       if (aIsInProgress !== bIsInProgress) return bIsInProgress - aIsInProgress;
 
-      const aTotals = aggregateStageSeconds(a.stageHistory, a.status, a.statusEnteredAt, targetDate);
-      const bTotals = aggregateStageSeconds(b.stageHistory, b.status, b.statusEnteredAt, targetDate);
+      const aTotals = aggregateStageSeconds(a.stageHistory, a.status, a.statusEnteredAt, taskStageDate, emp.id, attendanceSessions);
+      const bTotals = aggregateStageSeconds(b.stageHistory, b.status, b.statusEnteredAt, taskStageDate, emp.id, attendanceSessions);
       
       const aHasInProgress = (aTotals["in-progress"] || 0) > 0 ? 1 : 0;
       const bHasInProgress = (bTotals["in-progress"] || 0) > 0 ? 1 : 0;
       
       return bHasInProgress - aHasInProgress;
     });
-  }, [emp.trackedTasks, targetDate]);
+  }, [emp.trackedTasks, emp.id, emp.name, allTasks, taskStageDate, attendanceSessions]);
+
+  const taskStageDateLabel = useMemo(() => {
+    const [y, m, d] = taskStageDate.split("-").map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  }, [taskStageDate]);
 
   const shiftStartAxis = Math.max(0, emp.shiftStartMin - TIMELINE_AXIS_START);
   const shiftEndAxis = emp.shiftEndMin - TIMELINE_AXIS_START;
@@ -934,16 +1051,54 @@ export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks, targetDate
 
         </div>
 
-        {tasksForToday.length > 0 && (
-          <div className="m-6 sm:m-8 mb-0 space-y-4">
+        <div className="m-6 sm:m-8 mb-0 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-xs font-['Geist_Mono'] text-amber-400 uppercase tracking-widest font-medium">
-              Task Stage Time ({tasksForToday.length})
+              Task Stage Time{tasksForToday.length > 0 ? ` (${tasksForToday.length})` : ""} · {isTaskStageToday ? "Today" : taskStageDateLabel}
             </p>
-            {tasksForToday.map(task => (
-              <TaskStageDetail key={task.taskId} task={task} compact large targetDate={targetDate} maxActiveSeconds={worked * 60} />
-            ))}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setTaskStageDate(todayIso)}
+                disabled={isTaskStageToday}
+                className="px-2.5 py-1.5 rounded-lg text-[10px] font-['Geist_Mono'] border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/10 disabled:opacity-40 disabled:pointer-events-none transition-colors"
+              >
+                Today
+              </button>
+              <div className="relative flex items-center gap-1.5 bg-[#111828] border border-[rgba(99,102,241,0.2)] rounded-lg px-2.5 py-1.5">
+                <Calendar size={13} className="text-indigo-400 shrink-0" />
+                <input
+                  type="date"
+                  value={taskStageDate}
+                  max={todayIso}
+                  onChange={e => {
+                    if (e.target.value) setTaskStageDate(e.target.value);
+                  }}
+                  className="bg-transparent text-[11px] font-['Geist_Mono'] text-white outline-none cursor-pointer [color-scheme:dark]"
+                  title="Filter kanban tasks by date"
+                />
+              </div>
+            </div>
           </div>
-        )}
+          {tasksForToday.length > 0 ? (
+            tasksForToday.map(task => (
+              <TaskStageDetail
+                key={task.taskId}
+                task={task}
+                compact
+                large
+                targetDate={taskStageDate}
+                maxActiveSeconds={isTaskStageToday ? (worked + meetings) * 60 : undefined}
+                assigneeId={emp.id}
+                attendanceSessions={attendanceSessions}
+              />
+            ))
+          ) : (
+            <p className="text-sm text-[#6b7fa8] font-['Plus_Jakarta_Sans'] rounded-xl border border-[rgba(99,102,241,0.12)] bg-[#111828]/50 px-4 py-6 text-center">
+              No kanban tasks for {isTaskStageToday ? "today" : taskStageDateLabel}.
+            </p>
+          )}
+        </div>
 
         {pauseBlocks.length > 0 && (
           <div className="m-6 sm:m-8 space-y-3">
@@ -1002,7 +1157,13 @@ export function EmployeeDetailPanel({ emp, onClose, nowMin, allTasks, targetDate
                         Shift: {hd.data.shiftStartLabel} – {hd.data.shiftEndLabel}
                       </span>
                     </div>
-                    <StageTimelineBar emp={hd.data} nowMin={1440} targetDate={hd.date} />
+                    <StageTimelineBar
+                      emp={hd.data}
+                      nowMin={1440}
+                      targetDate={hd.date}
+                      attendanceSessions={hd.attendanceWindows}
+                      allTasks={allTasks}
+                    />
                   </div>
                 ))}
                 
@@ -1063,6 +1224,11 @@ export function ShiftView({
 
   const [targetDate, setTargetDate] = useState<string>(
     () => new Date().toLocaleDateString("en-CA") // "YYYY-MM-DD" local time
+  );
+
+  const attendanceWindows = useMemo(
+    () => clockSessionsToAttendanceWindows(sessions),
+    [sessions]
   );
 
   const viewerProfile = useMemo(
@@ -1417,7 +1583,13 @@ export function ShiftView({
               </div>
 
               <div className="flex-1 px-4 py-4">
-                <StageTimelineBar emp={emp} nowMin={nowMin} targetDate={targetDate} />
+                <StageTimelineBar
+                  emp={emp}
+                  nowMin={nowMin}
+                  targetDate={targetDate}
+                  attendanceSessions={attendanceWindows}
+                  allTasks={tasks}
+                />
               </div>
 
               <div className="w-36 shrink-0 px-4 py-4 border-l border-[rgba(99,102,241,0.06)] bg-[#0a0f1d] flex flex-col justify-center">
@@ -1475,7 +1647,16 @@ export function ShiftView({
               const workedSeconds = workedMins * 60;
 
               const currentWorkTask = emp.status === "working" && emp.workTasks[0] ? emp.workTasks[0] : null;
-              const currentWorkTaskTodayTotals = currentWorkTask ? aggregateStageSeconds(currentWorkTask.stageHistory, currentWorkTask.status, currentWorkTask.statusEnteredAt, targetDate) : null;
+              const currentWorkTaskTodayTotals = currentWorkTask
+                ? aggregateStageSeconds(
+                    currentWorkTask.stageHistory,
+                    currentWorkTask.status,
+                    currentWorkTask.statusEnteredAt,
+                    targetDate,
+                    emp.id,
+                    attendanceWindows,
+                  )
+                : null;
               
               let currentWorkTaskTodaySum = currentWorkTaskTodayTotals ? (currentWorkTaskTodayTotals["in-progress"] || 0) + (currentWorkTaskTodayTotals["progress"] || 0) : 0;
               if (currentWorkTaskTodaySum > workedSeconds) {
@@ -1533,7 +1714,14 @@ export function ShiftView({
       )}
 
       {selected && (
-        <EmployeeDetailPanel emp={selected} onClose={() => setSelected(null)} nowMin={nowMin} allTasks={tasks} targetDate={targetDate} />
+        <EmployeeDetailPanel
+          emp={selected}
+          onClose={() => setSelected(null)}
+          nowMin={nowMin}
+          allTasks={tasks}
+          targetDate={targetDate}
+          attendanceSessions={attendanceWindows}
+        />
       )}
     </div>
   );

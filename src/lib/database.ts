@@ -1127,6 +1127,13 @@ export function isEmployeeDashboardTask(task: AppTask) {
   return isTaskCreatedToday(resolveTaskCreatedAt(task));
 }
 
+/** Daily Kanban list for a date — tasks assigned to the employee and created that day. */
+export function isTaskInKanbanListForDate(task: AppTask, dateStr: string) {
+  const created = resolveTaskCreatedAt(task);
+  if (!created) return false;
+  return formatLocalDateIso(new Date(created)) === dateStr;
+}
+
 export function sortTodayTasks(tasks: AppTask[]) {
   const order: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
   return [...tasks].sort((a, b) => {
@@ -2928,7 +2935,47 @@ export async function fetchWeekAttendanceHours(
   }));
 }
 
-/** Total office attendance today in seconds (one row per day). */
+/** Office + meeting + idle segments count on the employee dashboard timer (not lunch/tea/personal breaks). */
+export function isEmployeeTimerSegment(seg: ClockSessionSegment): boolean {
+  if (seg.kind === "working" || seg.kind === "meeting" || seg.kind === "idle") return true;
+  if (seg.kind === "break") {
+    const label = seg.label.toLowerCase();
+    return label.includes("idle") || seg.label === "System Idle";
+  }
+  return false;
+}
+
+export type AttendanceTimeWindow = {
+  employeeId: string | null;
+  clockIn: string;
+  clockOut: string | null;
+};
+
+/** Clock-in windows for task-time overlap (working + meeting + idle segments). */
+export function clockSessionsToAttendanceWindows(sessions: ClockSessionRecord[]): AttendanceTimeWindow[] {
+  const windows: AttendanceTimeWindow[] = [];
+  for (const session of sessions) {
+    const segments = session.segments?.filter(isEmployeeTimerSegment) ?? [];
+    if (segments.length > 0) {
+      for (const seg of segments) {
+        windows.push({
+          employeeId: session.employeeId,
+          clockIn: seg.startedAt,
+          clockOut: seg.endedAt,
+        });
+      }
+    } else {
+      windows.push({
+        employeeId: session.employeeId,
+        clockIn: session.clockIn,
+        clockOut: session.clockOut,
+      });
+    }
+  }
+  return windows;
+}
+
+/** Total employee dashboard timer today in seconds (office + meeting + idle). */
 export async function fetchTodayAttendanceSeconds(
   employeeName: string,
   employeeId?: string
@@ -2950,11 +2997,10 @@ export async function fetchTodayAttendanceSeconds(
   for (const session of sessions) {
     const segments = session.segments || [];
     for (const seg of segments) {
-      if (seg.kind === "working" || seg.kind === "meeting") {
-        const startedAt = new Date(seg.startedAt).getTime();
-        const endedAt = seg.endedAt ? new Date(seg.endedAt).getTime() : nowMs;
-        totalSeconds += Math.max(0, Math.floor((endedAt - startedAt) / 1000));
-      }
+      if (!isEmployeeTimerSegment(seg)) continue;
+      const startedAt = new Date(seg.startedAt).getTime();
+      const endedAt = seg.endedAt ? new Date(seg.endedAt).getTime() : nowMs;
+      totalSeconds += Math.max(0, Math.floor((endedAt - startedAt) / 1000));
     }
   }
 

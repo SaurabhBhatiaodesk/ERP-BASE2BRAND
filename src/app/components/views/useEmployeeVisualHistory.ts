@@ -1,12 +1,12 @@
 import { useState, useEffect } from "react";
-import { fetchEmployeeHistoricalSessions } from "@/lib/database";
+import { fetchEmployeeHistoricalSessions, clockSessionsToAttendanceWindows } from "@/lib/database";
 import { AppTask } from "@/lib/database";
 import { ShiftEmployee } from "./ShiftView";
 import { buildShiftEmployee } from "@/lib/shiftTimeline";
 import { listWorkTasksForEmployee, listTrackedTasksForEmployee, aggregateStageSeconds, STAGE_ORDER } from "@/lib/taskStageTime";
 
 export function useEmployeeVisualHistory(emp: ShiftEmployee, rangeDays: number, allTasks: AppTask[]) {
-  const [historyDays, setHistoryDays] = useState<{ date: string; data: ShiftEmployee }[]>([]);
+  const [historyDays, setHistoryDays] = useState<{ date: string; data: ShiftEmployee; attendanceWindows: ReturnType<typeof clockSessionsToAttendanceWindows> }[]>([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -56,6 +56,7 @@ export function useEmployeeVisualHistory(emp: ShiftEmployee, rangeDays: number, 
 
           return {
             date: dateStr,
+            attendanceWindows: clockSessionsToAttendanceWindows([session]),
             data: buildShiftEmployee({
               id: emp.id,
               name: emp.name,

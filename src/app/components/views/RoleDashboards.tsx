@@ -33,9 +33,19 @@ import {
   type AppTask,
   type ClockSessionRecord,
   type TimesheetEntry,
-  insertEmployeeScreenshot,
 } from "@/lib/database";
-import { uploadToCloudinary } from "@/lib/cloudinary";
+import { sessionStatusToActivity } from "@/lib/shiftTimeline";
+
+function employeeTimerSession(
+  activeClock: ClockSessionRecord | null,
+  todaySession: ClockSessionRecord | null,
+): ClockSessionRecord | null {
+  if (activeClock) return activeClock;
+  if (!todaySession) return null;
+  const activity = sessionStatusToActivity(todaySession);
+  if (activity === "meeting" || activity === "idle") return todaySession;
+  return null;
+}
 function parseEstHours(est: string) {
   const num = parseFloat(String(est || "").replace(/[^\d.]/g, ""));
   return Number.isNaN(num) ? 0 : num;
@@ -791,16 +801,17 @@ export function EmployeeDashboard({
     return () => { cancelled = true; };
   }, [userName, myProfile?.id, pLoading, refreshClockState]);
 
-  const isMeetingBreak = todaySession?.status === "paused" && !!todaySession?.notes?.toLowerCase().includes("meeting");
+  const timerSession = employeeTimerSession(activeClock, todaySession);
+  const timerSessionId = timerSession?.id ?? null;
 
   useEffect(() => {
-    const activeOrMeetingSession = activeClock || (isMeetingBreak ? todaySession : null);
-    if (!activeOrMeetingSession) return;
+    const session = employeeTimerSession(activeClock, todaySession);
+    if (!timerSessionId || !session) return;
     const id = setInterval(() => {
       setTick(t => t + 1);
 
       // Auto-close check at 1 AM
-      const clockInDate = new Date(activeOrMeetingSession.clockIn);
+      const clockInDate = new Date(session.clockIn);
       const now = new Date();
       if (
         (clockInDate.getDate() !== now.getDate() ||
@@ -812,46 +823,7 @@ export function EmployeeDashboard({
       }
     }, 1000);
     return () => clearInterval(id);
-  }, [activeClock, todaySession, isMeetingBreak, refreshClockState]);
-
-  const activeOrMeetingSessionId = activeClock?.id || (isMeetingBreak ? todaySession?.id : null);
-
-  useEffect(() => {
-    if (!activeOrMeetingSessionId || !userName) return;
-
-    const captureScreenshot = async () => {
-      try {
-        if (!(window as any).electronAPI?.takeScreenshot) return;
-        const base64Img = await (window as any).electronAPI.takeScreenshot();
-        if (!base64Img) return;
-
-        const res = await fetch(base64Img);
-        const blob = await res.blob();
-        const file = new File([blob], `screenshot_${Date.now()}.jpg`, { type: 'image/jpeg' });
-
-        const uploadResult = await uploadToCloudinary(file, "erp-screenshots");
-        if (uploadResult?.url) {
-          await insertEmployeeScreenshot({
-            employeeName: userName,
-            employeeId: myProfile?.id,
-            imageUrl: uploadResult.url,
-          });
-        }
-      } catch (err) {
-        console.error("Background screenshot failed:", err);
-      }
-    };
-
-    // Capture immediately (after 10s delay to let system load)
-    const initialTimeout = setTimeout(captureScreenshot, 10000);
-    // Then every 10 minutes
-    const captureInterval = setInterval(captureScreenshot, 10 * 60 * 1000);
-
-    return () => {
-      clearTimeout(initialTimeout);
-      clearInterval(captureInterval);
-    };
-  }, [activeOrMeetingSessionId, userName, myProfile?.id]);
+  }, [timerSessionId, activeClock, todaySession, refreshClockState]);
 
   const assigneeName = myProfile?.name || userName;
 
@@ -886,11 +858,10 @@ export function EmployeeDashboard({
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [refreshTasks]);
 
-  // `tick` bumps every second while clocked in so the timer re-renders live.
+  // `tick` bumps every second while timer counts (office, meeting, or idle).
   let totalSeconds = todayAttendanceSeconds;
-  const activeOrMeetingSession = activeClock || (isMeetingBreak ? todaySession : null);
 
-  if (activeOrMeetingSession) {
+  if (timerSession) {
     totalSeconds += Math.max(0, Math.floor((Date.now() - attendanceFetchTime) / 1000));
   }
   void tick;

@@ -8,6 +8,8 @@ const cloudinaryCloudName = Deno.env.get("CLOUDINARY_CLOUD_NAME")!;
 const cloudinaryApiKey = Deno.env.get("CLOUDINARY_API_KEY")!;
 const cloudinaryApiSecret = Deno.env.get("CLOUDINARY_API_SECRET")!;
 
+const RETENTION_DAYS = 3;
+
 async function generateSHA1(message: string) {
   const encoder = new TextEncoder();
   const data = encoder.encode(message);
@@ -16,68 +18,84 @@ async function generateSHA1(message: string) {
   return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+function cloudinaryPublicIdFromUrl(url: string): string | null {
+  const match = url.match(/\/upload\/(?:v\d+\/)?((?:erp-screenshots\/)[^/?#]+)/i);
+  if (!match) return null;
+  return match[1].replace(/\.[^/.]+$/, "");
+}
+
+async function destroyCloudinaryAsset(publicId: string) {
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const strToSign = `public_id=${publicId}&timestamp=${timestamp}${cloudinaryApiSecret}`;
+  const signature = await generateSHA1(strToSign);
+
+  const formData = new FormData();
+  formData.append("public_id", publicId);
+  formData.append("api_key", cloudinaryApiKey);
+  formData.append("timestamp", timestamp);
+  formData.append("signature", signature);
+
+  const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudinaryCloudName}/image/destroy`, {
+    method: "POST",
+    body: formData,
+  });
+
+  return res.ok;
+}
+
 serve(async (req) => {
   try {
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    // 1. Fetch old screenshots (older than today)
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - RETENTION_DAYS);
 
     const { data: oldScreenshots, error: fetchError } = await supabase
       .from("employee_screenshots")
       .select("id, image_url")
-      .lt("captured_at", today.toISOString());
+      .lt("captured_at", cutoff.toISOString());
 
     if (fetchError) throw fetchError;
     if (!oldScreenshots || oldScreenshots.length === 0) {
-      return new Response(JSON.stringify({ message: "No old screenshots to delete." }), {
-        headers: { "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ message: `No screenshots older than ${RETENTION_DAYS} days.` }),
+        { headers: { "Content-Type": "application/json" } },
+      );
     }
 
-    let deletedCount = 0;
+    let deletedFromCloudinary = 0;
+    let deletedFromDb = 0;
+    let cloudinaryErrors = 0;
 
-    // 2. Delete from Cloudinary
     for (const screenshot of oldScreenshots) {
-      // Extract public_id from Cloudinary URL
-      // Example URL: https://res.cloudinary.com/demo/image/upload/v1234567890/erp-screenshots/screenshot_123.jpg
-      const urlParts = screenshot.image_url.split("/");
-      const filename = urlParts.pop(); // screenshot_123.jpg
-      const folderName = urlParts.pop(); // erp-screenshots
-      
-      if (!filename || !folderName) continue;
-
-      const publicId = `${folderName}/${filename.split(".")[0]}`;
-      const timestamp = Math.floor(Date.now() / 1000).toString();
-
-      // Signature: SHA-1 of public_id=<id>&timestamp=<ts><api_secret>
-      const strToSign = `public_id=${publicId}&timestamp=${timestamp}${cloudinaryApiSecret}`;
-      const signature = await generateSHA1(strToSign);
-
-      const formData = new FormData();
-      formData.append("public_id", publicId);
-      formData.append("api_key", cloudinaryApiKey);
-      formData.append("timestamp", timestamp);
-      formData.append("signature", signature);
-
-      const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudinaryCloudName}/image/destroy`, {
-        method: "POST",
-        body: formData,
-      });
-
-      if (res.ok) {
-        // 3. Delete from Supabase Database
-        await supabase.from("employee_screenshots").delete().eq("id", screenshot.id);
-        deletedCount++;
+      const publicId = cloudinaryPublicIdFromUrl(screenshot.image_url);
+      if (publicId) {
+        const ok = await destroyCloudinaryAsset(publicId);
+        if (ok) deletedFromCloudinary++;
+        else cloudinaryErrors++;
       }
+
+      const { error: deleteError } = await supabase
+        .from("employee_screenshots")
+        .delete()
+        .eq("id", screenshot.id);
+
+      if (!deleteError) deletedFromDb++;
     }
 
-    return new Response(JSON.stringify({ message: `Successfully deleted ${deletedCount} old screenshots.` }), {
-      headers: { "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({
+        message: `Cleanup complete (retention: ${RETENTION_DAYS} days).`,
+        scanned: oldScreenshots.length,
+        deletedFromDb,
+        deletedFromCloudinary,
+        cloudinaryErrors,
+      }),
+      { headers: { "Content-Type": "application/json" } },
+    );
   } catch (error) {
-    return new Response(JSON.stringify({ error: error.message }), {
+    const message = error instanceof Error ? error.message : String(error);
+    return new Response(JSON.stringify({ error: message }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
     });

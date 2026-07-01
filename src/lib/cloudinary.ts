@@ -165,3 +165,10 @@ export function fileNameFromUrl(url: string) {
     return "download";
   }
 }
+
+/** Cloudinary destroy API public_id, e.g. erp-screenshots/screenshot_123 */
+export function cloudinaryPublicIdFromUrl(url: string): string | null {
+  const match = url.match(/\/upload\/(?:v\d+\/)?((?:erp-screenshots\/)[^/?#]+)/i);
+  if (!match) return null;
+  return match[1].replace(/\.[^/.]+$/, "");
+}

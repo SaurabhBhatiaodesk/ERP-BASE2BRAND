@@ -33,6 +33,7 @@ import { useChatUnreadCounts } from "@/hooks/useChat";
 import { SettingsPage, NotificationsCenterView, BroadcastView, ProjectDetailPage, InvoiceView } from "./components/views/SettingsViews";
 import { AICopilotView } from "./components/views/AICopilotView";
 import { useElectronIdleTracker } from "@/hooks/useElectronIdleTracker";
+import { useEmployeeScreenshotCapture } from "@/hooks/useEmployeeScreenshotCapture";
 import { useNotifications } from "@/hooks/useNotifications";
 import { playBeep } from "@/lib/audio";
 import { FloatingQuickActions } from "./components/FloatingQuickActions";
@@ -373,6 +374,11 @@ export default function App() {
 
   const { notifications, unreadCount, markAsRead, markAllAsRead } = useNotifications(currentProfile?.id, handleNotificationClick);
   const idleSeconds = useElectronIdleTracker(userEmail, currentProfile);
+  useEmployeeScreenshotCapture(
+    userName,
+    currentProfile,
+    isLoggedIn && isPersonalTaskRole(userRole),
+  );
 
   const { data: chatUnread } = useChatUnreadCounts(currentProfile?.id ?? "");
   const chatUnreadTotal = useMemo(

@@ -99,75 +99,67 @@ export function aggregateStageSeconds(
   statusEnteredAt?: string | null,
   targetDate?: string, // Format: YYYY-MM-DD
   assigneeId?: string | null,
-  attendanceSessions?: any[] // Using any[] to avoid circular import, will rely on duck typing {employeeId, clockIn, clockOut}
+  attendanceSessions?: { employeeId: string | null; clockIn: string; clockOut: string | null }[]
 ): Record<string, number> {
   const totals: Record<string, number> = {};
+  const todayIso = new Date().toLocaleDateString("en-CA");
+  const useAttendance = Boolean(assigneeId && attendanceSessions && attendanceSessions.length > 0);
 
-  const getOverlapSeconds = (enteredAt: string, exitedAt: string | null, targetDateStr: string) => {
-    const dayStart = new Date(`${targetDateStr}T00:00:00`).getTime();
-    const dayEnd = new Date(`${targetDateStr}T23:59:59.999`).getTime();
-    const start = new Date(enteredAt).getTime();
-    const end = exitedAt ? new Date(exitedAt).getTime() : Date.now();
-
-    if (start > dayEnd || end < dayStart) return 0;
-    const overlapStart = Math.max(start, dayStart);
-    const overlapEnd = Math.min(end, dayEnd);
-    return Math.floor((overlapEnd - overlapStart) / 1000);
+  const segmentEndMs = (exitedAt: string | null, targetDateStr?: string) => {
+    if (exitedAt) return new Date(exitedAt).getTime();
+    if (targetDateStr && targetDateStr !== todayIso) {
+      return new Date(`${targetDateStr}T23:59:59.999`).getTime();
+    }
+    return Date.now();
   };
 
-  const getAttendanceOverlapSeconds = (enteredAt: string, exitedAt: string | null) => {
-    const start = new Date(enteredAt).getTime();
-    const end = exitedAt ? new Date(exitedAt).getTime() : Date.now();
-    
-    if (!assigneeId || !attendanceSessions || attendanceSessions.length === 0) {
+  const getStageOverlapSeconds = (enteredAt: string, exitedAt: string | null, targetDateStr?: string) => {
+    let start = new Date(enteredAt).getTime();
+    let end = segmentEndMs(exitedAt, targetDateStr);
+    if (start >= end) return 0;
+
+    if (targetDateStr) {
+      const dayStart = new Date(`${targetDateStr}T00:00:00`).getTime();
+      const dayEnd = new Date(`${targetDateStr}T23:59:59.999`).getTime();
+      if (start > dayEnd || end < dayStart) return 0;
+      start = Math.max(start, dayStart);
+      end = Math.min(end, dayEnd);
+    }
+
+    if (!useAttendance) {
       return Math.floor((end - start) / 1000);
     }
 
-    const employeeSessions = attendanceSessions.filter(s => s.employeeId === assigneeId);
-    if (employeeSessions.length === 0) {
-      return Math.floor((end - start) / 1000);
-    }
+    const employeeSessions = attendanceSessions!.filter(s => s.employeeId === assigneeId);
+    if (employeeSessions.length === 0) return 0;
 
     let totalOverlapMs = 0;
     for (const session of employeeSessions) {
       const sessionStart = new Date(session.clockIn).getTime();
-      const sessionEnd = session.clockOut ? new Date(session.clockOut).getTime() : Date.now();
+      const sessionEnd = session.clockOut
+        ? new Date(session.clockOut).getTime()
+        : segmentEndMs(null, targetDateStr);
 
       if (start > sessionEnd || end < sessionStart) continue;
-      const overlapStart = Math.max(start, sessionStart);
-      const overlapEnd = Math.min(end, sessionEnd);
-      totalOverlapMs += (overlapEnd - overlapStart);
+      totalOverlapMs += Math.min(end, sessionEnd) - Math.max(start, sessionStart);
     }
     return Math.floor(totalOverlapMs / 1000);
   };
 
   for (const row of history) {
-    // Skip the open row in history, because the live time is handled below using statusEnteredAt
     if (!row.exited_at) continue;
 
-    if (targetDate) {
-       const overlap = getOverlapSeconds(row.entered_at, row.exited_at, targetDate);
-       if (overlap > 0) {
-         totals[row.to_status] = (totals[row.to_status] || 0) + overlap;
-       }
-    } else {
-      // Re-calculate duration with attendance intersection if available, otherwise use DB duration
-      if (attendanceSessions && assigneeId) {
-        totals[row.to_status] = (totals[row.to_status] || 0) + getAttendanceOverlapSeconds(row.entered_at, row.exited_at);
-      } else if (row.duration_seconds != null) {
-        totals[row.to_status] = (totals[row.to_status] || 0) + row.duration_seconds;
-      }
+    const overlap = getStageOverlapSeconds(row.entered_at, row.exited_at, targetDate);
+    if (overlap > 0) {
+      totals[row.to_status] = (totals[row.to_status] || 0) + overlap;
+    } else if (!useAttendance && !targetDate && row.duration_seconds != null) {
+      totals[row.to_status] = (totals[row.to_status] || 0) + row.duration_seconds;
     }
   }
 
   if (statusEnteredAt && statusEnteredAt !== "paused" && currentStatus) {
-    if (targetDate) {
-      const overlap = getOverlapSeconds(statusEnteredAt, null, targetDate);
-      if (overlap > 0) {
-        totals[currentStatus] = (totals[currentStatus] || 0) + overlap;
-      }
-    } else {
-      const live = Math.max(0, getAttendanceOverlapSeconds(statusEnteredAt, null));
+    const live = getStageOverlapSeconds(statusEnteredAt, null, targetDate);
+    if (live > 0) {
       totals[currentStatus] = (totals[currentStatus] || 0) + live;
     }
   }
