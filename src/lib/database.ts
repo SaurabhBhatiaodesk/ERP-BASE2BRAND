@@ -467,6 +467,32 @@ async function openInitialTaskStatusSegment(input: {
   return enteredAt;
 }
 
+async function closeOpenTaskStatusHistoryRows(taskId: string, closedAt = new Date().toISOString()) {
+  const openRows = await fetchAllPaginated<TaskStageHistoryRow>((from, pageSize) =>
+    supabase
+      .from("task_status_history")
+      .select("*")
+      .eq("task_id", taskId)
+      .is("exited_at", null)
+      .order("entered_at", { ascending: true })
+      .range(from, from + pageSize - 1)
+  );
+
+  for (const open of openRows) {
+    const duration = Math.max(
+      0,
+      Math.floor((new Date(closedAt).getTime() - new Date(open.entered_at).getTime()) / 1000),
+    );
+    const { error } = await supabase
+      .from("task_status_history")
+      .update({ exited_at: closedAt, duration_seconds: duration })
+      .eq("id", open.id);
+    if (error) throw error;
+  }
+
+  return openRows.length > 0;
+}
+
 async function recordTaskStatusChange(input: {
   taskId: string;
   projectId: string;
@@ -477,27 +503,8 @@ async function recordTaskStatusChange(input: {
 }): Promise<string> {
   const now = new Date().toISOString();
 
-  const { data: openRows, error: openError } = await supabase
-    .from("task_status_history")
-    .select("*")
-    .eq("task_id", input.taskId)
-    .is("exited_at", null)
-    .order("entered_at", { ascending: false })
-    .limit(1);
-  if (openError) throw openError;
-
-  const open = (openRows?.[0] || null) as TaskStageHistoryRow | null;
-  if (open) {
-    const duration = Math.max(
-      0,
-      Math.floor((Date.now() - new Date(open.entered_at).getTime()) / 1000),
-    );
-    const { error: closeError } = await supabase
-      .from("task_status_history")
-      .update({ exited_at: now, duration_seconds: duration })
-      .eq("id", open.id);
-    if (closeError) throw closeError;
-  } else if (input.fallbackEnteredAt) {
+  const hadOpenRows = await closeOpenTaskStatusHistoryRows(input.taskId, now);
+  if (!hadOpenRows && input.fallbackEnteredAt) {
     const duration = Math.max(
       0,
       Math.floor((Date.now() - new Date(input.fallbackEnteredAt).getTime()) / 1000),
@@ -570,7 +577,12 @@ function profileNameById(profiles: EmployeeProfile[], id?: string | null) {
 
 function profileIdByName(profiles: EmployeeProfile[], name?: string) {
   if (!name?.trim()) return "";
-  return profiles.find(p => namesMatch(p.name, name))?.id || "";
+  const normalized = name.trim().toLowerCase();
+  const exact = profiles.filter(p => p.name.trim().toLowerCase() === normalized);
+  if (exact.length === 1) return exact[0].id;
+  const loose = profiles.filter(p => namesMatch(p.name, name));
+  if (loose.length === 1) return loose[0].id;
+  return "";
 }
 
 /** Read team JSONB: legacy `["name"]` or new `[{ id, name }]`. */
@@ -2770,23 +2782,8 @@ export async function pauseEmployeeTaskTimers(employeeName: string, employeeId?:
   const now = new Date().toISOString();
 
   for (const task of tasks) {
-    const { data: openRows } = await supabase
-      .from("task_status_history")
-      .select("*")
-      .eq("task_id", task.id)
-      .is("exited_at", null)
-      .order("entered_at", { ascending: false })
-      .limit(1);
-    
-    const open = (openRows?.[0] || null) as TaskStageHistoryRow | null;
-    if (open) {
-      const duration = Math.max(0, Math.floor((Date.now() - new Date(open.entered_at).getTime()) / 1000));
-      await supabase
-        .from("task_status_history")
-        .update({ exited_at: now, duration_seconds: duration })
-        .eq("id", open.id);
-    }
-    await supabase.from("project_tasks").update({ status_entered_at: null }).eq("id", task.id);
+    await closeOpenTaskStatusHistoryRows(task.id, now);
+    await supabase.from("project_tasks").update({ status_entered_at: "paused" }).eq("id", task.id);
   }
 }
 
@@ -2809,6 +2806,7 @@ export async function resumeEmployeeTaskTimers(employeeName: string, employeeId?
   if (!tasks.length) return;
 
   for (const task of tasks) {
+    await closeOpenTaskStatusHistoryRows(task.id);
     const enteredAt = await openInitialTaskStatusSegment({
       taskId: task.id,
       projectId: task.project_id,

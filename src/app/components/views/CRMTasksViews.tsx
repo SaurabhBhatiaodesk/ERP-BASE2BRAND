@@ -40,6 +40,7 @@ import {
 import { getSprintSummary, formatTaskManagementSubtitle } from "@/lib/sprint";
 import {
   aggregateStageSeconds,
+  applyOptimisticTaskStatusMove,
   attendanceWindowsTotalSeconds,
   capWorkStageTotals,
   effectiveStatusEnteredAt,
@@ -1370,7 +1371,9 @@ export function TasksView({
 
     setDragTasks(prev => {
       const base = prev ?? scopedTasks;
-      return base.map(t => (t.taskId === task.taskId ? { ...t, status: newStatus } : t));
+      return base.map(t =>
+        t.taskId === task.taskId ? applyOptimisticTaskStatusMove(t, newStatus, currentProfile?.id) : t
+      );
     });
     try {
       await updateProjectTaskStatus({

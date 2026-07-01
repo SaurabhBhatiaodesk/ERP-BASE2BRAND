@@ -268,27 +268,73 @@ export function aggregateStageSeconds(
   };
 
   for (const row of history) {
+    // Open rows are handled below — only the current column may accumulate live time.
     if (!row.exited_at) continue;
 
-    let seconds = getStageOverlapSeconds(row.entered_at, row.exited_at, targetDate);
-    // Closed segments are frozen at move time — never grow after leaving the column.
-    if (row.duration_seconds != null && row.duration_seconds >= 0) {
-      seconds = Math.min(seconds, row.duration_seconds);
+    let seconds =
+      row.duration_seconds != null && row.duration_seconds >= 0
+        ? row.duration_seconds
+        : getStageOverlapSeconds(row.entered_at, row.exited_at, targetDate);
+
+    if (row.duration_seconds == null && row.exited_at) {
+      const wallCap = Math.max(
+        0,
+        Math.floor((new Date(row.exited_at).getTime() - new Date(row.entered_at).getTime()) / 1000),
+      );
+      seconds = Math.min(seconds, wallCap);
     }
+
     if (seconds > 0) {
       totals[row.to_status] = (totals[row.to_status] || 0) + seconds;
-    } else if (!attendanceScoped && !targetDate && row.duration_seconds != null) {
-      totals[row.to_status] = (totals[row.to_status] || 0) + row.duration_seconds;
     }
   }
 
-  if (statusEnteredAt && statusEnteredAt !== "paused" && currentStatus) {
-    const live = getStageOverlapSeconds(statusEnteredAt, null, targetDate);
+  const openForCurrent = history.find(row => !row.exited_at && row.to_status === currentStatus);
+  const liveStart = openForCurrent?.entered_at || statusEnteredAt;
+  if (liveStart && liveStart !== "paused" && currentStatus) {
+    const live = getStageOverlapSeconds(liveStart, null, targetDate);
     if (live > 0) {
       totals[currentStatus] = (totals[currentStatus] || 0) + live;
     }
   }
   return totals;
+}
+
+/** Instant UI update when a card moves — closes the old stage and opens the new one. */
+export function applyOptimisticTaskStatusMove(
+  task: AppTask,
+  newStatus: string,
+  movedById?: string | null,
+): AppTask {
+  const previousStatus = task.status;
+  if (previousStatus === newStatus) return task;
+
+  const now = new Date().toISOString();
+  const nowMs = Date.now();
+  const closedHistory = (task.stageHistory || []).map(row => {
+    if (row.exited_at) return row;
+    const duration = Math.max(0, Math.floor((nowMs - new Date(row.entered_at).getTime()) / 1000));
+    return { ...row, exited_at: now, duration_seconds: duration };
+  });
+
+  const newRow: TaskStageHistoryRow = {
+    id: `opt-${nowMs}`,
+    task_id: task.taskId,
+    project_id: task.projectId,
+    from_status: previousStatus,
+    to_status: newStatus,
+    entered_at: now,
+    exited_at: null,
+    duration_seconds: null,
+    moved_by: movedById || null,
+  };
+
+  return {
+    ...task,
+    status: newStatus as AppTask["status"],
+    statusEnteredAt: now,
+    stageHistory: [...closedHistory, newRow],
+  };
 }
 
 export function aggregateEmployeeStageTotals(tasks: ShiftActiveTask[]): Record<string, number> {
@@ -430,7 +476,10 @@ function tasksForEmployee(tasks: AppTask[], profileId: string, profileName: stri
   return tasks.filter(t => {
     if (t.status === "done" && !includeDoneToday) return false;
     if (t.status === "done" && includeDoneToday && !isTaskTrackedToday(t)) return false;
-    if (profileId && t.assigneeId === profileId) return true;
+    if (profileId && t.assigneeId) return t.assigneeId === profileId;
+    if (profileId && !t.assigneeId) {
+      return t.assignee.trim().toLowerCase() === profileName.trim().toLowerCase();
+    }
     return t.assignee.trim().toLowerCase() === profileName.trim().toLowerCase();
   });
 }

@@ -1269,30 +1269,52 @@ export function ShiftView({
     };
   }, [refresh, targetDate]);
 
-  const sessionByEmployee = useMemo(() => {
-    const map = new Map<string, ClockSessionRecord>();
-    for (const s of sessions) {
-      if (s.employeeId) map.set(s.employeeId, s);
-      const nameKey = s.employeeName.trim().toLowerCase();
-      map.set(nameKey, s);
-      // Also index first name for loose matching
-      const first = nameKey.split(/\s+/)[0];
-      if (first && !map.has(first)) map.set(first, s);
-    }
-    return map;
-  }, [sessions]);
-
   const visibleProfiles = useMemo(() => {
     let list = profiles.filter(p => p.dept !== "Executive" && p.name !== "CEO Admin");
     return list;
   }, [profiles, userRole, viewerProfile?.dept]);
 
+  const profileCountByName = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of visibleProfiles) {
+      const key = p.name.trim().toLowerCase();
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return counts;
+  }, [visibleProfiles]);
+
+  const sessionByEmployeeId = useMemo(() => {
+    const map = new Map<string, ClockSessionRecord>();
+    for (const s of sessions) {
+      if (!s.employeeId) continue;
+      const existing = map.get(s.employeeId);
+      if (!existing || new Date(s.clockIn).getTime() > new Date(existing.clockIn).getTime()) {
+        map.set(s.employeeId, s);
+      }
+    }
+    return map;
+  }, [sessions]);
+
+  /** Legacy clock rows without employee_id — only when that display name is unique on the team. */
+  const legacySessionByUniqueName = useMemo(() => {
+    const map = new Map<string, ClockSessionRecord>();
+    for (const s of sessions) {
+      if (s.employeeId) continue;
+      const nameKey = s.employeeName.trim().toLowerCase();
+      if ((profileCountByName.get(nameKey) || 0) !== 1) continue;
+      const existing = map.get(nameKey);
+      if (!existing || new Date(s.clockIn).getTime() > new Date(existing.clockIn).getTime()) {
+        map.set(nameKey, s);
+      }
+    }
+    return map;
+  }, [sessions, profileCountByName]);
+
   const shiftEmployees = useMemo(() => {
     let list = visibleProfiles.map(profile => {
       const session =
-        sessionByEmployee.get(profile.id) ||
-        sessionByEmployee.get(profile.name.trim().toLowerCase()) ||
-        sessionByEmployee.get(profile.name.trim().toLowerCase().split(/\s+/)[0]) ||
+        sessionByEmployeeId.get(profile.id) ||
+        legacySessionByUniqueName.get(profile.name.trim().toLowerCase()) ||
         null;
       const workTasks = listWorkTasksForEmployee(tasks, profile.id, profile.name);
       const trackedTasks = listTrackedTasksForEmployee(tasks, profile.id, profile.name);
@@ -1319,11 +1341,11 @@ export function ShiftView({
     }
     
     return list;
-  }, [visibleProfiles, sessionByEmployee, tasks, nowMin, searchQuery]);
+  }, [visibleProfiles, sessionByEmployeeId, legacySessionByUniqueName, tasks, nowMin, searchQuery]);
 
   useEffect(() => {
     if (!selected) return;
-    const updated = shiftEmployees.find(e => e.name === selected.name);
+    const updated = shiftEmployees.find(e => e.id === selected.id);
     if (updated) setSelected(updated);
   }, [shiftEmployees, selected?.name]);
 
