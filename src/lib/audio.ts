@@ -68,24 +68,50 @@ export function playBeep() {
   }
 }
 
-/** CEO call — desk-phone style "truun-triin" ring (clearly unlike idle beep). */
-export function playCeoCallBeep() {
-  try {
-    const audioCtx = createAudioContext();
-    const t = audioCtx.currentTime;
+const CALL_ALERT_FILES = [
+  "/sounds/digitalstore07-new-message-alert-430414.mp3",
+  "/sounds/digitalstore07-new-message-alert-430414.wav",
+  "/sounds/digitalstore07-new-message-alert-430414.ogg",
+];
 
-    const ringBurst = (offset: number) => {
-      playDualPhoneRing(audioCtx, t + offset, 0.55, 440, 480, 0.75);
-      playDualPhoneRing(audioCtx, t + offset + 0.62, 0.5, 520, 660, 0.7);
-      playDualPhoneRing(audioCtx, t + offset + 1.18, 0.55, 440, 480, 0.75);
-      playDualPhoneRing(audioCtx, t + offset + 1.8, 0.5, 520, 660, 0.7);
-    };
+function playFallbackCeoCallBeep() {
+  const audioCtx = createAudioContext();
+  const t = audioCtx.currentTime;
 
-    ringBurst(0);
-    ringBurst(2.55);
-  } catch (e) {
-    console.error("CEO call beep failed:", e);
+  const ringBurst = (offset: number) => {
+    playDualPhoneRing(audioCtx, t + offset, 0.55, 440, 480, 0.75);
+    playDualPhoneRing(audioCtx, t + offset + 0.62, 0.5, 520, 660, 0.7);
+    playDualPhoneRing(audioCtx, t + offset + 1.18, 0.55, 440, 480, 0.75);
+    playDualPhoneRing(audioCtx, t + offset + 1.8, 0.5, 520, 660, 0.7);
+  };
+
+  ringBurst(0);
+  ringBurst(2.55);
+}
+
+async function playCallAlertFile(): Promise<boolean> {
+  for (const src of CALL_ALERT_FILES) {
+    try {
+      const audio = new Audio(src);
+      audio.volume = 1;
+      await audio.play();
+      return true;
+    } catch {
+      /* try next extension */
+    }
   }
+  return false;
+}
+
+/** CEO call — plays custom alert from public/sounds if present. */
+export function playCeoCallBeep() {
+  void playCallAlertFile().catch(() => {
+    try {
+      playFallbackCeoCallBeep();
+    } catch (e) {
+      console.error("CEO call beep failed:", e);
+    }
+  });
 }
 
 export function playNotificationBeep(type?: string) {
