@@ -32,7 +32,7 @@ import { Avatar } from "./components/ui";
 import { useChatUnreadCounts } from "@/hooks/useChat";
 import { SettingsPage, NotificationsCenterView, BroadcastView, ProjectDetailPage, InvoiceView } from "./components/views/SettingsViews";
 import { AICopilotView } from "./components/views/AICopilotView";
-import { useElectronIdleTracker } from "@/hooks/useElectronIdleTracker";
+import { useElectronIdleTracker, IDLE_THRESHOLD_SECS } from "@/hooks/useElectronIdleTracker";
 import { useEmployeeScreenshotCapture } from "@/hooks/useEmployeeScreenshotCapture";
 import { useNotifications } from "@/hooks/useNotifications";
 import { playBeep } from "@/lib/audio";
@@ -391,7 +391,7 @@ export default function App() {
     let cancelled = false;
 
     async function checkAndBeep() {
-      if (idleSeconds > 180 && userRole !== "ceo" && userRole !== "hr" && currentProfile) {
+      if (idleSeconds > IDLE_THRESHOLD_SECS && userRole !== "ceo" && userRole !== "hr" && currentProfile) {
         const { fetchActiveClockSession } = await import("@/lib/database");
         const session = await fetchActiveClockSession(currentProfile.name, currentProfile.id);
         if (cancelled) return;
@@ -416,7 +416,7 @@ export default function App() {
       cancelled = true;
       if (id) clearInterval(id);
     };
-  }, [idleSeconds > 180, userRole, currentProfile]);
+  }, [idleSeconds > IDLE_THRESHOLD_SECS, userRole, currentProfile]);
 
   // Global Realtime Listener for Desktop Notifications
   useEffect(() => {
@@ -616,6 +616,7 @@ export default function App() {
             <ProjectsView
               userRole={userRole}
               userName={userName}
+              userEmail={userEmail}
               onOpenProject={projectId => {
                 setSelectedProjectId(projectId);
                 setTaskNav(null);
@@ -631,6 +632,7 @@ export default function App() {
         return (
           <TasksView
             userName={userName}
+            userEmail={userEmail}
             userRole={userRole}
             initialTaskId={taskNav?.taskId}
             initialStatus={taskNav?.status as "todo" | "in-progress" | "ready-for-testing" | "review" | "done" | undefined}
@@ -683,6 +685,7 @@ export default function App() {
       case "employee": return (
         <EmployeeDashboard
           userName={userName}
+          userEmail={userEmail}
           onNavigate={(view, options) => {
             if (options?.projectId) {
               setSelectedProjectId(options.projectId);
@@ -693,10 +696,11 @@ export default function App() {
           }}
         />
       );
-      case "leaves": return <LeavesView userName={userName} />;
+      case "leaves": return <LeavesView userName={userName} userEmail={userEmail} />;
       case "developer": return (
         <DevDashboard
           userName={userName}
+          userEmail={userEmail}
           onNavigate={(view, options) => {
             if (options?.projectId) {
               setSelectedProjectId(options.projectId);
@@ -761,6 +765,7 @@ export default function App() {
         <ProjectsView
           userRole={userRole}
           userName={userName}
+          userEmail={userEmail}
           onOpenProject={projectId => {
             setSelectedProjectId(projectId);
             setActiveView("projectworkspace");
@@ -789,6 +794,7 @@ export default function App() {
         <ProjectsView
           userRole={userRole}
           userName={userName}
+          userEmail={userEmail}
           onOpenProject={projectId => {
             setSelectedProjectId(projectId);
             setActiveView("projectworkspace");
@@ -822,7 +828,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-[#06091a] overflow-hidden" style={{ fontFamily: "Inter, sans-serif" }}>
-      {idleSeconds > 180 && userRole !== "ceo" && userRole !== "hr" && (
+      {idleSeconds > IDLE_THRESHOLD_SECS && userRole !== "ceo" && userRole !== "hr" && (
         <div className="fixed top-6 right-6 z-50 flex items-center gap-4 bg-[#1e0f15] border border-red-500/40 text-red-200 px-5 py-4 rounded-2xl shadow-[0_10px_40px_-10px_rgba(239,68,68,0.4)] backdrop-blur-xl animate-in fade-in slide-in-from-top-4">
           <div className="bg-red-500/20 p-2 rounded-full">
             <AlertTriangle className="w-5 h-5 text-red-400 animate-pulse" />

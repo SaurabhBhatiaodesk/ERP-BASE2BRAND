@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Briefcase, Clock, Download, Pencil, Plus, Save, Search, Trash2 } from "lucide-react";
 import { Avatar } from "../ui";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
-import { useAttendance, useEmployeeProfiles, useProjects, useTimesheets } from "@/hooks/useSupabaseData";
+import { useAttendanceReport, useEmployeeProfiles, useProjects, useTimesheetReport } from "@/hooks/useSupabaseData";
 import {
   addTimesheetEntry,
   deleteTimesheetEntry,
@@ -161,11 +161,6 @@ export function TimesheetView({
   initialTab?: TimeTab;
   onNavConsumed?: () => void;
 }) {
-  const { data: profiles, loading: pLoading, error: pError } = useEmployeeProfiles();
-  const { data: projects, loading: prLoading, error: prError, refresh: refreshProjects } = useProjects();
-  const { data: entries, loading: tLoading, error: tError, refresh: refreshTimesheets } = useTimesheets();
-  const { data: attendance, loading: aLoading, error: aError, refresh: refreshAttendance } = useAttendance();
-
   const defaultRange = useMemo(() => getDefaultRange(), []);
   const [rangeDays, setRangeDays] = useState<7 | 30 | 60 | "custom">(30);
   const [rangeStart, setRangeStart] = useState(defaultRange.start);
@@ -188,8 +183,77 @@ export function TimesheetView({
   const [editError, setEditError] = useState("");
   const [deleting, setDeleting] = useState(false);
 
-  const loading = pLoading || prLoading || tLoading || aLoading;
-  const error = pError || prError || tError || aError;
+  const { data: profiles, loading: pLoading, error: pError } = useEmployeeProfiles();
+  const { data: projects, loading: prLoading, error: prError, refresh: refreshProjects } = useProjects();
+
+  const attendanceFilter = useMemo(() => {
+    const filter = {
+      startDate: formatLocalDate(rangeStart),
+      endDate: formatLocalDate(rangeEnd),
+    } as {
+      startDate: string;
+      endDate: string;
+      employeeId?: string;
+      employeeName?: string;
+    };
+
+    if (personFilter !== "everyone") {
+      const picked = profiles.find(p => p.name === personFilter);
+      if (picked) {
+        filter.employeeId = picked.id;
+        filter.employeeName = picked.name;
+      } else {
+        filter.employeeName = personFilter;
+      }
+    } else if (!isAdminRole(userRole) && userName.trim()) {
+      const mine = profiles.find(p => p.name.toLowerCase() === userName.toLowerCase());
+      if (mine) {
+        filter.employeeId = mine.id;
+        filter.employeeName = mine.name;
+      } else {
+        filter.employeeName = userName;
+      }
+    }
+
+    return filter;
+  }, [rangeStart, rangeEnd, personFilter, profiles, userRole, userName]);
+
+  const timesheetFilter = useMemo(() => {
+    if (timeTab !== "project") return null;
+    const filter = {
+      startDate: formatLocalDate(rangeStart),
+      endDate: formatLocalDate(rangeEnd),
+    } as {
+      startDate: string;
+      endDate: string;
+      employeeId?: string;
+    };
+
+    if (personFilter !== "everyone") {
+      const picked = profiles.find(p => p.name === personFilter);
+      if (picked?.id) filter.employeeId = picked.id;
+    } else if (!isAdminRole(userRole) && userName.trim()) {
+      const mine = profiles.find(p => p.name.toLowerCase() === userName.toLowerCase());
+      if (mine?.id) filter.employeeId = mine.id;
+    }
+
+    return filter;
+  }, [timeTab, rangeStart, rangeEnd, personFilter, profiles, userRole, userName]);
+
+  const { data: attendance, loading: aLoading, error: aError, refresh: refreshAttendance } =
+    useAttendanceReport(attendanceFilter);
+  const {
+    data: entries,
+    loading: tLoading,
+    error: tError,
+    refresh: refreshTimesheets,
+  } = useTimesheetReport(timesheetFilter);
+
+  const loading =
+    pLoading ||
+    aLoading ||
+    (timeTab === "project" && (tLoading || prLoading));
+  const error = pError || aError || (timeTab === "project" ? prError || tError : null);
 
   const visibleProfiles = useMemo(() => {
     if (isAdminRole(userRole)) return profiles;

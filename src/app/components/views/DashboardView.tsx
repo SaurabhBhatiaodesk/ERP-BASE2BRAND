@@ -11,7 +11,7 @@ import {
 import { StatCard, Avatar, Badge, CustomTooltip } from "../ui";
 import { DataLoading, DataError } from "../ui/DataStatus";
 import { revenueData, pieData, aiInsights, activityFeed } from "../../data";
-import { useEmployees, useEmployeeProfiles, useProjects, useLeaveRequests } from "@/hooks/useSupabaseData";
+import { useEmployeeProfiles, useProjects, useLeaveRequests } from "@/hooks/useSupabaseData";
 import { addProjectTask, updateLeaveStatus, insertNotification } from "@/lib/database";
 import { saveQuickAction } from "@/lib/quickActions";
 
@@ -20,10 +20,22 @@ function formatIso(d = new Date()) {
 }
 
 export function CEODashboard() {
-  const { data: employees, loading: empLoading, error: empError } = useEmployees();
-  const { data: profiles, loading: profLoading } = useEmployeeProfiles();
+  const { data: profiles, loading: profLoading, error: profError } = useEmployeeProfiles();
   const { data: projects, loading: projLoading } = useProjects();
   const { data: leaves, refresh: refreshLeaves } = useLeaveRequests();
+  const employees = useMemo(
+    () =>
+      [...profiles]
+        .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+        .map(p => ({
+          name: p.name,
+          role: p.role,
+          avatar: p.avatar,
+          status: p.status,
+          score: p.score,
+        })),
+    [profiles]
+  );
   const uid = useId().replace(/:/g, "");
   const [showQA, setShowQA] = useState(false);
   const [qaModal, setQaModal] = useState<string | null>(null);
@@ -39,8 +51,8 @@ export function CEODashboard() {
   const [qaError, setQaError] = useState("");
   const qaMenuRef = useRef<HTMLDivElement>(null);
 
-  const loading = empLoading || profLoading || projLoading;
-  const error = empError;
+  const loading = profLoading || projLoading;
+  const error = profError;
 
   const assignableEmployees = useMemo(
     () => profiles.filter(p => p.dept !== "Executive" && p.name !== "CEO Admin"),

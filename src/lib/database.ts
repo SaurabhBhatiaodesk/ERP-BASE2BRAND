@@ -1,7 +1,48 @@
 import type { RealtimeChannel } from "@supabase/supabase-js";
+import { CACHE_KEYS, getCached, invalidateDataCache, invalidateDataCachePrefix } from "./dataCache";
 import { normalizeCloudinaryDeliveryUrl } from "./cloudinary";
 import { supabase } from "./supabase";
 import type { TaskStageHistoryRow } from "./taskStageTime";
+
+const PROFILE_CACHE_TTL = 60_000;
+const DATA_CACHE_TTL = 30_000;
+const ATTENDANCE_CACHE_TTL = 20_000;
+const RAW_PROFILES_KEY = "employee_profiles_raw";
+
+async function loadDbEmployeeProfiles(): Promise<DbEmployeeProfile[]> {
+  return fetchAllPaginated<DbEmployeeProfile>((from, pageSize) =>
+    supabase
+      .from("employee_profiles")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .range(from, from + pageSize - 1)
+  );
+}
+
+async function getDbEmployeeProfiles(): Promise<DbEmployeeProfile[]> {
+  return getCached(RAW_PROFILES_KEY, loadDbEmployeeProfiles, PROFILE_CACHE_TTL);
+}
+
+function invalidateProfileCaches() {
+  invalidateDataCache(RAW_PROFILES_KEY);
+  invalidateDataCache(CACHE_KEYS.employeeProfiles);
+  invalidateDataCache(CACHE_KEYS.employees);
+}
+
+function invalidateTaskCaches() {
+  invalidateDataCache(CACHE_KEYS.projectTasks);
+  invalidateDataCachePrefix(`${CACHE_KEYS.todayTasks}:`);
+}
+
+function invalidateAttendanceCache() {
+  invalidateDataCache(CACHE_KEYS.attendance);
+  invalidateDataCachePrefix(`${CACHE_KEYS.attendance}:`);
+}
+
+function invalidateTimesheetCaches() {
+  invalidateTimesheetCaches();
+  invalidateDataCachePrefix(`${CACHE_KEYS.timesheetReport}:`);
+}
 
 // ─── DB row types (snake_case from Supabase) ─────────────────────────────────
 
@@ -576,13 +617,18 @@ function profileNameById(profiles: EmployeeProfile[], id?: string | null) {
 }
 
 function profileIdByName(profiles: EmployeeProfile[], name?: string) {
-  if (!name?.trim()) return "";
+  return resolveProfileIdFromName(profiles, name) || "";
+}
+
+/** Resolve profile id from display name — returns null when ambiguous (e.g. two "Abhishek"). */
+export function resolveProfileIdFromName(profiles: EmployeeProfile[], name?: string): string | null {
+  if (!name?.trim()) return null;
   const normalized = name.trim().toLowerCase();
   const exact = profiles.filter(p => p.name.trim().toLowerCase() === normalized);
   if (exact.length === 1) return exact[0].id;
   const loose = profiles.filter(p => namesMatch(p.name, name));
   if (loose.length === 1) return loose[0].id;
-  return "";
+  return null;
 }
 
 /** Read team JSONB: legacy `["name"]` or new `[{ id, name }]`. */
@@ -728,36 +774,38 @@ export function normalizeTaskStatusForStorage(status?: string) {
 // ─── Leave Requests ─────────────────────────────────────────────────────────
 
 export async function fetchLeaveRequests(): Promise<LeaveRequest[]> {
-  let data: DbLeaveRequest[];
-  try {
-    data = await fetchAllPaginated((from, pageSize) =>
-      supabase
-        .from("leave_requests")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .range(from, from + pageSize - 1)
-    );
-  } catch (error) {
-    const e = error as { code?: string };
-    if (e.code === "42P01") return [];
-    console.error("fetchLeaveRequests error:", error);
-    return [];
-  }
+  return getCached(CACHE_KEYS.leaveRequests, async () => {
+    let data: DbLeaveRequest[];
+    try {
+      data = await fetchAllPaginated((from, pageSize) =>
+        supabase
+          .from("leave_requests")
+          .select("*")
+          .order("created_at", { ascending: false })
+          .range(from, from + pageSize - 1)
+      );
+    } catch (error) {
+      const e = error as { code?: string };
+      if (e.code === "42P01") return [];
+      console.error("fetchLeaveRequests error:", error);
+      return [];
+    }
 
-  return data.map(row => ({
-    id: row.id,
-    employeeId: row.employee_id,
-    employeeName: row.employee_name,
-    leaveType: row.leave_type,
-    startDate: row.start_date,
-    endDate: row.end_date,
-    days: Number(row.days),
-    reason: row.reason,
-    status: row.status,
-    createdAt: row.created_at,
-    reportingOfficer: row.reporting_officer,
-    reportingTo: row.reporting_to,
-  }));
+    return data.map(row => ({
+      id: row.id,
+      employeeId: row.employee_id,
+      employeeName: row.employee_name,
+      leaveType: row.leave_type,
+      startDate: row.start_date,
+      endDate: row.end_date,
+      days: Number(row.days),
+      reason: row.reason,
+      status: row.status,
+      createdAt: row.created_at,
+      reportingOfficer: row.reporting_officer,
+      reportingTo: row.reporting_to,
+    }));
+  }, DATA_CACHE_TTL);
 }
 
 export async function submitLeaveRequest(input: Omit<LeaveRequest, "id" | "status" | "createdAt">): Promise<void> {
@@ -795,6 +843,8 @@ export async function submitLeaveRequest(input: Omit<LeaveRequest, "id" | "statu
   } catch (e) {
     console.error("Failed to notify admins of leave request:", e);
   }
+
+  invalidateDataCache(CACHE_KEYS.leaveRequests);
 }
 
 export async function updateLeaveStatus(
@@ -840,6 +890,8 @@ export async function updateLeaveStatus(
       console.error("Failed to notify employee of leave status:", e);
     }
   }
+
+  invalidateDataCache(CACHE_KEYS.leaveRequests);
 }
 
 
@@ -1232,13 +1284,50 @@ export async function fetchTodayTasksForEmployee(input: {
   const { employeeId, employeeName = "" } = input;
   if (!employeeId && !employeeName) return [];
 
-  const all = await fetchProjectTasks();
-  const mine = filterTasksForUser(all, employeeName, employeeId || undefined);
+  return getCached(`${CACHE_KEYS.todayTasks}:${employeeId}:${employeeName}`, async () => {
+    if (!(await probeProjectRelations())) {
+      const all = await fetchProjectTasks();
+      const mine = filterTasksForUser(all, employeeName, employeeId || undefined);
+      return sortTodayTasks(mine.filter(isEmployeeDashboardTask));
+    }
 
-  return sortTodayTasks(mine.filter(isEmployeeDashboardTask));
+    const today = formatLocalDateIso(new Date());
+    let taskRows = await fetchAllPaginated<DbProjectTaskRow>((from, pageSize) => {
+      let query = supabase.from("project_tasks").select("*").eq("task_date", today);
+      if (employeeId) query = query.eq("assignee_id", employeeId);
+      return query.order("created_at", { ascending: false }).range(from, from + pageSize - 1);
+    });
+
+    if (!employeeId && employeeName) {
+      const profiles = await fetchEmployeeProfiles();
+      taskRows = taskRows.filter(row =>
+        isTaskAssignedToUser(
+          profileNameById(profiles, row.assignee_id) || "—",
+          employeeName,
+          row.assignee_id || undefined
+        )
+      );
+    }
+
+    if (!taskRows.length) return [];
+
+    const projectIds = [...new Set(taskRows.map(t => t.project_id))];
+    const [projects, profiles] = await Promise.all([
+      fetchAllPaginatedInChunks<{ id: string; name: string }>(projectIds, (chunk, from, pageSize) =>
+        supabase.from("projects").select("id, name").in("id", chunk).range(from, from + pageSize - 1)
+      ),
+      fetchEmployeeProfiles(),
+    ]);
+    const projectNames = new Map(projects.map(p => [p.id, p.name]));
+
+    const tasks = taskRows.map(row =>
+      mapProjectTaskRowToAppTask(row, projectNames.get(row.project_id) || "—", profiles)
+    );
+    return sortTodayTasks(await enrichTasksWithStageHistory(tasks));
+  }, 15_000);
 }
 
-export async function fetchProjectTasks(): Promise<AppTask[]> {
+async function loadProjectTasks(): Promise<AppTask[]> {
   if (await probeProjectRelations()) {
     const [taskRows, projects] = await Promise.all([
       fetchAllPaginated<DbProjectTaskRow>((from, pageSize) =>
@@ -1263,6 +1352,10 @@ export async function fetchProjectTasks(): Promise<AppTask[]> {
     supabase.from("projects").select("*").range(from, from + pageSize - 1)
   );
   return flattenDbProjectTasks(rows);
+}
+
+export async function fetchProjectTasks(): Promise<AppTask[]> {
+  return getCached(CACHE_KEYS.projectTasks, loadProjectTasks, DATA_CACHE_TTL);
 }
 
 export function extractTimesheetEntries(projects: DbProject[]): TimesheetEntry[] {
@@ -1434,17 +1527,15 @@ async function updateEmployeeProfileRow(id: string, payload: Record<string, unkn
 // ─── Fetchers ────────────────────────────────────────────────────────────────
 
 export async function fetchEmployees(): Promise<Employee[]> {
-  const data = await fetchAllPaginated<DbEmployeeProfile>((from, pageSize) =>
-    supabase
-      .from("employee_profiles")
-      .select("*")
-      .order("score", { ascending: false })
-      .range(from, from + pageSize - 1)
-  );
-  return data.map(profileToEmployee);
+  return getCached(CACHE_KEYS.employees, async () => {
+    const data = await getDbEmployeeProfiles();
+    return data
+      .map(profileToEmployee)
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  }, PROFILE_CACHE_TTL);
 }
 
-export async function fetchLeads(): Promise<Lead[]> {
+async function loadLeads(): Promise<Lead[]> {
   const data = await fetchAllPaginated<DbLead>((from, pageSize) =>
     supabase
       .from("leads")
@@ -1455,7 +1546,11 @@ export async function fetchLeads(): Promise<Lead[]> {
   return data.map(mapLead);
 }
 
-export async function fetchLeadsAsClients(): Promise<ClientProfile[]> {
+export async function fetchLeads(): Promise<Lead[]> {
+  return getCached(CACHE_KEYS.leads, loadLeads, DATA_CACHE_TTL);
+}
+
+async function loadLeadsAsClients(): Promise<ClientProfile[]> {
   const data = await fetchAllPaginated<DbLead>((from, pageSize) =>
     supabase
       .from("leads")
@@ -1464,6 +1559,10 @@ export async function fetchLeadsAsClients(): Promise<ClientProfile[]> {
       .range(from, from + pageSize - 1)
   );
   return data.map(mapLeadToClient);
+}
+
+export async function fetchLeadsAsClients(): Promise<ClientProfile[]> {
+  return getCached(CACHE_KEYS.leadsAsClients, loadLeadsAsClients, DATA_CACHE_TTL);
 }
 
 async function fetchProjectsRelational(rows: DbProject[], profiles: EmployeeProfile[]): Promise<Project[]> {
@@ -1534,7 +1633,7 @@ async function fetchProjectsRelational(rows: DbProject[], profiles: EmployeeProf
   });
 }
 
-export async function fetchProjects(): Promise<Project[]> {
+async function loadProjects(): Promise<Project[]> {
   const rows = await fetchAllPaginated<DbProject>((from, pageSize) =>
     supabase
       .from("projects")
@@ -1552,6 +1651,10 @@ export async function fetchProjects(): Promise<Project[]> {
   return fetchProjectsRelational(rows, profiles);
 }
 
+export async function fetchProjects(): Promise<Project[]> {
+  return getCached(CACHE_KEYS.projects, loadProjects, DATA_CACHE_TTL);
+}
+
 export async function updateProjectDetails(
   projectId: string,
   input: {
@@ -1567,17 +1670,15 @@ export async function updateProjectDetails(
 ) {
   const { error } = await supabase.from("projects").update(input).eq("id", projectId);
   if (error) throw error;
+  invalidateDataCache(CACHE_KEYS.projects);
+  invalidateTaskCaches();
 }
 
 export async function fetchEmployeeProfiles(): Promise<EmployeeProfile[]> {
-  const data = await fetchAllPaginated<DbEmployeeProfile>((from, pageSize) =>
-    supabase
-      .from("employee_profiles")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .range(from, from + pageSize - 1)
-  );
-  return data.map(mapEmployeeProfile);
+  return getCached(CACHE_KEYS.employeeProfiles, async () => {
+    const data = await getDbEmployeeProfiles();
+    return data.map(mapEmployeeProfile);
+  }, PROFILE_CACHE_TTL);
 }
 
 export async function fetchEmployeeProfileByEmail(email: string): Promise<EmployeeProfile | null> {
@@ -1739,47 +1840,48 @@ async function fetchTimesheetEntriesRelational(): Promise<TimesheetEntry[]> {
       taskId: task.id,
     });
 
-    await syncRelationalTimesheetForTask(task, profiles);
   }
 
   return entries.sort((a, b) => b.date.localeCompare(a.date));
 }
 
 export async function fetchTimesheetEntries(): Promise<TimesheetEntry[]> {
-  if (await probeProjectRelations()) {
-    return fetchTimesheetEntriesRelational();
-  }
+  return getCached(CACHE_KEYS.timesheets, async () => {
+    if (await probeProjectRelations()) {
+      return fetchTimesheetEntriesRelational();
+    }
 
-  const projects = await fetchAllPaginated<DbProject>((from, pageSize) =>
-    supabase.from("projects").select("*").range(from, from + pageSize - 1)
-  );
-  for (let i = 0; i < projects.length; i++) {
-    const project = projects[i];
-    let tasks = (project.tasks || []).filter(t => !isClockAttendanceTimesheetEntry(t));
-    let changed = tasks.length !== (project.tasks || []).length;
+    const projects = await fetchAllPaginated<DbProject>((from, pageSize) =>
+      supabase.from("projects").select("*").range(from, from + pageSize - 1)
+    );
+    for (let i = 0; i < projects.length; i++) {
+      const project = projects[i];
+      let tasks = (project.tasks || []).filter(t => !isClockAttendanceTimesheetEntry(t));
+      let changed = tasks.length !== (project.tasks || []).length;
 
-    for (const item of project.tasks || []) {
-      if (!isWorkTask(item)) continue;
-      if (!taskHasLoggedTime(item)) continue;
-      if (!item.id) continue;
-      if (parseEstHoursFromTask(item.est) <= 0) continue;
-      const synced = applyTimesheetSyncForTask(tasks, item);
-      if (JSON.stringify(synced) !== JSON.stringify(tasks)) {
-        tasks = synced;
-        changed = true;
+      for (const item of project.tasks || []) {
+        if (!isWorkTask(item)) continue;
+        if (!taskHasLoggedTime(item)) continue;
+        if (!item.id) continue;
+        if (parseEstHoursFromTask(item.est) <= 0) continue;
+        const synced = applyTimesheetSyncForTask(tasks, item);
+        if (JSON.stringify(synced) !== JSON.stringify(tasks)) {
+          tasks = synced;
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        const { error: updateError } = await supabase
+          .from("projects")
+          .update({ tasks })
+          .eq("id", project.id);
+        if (!updateError) projects[i] = { ...project, tasks };
       }
     }
 
-    if (changed) {
-      const { error: updateError } = await supabase
-        .from("projects")
-        .update({ tasks })
-        .eq("id", project.id);
-      if (!updateError) projects[i] = { ...project, tasks };
-    }
-  }
-
-  return extractTimesheetEntries(projects);
+    return extractTimesheetEntries(projects);
+  }, DATA_CACHE_TTL);
 }
 
 /** Signup / login — create or update employee_profiles row by email. */
@@ -1869,6 +1971,7 @@ export async function createEmployee(input: {
     shift_start: input.shiftStart || "10:00",
   });
 
+  invalidateProfileCaches();
   return profileId;
 }
 
@@ -1915,6 +2018,7 @@ export async function updateEmployeeProfile(id: string, input: Partial<{
   }
 
   await updateEmployeeProfileRow(id, payload);
+  invalidateProfileCaches();
 }
 
 export async function createLead(input: {
@@ -1945,6 +2049,8 @@ export async function createLead(input: {
     notes: input.notes || null,
   });
   if (error) throw error;
+  invalidateDataCache(CACHE_KEYS.leads);
+  invalidateDataCache(CACHE_KEYS.leadsAsClients);
 }
 
 export async function createProject(input: {
@@ -1985,6 +2091,7 @@ export async function createProject(input: {
     ],
   });
   if (error) throw error;
+  invalidateDataCache(CACHE_KEYS.projects);
   return id;
 }
 
@@ -2119,7 +2226,15 @@ export async function addProjectTask(input: {
     : "—";
   const taskId = `task-${Date.now()}`;
   const profiles = await fetchEmployeeProfiles();
-  const assigneeId = input.assigneeId || profileIdByName(profiles, input.assignee);
+  const assigneeId =
+    input.assigneeId?.trim() ||
+    resolveProfileIdFromName(profiles, input.assignee) ||
+    "";
+  if (!assigneeId && input.assignee?.trim()) {
+    throw new Error(
+      `Multiple employees match "${input.assignee}". Pick the assignee from the list so the task links to the correct person.`
+    );
+  }
   const taskStatus = normalizeTaskStatusForStorage(input.status);
 
   if (await probeProjectRelations()) {
@@ -2149,6 +2264,9 @@ export async function addProjectTask(input: {
       });
     }
     await syncRelationalTimesheetForTask(row, profiles);
+    invalidateTaskCaches();
+    invalidateDataCache(CACHE_KEYS.projects);
+    invalidateTimesheetCaches();
     return;
   }
 
@@ -2177,6 +2295,9 @@ export async function addProjectTask(input: {
   tasks = applyTimesheetSyncForTask(tasks, task);
   const { error } = await supabase.from("projects").update({ tasks }).eq("id", input.projectId);
   if (error) throw error;
+  invalidateTaskCaches();
+  invalidateDataCache(CACHE_KEYS.projects);
+  invalidateTimesheetCaches();
 }
 
 function dbTaskMatches(task: DbProjectTask, taskId: string, title: string) {
@@ -2221,7 +2342,15 @@ export async function updateProjectTask(input: {
   movedById?: string | null;
 }) {
   const profiles = await fetchEmployeeProfiles();
-  const assigneeId = input.assigneeId || profileIdByName(profiles, input.assignee);
+  const assigneeId =
+    input.assigneeId?.trim() ||
+    resolveProfileIdFromName(profiles, input.assignee) ||
+    "";
+  if (!input.statusOnly && !assigneeId && input.assignee?.trim()) {
+    throw new Error(
+      `Multiple employees match "${input.assignee}". Pick the assignee from the list so the task links to the correct person.`
+    );
+  }
   const dueIso = input.due ? dueInputToStorageIso(input.due) : undefined;
   const dueFormatted = dueIso ? formatTaskDueDisplay(dueIso) : undefined;
   const taskStatus = normalizeTaskStatusForStorage(input.status);
@@ -2258,6 +2387,7 @@ export async function updateProjectTask(input: {
           status: taskStatus,
           status_entered_at: statusEnteredAt,
           ...(taskDate ? { task_date: taskDate } : {}),
+          ...(!current.assignee_id && input.movedById ? { assignee_id: input.movedById } : {}),
           updated_at: new Date().toISOString(),
         }
       : {
@@ -2281,6 +2411,8 @@ export async function updateProjectTask(input: {
       .eq("project_id", input.projectId);
     if (error) throw error;
     await syncRelationalTimesheetForTask(updated, profiles);
+    invalidateTaskCaches();
+    invalidateTimesheetCaches();
     return;
   }
 
@@ -2323,6 +2455,9 @@ export async function updateProjectTask(input: {
 
   const { error } = await supabase.from("projects").update({ tasks }).eq("id", input.projectId);
   if (error) throw error;
+  invalidateTaskCaches();
+  invalidateDataCache(CACHE_KEYS.projects);
+  invalidateTimesheetCaches();
 }
 
 export type ClockSessionStatus = "active" | "paused" | "completed";
@@ -2599,13 +2734,19 @@ export async function fetchTodayOfficeSession(
   employeeName: string,
   employeeId?: string
 ): Promise<ClockSessionRecord | null> {
+  let scopedEmployeeId = employeeId?.trim() || "";
+  if (!scopedEmployeeId) {
+    const profiles = await fetchEmployeeProfiles();
+    scopedEmployeeId = resolveProfileIdFromName(profiles, employeeName) || "";
+    if (!scopedEmployeeId) return null;
+  }
+
   let query = supabase
     .from("clock_sessions")
     .select("*")
+    .eq("employee_id", scopedEmployeeId)
     .order("clock_in", { ascending: false })
     .limit(1);
-
-  query = applyEmployeeClockFilter(query, employeeName, employeeId);
 
   const { data, error } = await query.maybeSingle();
   if (error) {
@@ -2648,20 +2789,20 @@ export async function fetchActiveClockSession(
   employeeName: string,
   employeeId?: string
 ): Promise<ClockSessionRecord | null> {
+  let scopedEmployeeId = employeeId?.trim() || "";
+  if (!scopedEmployeeId) {
+    const profiles = await fetchEmployeeProfiles();
+    scopedEmployeeId = resolveProfileIdFromName(profiles, employeeName) || "";
+    if (!scopedEmployeeId) return null;
+  }
+
   let query = supabase
     .from("clock_sessions")
     .select("*")
     .eq("status", "active")
+    .eq("employee_id", scopedEmployeeId)
     .order("clock_in", { ascending: false })
     .limit(1);
-
-  if (employeeId) {
-    query = query.eq("employee_id", employeeId);
-  } else if (employeeName.trim()) {
-    query = query.ilike("employee_name", employeeName.trim());
-  } else {
-    return null;
-  }
 
   const { data, error } = await query.maybeSingle();
   if (error) {
@@ -2764,8 +2905,11 @@ async function enforceAutoLunchBreak(session: ClockSessionRecord): Promise<Clock
 
 export async function pauseEmployeeTaskTimers(employeeName: string, employeeId?: string) {
   if (!(await probeProjectRelations()) || !(await probeTaskStageTracking())) return;
-  const profiles = await fetchEmployeeProfiles();
-  const assigneeId = employeeId || profileIdByName(profiles, employeeName);
+  let assigneeId = employeeId?.trim() || "";
+  if (!assigneeId) {
+    const profiles = await fetchEmployeeProfiles();
+    assigneeId = resolveProfileIdFromName(profiles, employeeName) || "";
+  }
   if (!assigneeId) return;
 
   const tasks = await fetchAllPaginated<{ id: string; project_id: string; status: string | null }>(
@@ -2789,8 +2933,11 @@ export async function pauseEmployeeTaskTimers(employeeName: string, employeeId?:
 
 export async function resumeEmployeeTaskTimers(employeeName: string, employeeId?: string) {
   if (!(await probeProjectRelations()) || !(await probeTaskStageTracking())) return;
-  const profiles = await fetchEmployeeProfiles();
-  const assigneeId = employeeId || profileIdByName(profiles, employeeName);
+  let assigneeId = employeeId?.trim() || "";
+  if (!assigneeId) {
+    const profiles = await fetchEmployeeProfiles();
+    assigneeId = resolveProfileIdFromName(profiles, employeeName) || "";
+  }
   if (!assigneeId) return;
 
   const tasks = await fetchAllPaginated<{ id: string; project_id: string; status: string | null }>(
@@ -2820,12 +2967,23 @@ export async function clockInEmployee(input: {
   employeeName: string;
   employeeId?: string;
 }): Promise<ClockSessionRecord> {
-  const active = await fetchActiveClockSession(input.employeeName, input.employeeId);
+  let employeeId = input.employeeId?.trim();
+  if (!employeeId) {
+    const profiles = await fetchEmployeeProfiles();
+    employeeId = resolveProfileIdFromName(profiles, input.employeeName) || undefined;
+  }
+  if (!employeeId) {
+    throw new Error(
+      "Could not identify your employee profile. Log in with your registered email so timers stay separate."
+    );
+  }
+
+  const active = await fetchActiveClockSession(input.employeeName, employeeId);
   if (active) return active;
 
   const nowMs = Date.now();
   const now = new Date(nowMs).toISOString();
-  const todayRow = await fetchTodayOfficeSession(input.employeeName, input.employeeId);
+  const todayRow = await fetchTodayOfficeSession(input.employeeName, employeeId);
 
   if (todayRow) {
     await closeOpenClockSegment(todayRow.id, nowMs);
@@ -2862,7 +3020,8 @@ export async function clockInEmployee(input: {
         startedAtMs: nowMs,
       });
       clockSessionsTableReady = true;
-      await resumeEmployeeTaskTimers(input.employeeName, input.employeeId);
+      await resumeEmployeeTaskTimers(input.employeeName, employeeId);
+      invalidateAttendanceCache();
       return mapClockSession(data);
     }
     // If data is null, it means the row was deleted or RLS blocked it. Fall through to insert a new one.
@@ -2871,7 +3030,7 @@ export async function clockInEmployee(input: {
   const { data, error } = await supabase
     .from("clock_sessions")
     .insert({
-      employee_id: input.employeeId || null,
+      employee_id: employeeId,
       employee_name: input.employeeName.trim(),
       status: "active",
       clock_in: now,
@@ -2891,7 +3050,8 @@ export async function clockInEmployee(input: {
     label: "Office attendance",
     startedAtMs: nowMs,
   });
-  await resumeEmployeeTaskTimers(input.employeeName, input.employeeId);
+  await resumeEmployeeTaskTimers(input.employeeName, employeeId);
+  invalidateAttendanceCache();
   return mapClockSession(data);
 }
 
@@ -2963,6 +3123,7 @@ export async function clockOutEmployee(input: {
   clockSessionsTableReady = true;
 
   await pauseEmployeeTaskTimers(input.employeeName, input.employeeId);
+  invalidateAttendanceCache();
   return { session: mapClockSession(updated), hours: totalHours };
 }
 
@@ -3041,6 +3202,15 @@ export async function fetchWeekAttendanceHours(
   employeeName: string,
   employeeId?: string
 ): Promise<{ day: string; h: number }[]> {
+  let scopedEmployeeId = employeeId?.trim() || "";
+  if (!scopedEmployeeId) {
+    const profiles = await fetchEmployeeProfiles();
+    scopedEmployeeId = resolveProfileIdFromName(profiles, employeeName) || "";
+    if (!scopedEmployeeId) {
+      return WEEKDAY_LABELS.map(day => ({ day, h: 0 }));
+    }
+  }
+
   const { monday, friday } = getCurrentWeekRange();
   const buckets = new Map<string, number>(
     WEEKDAY_LABELS.map(day => [day, 0])
@@ -3053,8 +3223,8 @@ export async function fetchWeekAttendanceHours(
         .from("clock_sessions")
         .select("clock_in, hours, status, session_start")
         .gte("clock_in", monday.toISOString())
-        .lte("clock_in", friday.toISOString());
-      q = applyEmployeeClockFilter(q, employeeName, employeeId);
+        .lte("clock_in", friday.toISOString())
+        .eq("employee_id", scopedEmployeeId);
       return q.range(from, from + pageSize - 1);
     });
   } catch (error) {
@@ -3164,10 +3334,10 @@ export async function fetchTodayAttendanceSeconds(
   employeeName: string,
   employeeId?: string
 ): Promise<number> {
-  let eId = employeeId;
+  let eId = employeeId?.trim() || "";
   if (!eId) {
     const profiles = await fetchEmployeeProfiles();
-    eId = profileIdByName(profiles, employeeName);
+    eId = resolveProfileIdFromName(profiles, employeeName) || "";
   }
   if (!eId) return 0;
 
@@ -3259,38 +3429,216 @@ export async function fetchTeamClockSessionsByDate(dateStr: string): Promise<Clo
   }
 }
 
-/** Office clock in/out rows for Timesheet / CEO attendance view. */
-export async function fetchAttendanceEntries(): Promise<AttendanceEntry[]> {
+export type AttendanceReportFilter = {
+  startDate: string;
+  endDate: string;
+  employeeId?: string;
+  employeeName?: string;
+};
+
+export type TimesheetReportFilter = {
+  startDate: string;
+  endDate: string;
+  employeeId?: string;
+};
+
+function clockQueryRangeFromDates(startDate: string, endDate: string) {
+  const start = new Date(`${startDate}T00:00:00`);
+  const end = new Date(`${endDate}T23:59:59.999`);
+  return { start: start.toISOString(), end: end.toISOString() };
+}
+
+function attendanceCacheKey(filter: AttendanceReportFilter) {
+  return `${CACHE_KEYS.attendance}:${filter.startDate}:${filter.endDate}:${filter.employeeId ?? "all"}:${filter.employeeName ?? "all"}`;
+}
+
+function timesheetReportCacheKey(filter: TimesheetReportFilter) {
+  return `${CACHE_KEYS.timesheetReport}:${filter.startDate}:${filter.endDate}:${filter.employeeId ?? "all"}`;
+}
+
+/** List view — skips segment fetch (faster). Live hours still computed from session fields. */
+async function fetchClockSessionsForReport(
+  fetchPage: (from: number, pageSize: number) => Promise<SupabasePageResult<ClockSessionDbRow>>
+): Promise<ClockSessionRecord[]> {
+  const rows = await fetchAllPaginated(fetchPage);
+  clockSessionsTableReady = true;
+  return rows.map(mapClockSession);
+}
+
+function mapSessionsToAttendanceEntries(sessions: ClockSessionRecord[]): AttendanceEntry[] {
+  const nowMs = Date.now();
+  return sessions.map(session => ({
+    id: session.id,
+    employee: session.employeeName,
+    employeeId: session.employeeId,
+    date: formatClockDate(new Date(session.clockIn)),
+    hours: calculateSessionAttendanceHours(session, nowMs),
+    clockIn: session.clockIn,
+    clockOut: session.clockOut,
+    status: session.status,
+    notes: session.notes,
+  }));
+}
+
+/** List view — skips segment fetch (faster). Live hours still computed from session fields. */
+async function loadAttendanceForReport(filter: AttendanceReportFilter): Promise<AttendanceEntry[]> {
+  const { start, end } = clockQueryRangeFromDates(filter.startDate, filter.endDate);
+
   let sessions: ClockSessionRecord[];
   try {
-    sessions = await fetchPaginatedClockSessions((from, pageSize) =>
-      supabase
+    sessions = await fetchClockSessionsForReport((from, pageSize) => {
+      let query = supabase
         .from("clock_sessions")
         .select("*")
+        .gte("clock_in", start)
+        .lte("clock_in", end)
         .order("clock_in", { ascending: false })
-        .range(from, from + pageSize - 1)
-    );
+        .range(from, from + pageSize - 1);
+      if (filter.employeeId || filter.employeeName?.trim()) {
+        query = applyEmployeeClockFilter(query, filter.employeeName ?? "", filter.employeeId);
+      }
+      return query;
+    });
   } catch (error) {
     if (isMissingClockSessionsTable(error)) return [];
     throw error;
   }
 
-  const nowMs = Date.now();
+  return mapSessionsToAttendanceEntries(sessions);
+}
 
-  return sessions.map(session => {
-    const hours = calculateSessionAttendanceHours(session, nowMs);
-    return {
-      id: session.id,
-      employee: session.employeeName,
-      employeeId: session.employeeId,
-      date: formatClockDate(new Date(session.clockIn)),
-      hours,
-      clockIn: session.clockIn,
-      clockOut: session.clockOut,
-      status: session.status,
-      notes: session.notes,
-    };
-  });
+/** Time Reports — only rows in the selected date range (and optional employee). */
+export async function fetchAttendanceForReport(filter: AttendanceReportFilter): Promise<AttendanceEntry[]> {
+  return getCached(attendanceCacheKey(filter), () => loadAttendanceForReport(filter), ATTENDANCE_CACHE_TTL);
+}
+
+/** Office clock in/out rows for Timesheet / CEO attendance view. */
+export async function fetchAttendanceEntries(): Promise<AttendanceEntry[]> {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 90);
+  return getCached(
+    CACHE_KEYS.attendance,
+    () =>
+      loadAttendanceForReport({
+        startDate: formatLocalDateIso(cutoff),
+        endDate: formatLocalDateIso(new Date()),
+      }),
+    ATTENDANCE_CACHE_TTL
+  );
+}
+
+async function fetchTimesheetEntriesRelationalInRange(filter: TimesheetReportFilter): Promise<TimesheetEntry[]> {
+  const [projects, sheetRows] = await Promise.all([
+    fetchAllPaginated<{ id: string; name: string }>((from, pageSize) =>
+      supabase.from("projects").select("id, name").range(from, from + pageSize - 1)
+    ),
+    fetchAllPaginated<DbTimesheetEntryRow>((from, pageSize) => {
+      let query = supabase
+        .from("timesheet_entries")
+        .select("*")
+        .gte("date", filter.startDate)
+        .lte("date", filter.endDate);
+      if (filter.employeeId) query = query.eq("employee_id", filter.employeeId);
+      return query.order("date", { ascending: false }).range(from, from + pageSize - 1);
+    }),
+  ]);
+
+  const linkedTaskIds = [...new Set(sheetRows.map(r => r.linked_task_id).filter(Boolean))] as string[];
+  const taskRows = linkedTaskIds.length
+    ? await fetchAllPaginatedInChunks<DbProjectTaskRow>(linkedTaskIds, (chunk, from, pageSize) =>
+        supabase
+          .from("project_tasks")
+          .select("*")
+          .in("id", chunk)
+          .range(from, from + pageSize - 1)
+      )
+    : [];
+
+  const profiles = await fetchEmployeeProfiles();
+  const projectMap = new Map(projects.map(p => [p.id, p.name]));
+  const taskMap = new Map(taskRows.map(t => [t.id, t]));
+  const entries: TimesheetEntry[] = [];
+
+  for (const row of sheetRows) {
+    const linkedTask = row.linked_task_id ? taskMap.get(row.linked_task_id) : undefined;
+    entries.push({
+      id: row.id,
+      projectId: row.project_id,
+      projectName: projectMap.get(row.project_id) || "—",
+      employee: profileNameById(profiles, row.employee_id) || "—",
+      employeeId: row.employee_id || undefined,
+      date: row.date,
+      hours: Number(row.hours) || 0,
+      description: row.description,
+      taskTitle: linkedTask?.title,
+      taskStatus: linkedTask?.status,
+      workNotes: linkedTask?.work_notes || row.description,
+      status: "submitted",
+      kind: row.linked_task_id ? "task" : "manual",
+      taskId: row.linked_task_id || undefined,
+    });
+  }
+
+  let virtualTaskQuery = supabase
+    .from("project_tasks")
+    .select("*")
+    .gte("due", filter.startDate)
+    .lte("due", filter.endDate);
+  if (filter.employeeId) virtualTaskQuery = virtualTaskQuery.eq("assignee_id", filter.employeeId);
+
+  const virtualTaskRows = await fetchAllPaginated<DbProjectTaskRow>((from, pageSize) =>
+    virtualTaskQuery.order("due", { ascending: false }).range(from, from + pageSize - 1)
+  );
+
+  for (const task of virtualTaskRows) {
+    if (!taskHasLoggedTime(task)) continue;
+    const syncedId = `ts-task-${task.id}`;
+    if (entries.some(e => e.id === syncedId || e.taskId === task.id)) continue;
+
+    entries.push({
+      id: `virtual-ts-${task.id}`,
+      projectId: task.project_id,
+      projectName: projectMap.get(task.project_id) || "—",
+      employee: profileNameById(profiles, task.assignee_id) || "—",
+      employeeId: task.assignee_id || undefined,
+      date: taskDueToIso(task.due || undefined),
+      hours: parseEstHoursFromTask(task.est || undefined),
+      description: task.work_notes?.trim() || task.title,
+      taskTitle: task.title,
+      taskStatus: task.status,
+      workNotes: task.work_notes || "",
+      status: "submitted",
+      kind: "task",
+      taskId: task.id,
+    });
+  }
+
+  return entries.sort((a, b) => b.date.localeCompare(a.date));
+}
+
+/** Time Reports project tab — scoped to date range instead of full tables. */
+export async function fetchTimesheetEntriesForReport(filter: TimesheetReportFilter): Promise<TimesheetEntry[]> {
+  return getCached(timesheetReportCacheKey(filter), async () => {
+    if (await probeProjectRelations()) {
+      return fetchTimesheetEntriesRelationalInRange(filter);
+    }
+
+    const all = await fetchTimesheetEntries();
+    return all.filter(entry => {
+      const iso = entryDateIsoFromTimesheet(entry.date);
+      if (!iso || iso < filter.startDate || iso > filter.endDate) return false;
+      if (filter.employeeId && entry.employeeId !== filter.employeeId) return false;
+      return true;
+    });
+  }, DATA_CACHE_TTL);
+}
+
+function entryDateIsoFromTimesheet(date: string): string | null {
+  if (!date || date === "—") return null;
+  if (/^\d{4}-\d{2}-\d{2}/.test(date)) return date.slice(0, 10);
+  const d = new Date(date.includes("T") ? date : `${date}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  return formatLocalDateIso(d);
 }
 
 export async function updateTimesheetEntry(input: {
@@ -3538,18 +3886,27 @@ export function isPersonalTaskRole(role: string) {
   return true;
 }
 
-/** Resolve logged-in user row from profile list (name, then email). */
+/** Resolve logged-in user row — email first, then unique name match. */
 export function findProfileForUser(
   profiles: EmployeeProfile[],
   userName: string,
   userEmail = ""
 ) {
-  const byName = profiles.find(p => namesMatch(p.name, userName));
-  if (byName) return byName;
   const email = userEmail.trim().toLowerCase();
   if (email) {
-    return profiles.find(p => p.email?.trim().toLowerCase() === email);
+    const byEmail = profiles.find(p => p.email?.trim().toLowerCase() === email);
+    if (byEmail) return byEmail;
   }
+
+  const normalized = userName.trim().toLowerCase();
+  if (normalized) {
+    const exact = profiles.filter(p => p.name.trim().toLowerCase() === normalized);
+    if (exact.length === 1) return exact[0];
+
+    const loose = profiles.filter(p => namesMatch(p.name, userName));
+    if (loose.length === 1) return loose[0];
+  }
+
   return undefined;
 }
 
@@ -3566,7 +3923,10 @@ export function namesMatch(a: string, b: string) {
 }
 
 export function isTaskAssignedToUser(assignee: string, userName: string, assigneeId?: string, userId?: string) {
-  if (userId && assigneeId && assigneeId === userId) return true;
+  if (userId) {
+    if (assigneeId?.trim()) return assigneeId.trim() === userId.trim();
+    return false;
+  }
   if (userName.trim() && assignee && assignee !== "—" && namesMatch(assignee, userName)) return true;
   return false;
 }
@@ -3579,11 +3939,17 @@ export function filterTasksForUser(tasks: AppTask[], userName: string, userId?: 
 }
 
 export function getEmployeeProjects(projects: Project[], employeeName: string, employeeId?: string) {
-  return projects.filter(p =>
-    (employeeId && p.teamIds?.includes(employeeId)) ||
-    (employeeId && p.leadId === employeeId) ||
-    p.team.some(m => namesMatch(m, employeeName)) ||
-    namesMatch(p.lead, employeeName)
+  if (employeeId?.trim()) {
+    const id = employeeId.trim();
+    return projects.filter(
+      p => p.teamIds?.includes(id) || p.leadId === id
+    );
+  }
+  if (!employeeName.trim()) return projects;
+  return projects.filter(
+    p =>
+      p.team.some(m => m.trim().toLowerCase() === employeeName.trim().toLowerCase()) ||
+      p.lead.trim().toLowerCase() === employeeName.trim().toLowerCase()
   );
 }
 
@@ -4272,35 +4638,48 @@ export async function markChatChannelRead(channelId: string, userId: string) {
   }
 
   broadcastChatReadReceipt(channelId, userId, lastReadAt);
+  invalidateDataCachePrefix(`${CACHE_KEYS.chatUnread}:`);
 }
 
 export async function fetchChatUnreadCounts(userId: string): Promise<Record<string, number>> {
   if (!userId) return {};
 
-  const channels = await fetchChatChannelsForUser(userId);
-  const { data: reads, error: readsError } = await supabase
-    .from("chat_channel_reads")
-    .select("channel_id, last_read_at")
-    .eq("user_id", userId);
-  if (readsError) throw readsError;
+  return getCached(`${CACHE_KEYS.chatUnread}:${userId}`, async () => {
+    const [{ data: memberships, error: membersError }, { data: reads, error: readsError }] =
+      await Promise.all([
+        supabase.from("chat_channel_members").select("channel_id").eq("user_id", userId),
+        supabase.from("chat_channel_reads").select("channel_id, last_read_at").eq("user_id", userId),
+      ]);
 
-  const readMap = new Map(
-    (reads as DbChatChannelRead[] | null)?.map(r => [r.channel_id, r.last_read_at]) ?? []
-  );
+    if (membersError) {
+      if (isMissingChatTables(membersError)) return {};
+      throw membersError;
+    }
+    if (readsError) throw readsError;
 
-  const counts: Record<string, number> = {};
-  for (const channel of channels) {
-    const since = readMap.get(channel.id) ?? "1970-01-01T00:00:00.000Z";
-    const { count, error } = await supabase
-      .from("chat_messages")
-      .select("*", { count: "exact", head: true })
-      .eq("channel_id", channel.id)
-      .neq("sender_id", userId)
-      .gt("created_at", since);
-    if (error) throw error;
-    counts[channel.id] = count ?? 0;
-  }
-  return counts;
+    const channelIds = [...new Set((memberships ?? []).map(m => m.channel_id))];
+    if (!channelIds.length) return {};
+
+    const readMap = new Map(
+      (reads as DbChatChannelRead[] | null)?.map(r => [r.channel_id, r.last_read_at]) ?? []
+    );
+
+    const pairs = await Promise.all(
+      channelIds.map(async channelId => {
+        const since = readMap.get(channelId) ?? "1970-01-01T00:00:00.000Z";
+        const { count, error } = await supabase
+          .from("chat_messages")
+          .select("*", { count: "exact", head: true })
+          .eq("channel_id", channelId)
+          .neq("sender_id", userId)
+          .gt("created_at", since);
+        if (error) throw error;
+        return [channelId, count ?? 0] as const;
+      })
+    );
+
+    return Object.fromEntries(pairs);
+  }, 15_000);
 }
 
 // ==========================================

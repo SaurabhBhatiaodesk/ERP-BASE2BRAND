@@ -19,6 +19,7 @@ import {
   createLead,
   fetchEmployeeHistoricalSessions,
   fetchTeamClockSessionsByDate,
+  findProfileForUser,
   filterTasksForUser,
   getEmployeeProjects,
   isPersonalTaskRole,
@@ -39,10 +40,8 @@ import {
 } from "@/lib/validation";
 import { getSprintSummary, formatTaskManagementSubtitle } from "@/lib/sprint";
 import {
-  aggregateStageSeconds,
   applyOptimisticTaskStatusMove,
-  attendanceWindowsTotalSeconds,
-  capWorkStageTotals,
+  computeTaskStageTotals,
   effectiveStatusEnteredAt,
   formatStageDuration,
   formatStageEnteredAt,
@@ -80,9 +79,18 @@ function resolveTaskAssigneeId(
   if (task.assigneeId?.trim()) return task.assigneeId.trim();
   if (assigneeIdOverride?.trim()) return assigneeIdOverride.trim();
   if (profiles && task.assignee) {
-    return profiles.find(p => namesMatch(p.name, task.assignee))?.id?.trim() || null;
+    const exact = profiles.filter(
+      p => p.name.trim().toLowerCase() === task.assignee.trim().toLowerCase()
+    );
+    if (exact.length === 1) return exact[0].id.trim();
   }
   return null;
+}
+
+function taskMatchesAssignee(task: AppTask, assigneeId?: string, assigneeName?: string) {
+  if (assigneeId?.trim()) return task.assigneeId?.trim() === assigneeId.trim();
+  if (!assigneeName?.trim()) return false;
+  return task.assignee.trim().toLowerCase() === assigneeName.trim().toLowerCase();
 }
 
 function taskStageTotalsForKanban(
@@ -93,17 +101,11 @@ function taskStageTotalsForKanban(
   profiles?: EmployeeProfile[],
 ) {
   const assigneeId = resolveTaskAssigneeId(task, assigneeIdOverride, profiles);
-  const enteredAt = effectiveStatusEnteredAt(task);
-  const rawTotals = aggregateStageSeconds(
-    task.stageHistory,
-    task.status,
-    enteredAt,
+  return computeTaskStageTotals(task.stageHistory, task.status, effectiveStatusEnteredAt(task), {
     targetDate,
     assigneeId,
-    attendanceWindows,
-  );
-  const maxSeconds = attendanceWindowsTotalSeconds(attendanceWindows, assigneeId, targetDate);
-  return capWorkStageTotals(rawTotals, maxSeconds);
+    attendanceSessions: attendanceWindows,
+  });
 }
 
 function TaskStageBreakdown({
@@ -1155,6 +1157,7 @@ export function WorkloadView({
 
 export function TasksView({
   userName = "",
+  userEmail = "",
   userRole = "",
   initialTaskId,
   initialStatus,
@@ -1164,6 +1167,7 @@ export function TasksView({
   onNavConsumed,
 }: {
   userName?: string;
+  userEmail?: string;
   userRole?: string;
   initialTaskId?: string;
   initialStatus?: TaskColumn;
@@ -1203,8 +1207,8 @@ export function TasksView({
 
   const personalView = isPersonalTaskRole(userRole);
   const currentProfile = useMemo(
-    () => profiles.find(p => namesMatch(p.name, userName)),
-    [profiles, userName]
+    () => findProfileForUser(profiles, userName, userEmail),
+    [profiles, userName, userEmail]
   );
 
   const refreshClockSessions = useCallback(async () => {
@@ -1358,10 +1362,17 @@ export function TasksView({
     if (!kanbanColumns.includes(newStatus)) return;
 
     if (newStatus === "in-progress") {
+      const taskAssigneeId = resolveTaskAssigneeId(task, currentProfile?.id, profiles);
       const isAnotherInProgress = tasks.some(
-        t => t.status === "in-progress" && t.taskId !== task.taskId && t.assignee === task.assignee
+        t =>
+          t.status === "in-progress" &&
+          t.taskId !== task.taskId &&
+          taskMatchesAssignee(t, taskAssigneeId || undefined, task.assignee)
       ) || (dragTasks || []).some(
-        t => t.status === "in-progress" && t.taskId !== task.taskId && t.assignee === task.assignee
+        t =>
+          t.status === "in-progress" &&
+          t.taskId !== task.taskId &&
+          taskMatchesAssignee(t, taskAssigneeId || undefined, task.assignee)
       );
       if (isAnotherInProgress) {
         alert(`${task.assignee || "This user"} already has a task In Progress. Please complete it first.`);
@@ -1387,7 +1398,7 @@ export function TasksView({
     } catch {
       setDragTasks(null);
     }
-  }, [scopedTasks, dragTasks, refresh, kanbanColumns, currentProfile?.id, kanbanGrouping, assignees]);
+  }, [scopedTasks, dragTasks, refresh, kanbanColumns, currentProfile?.id, kanbanGrouping, assignees, profiles, tasks]);
 
   const formStatusOptions = useMemo(
     () => getTaskStatusOptionsForRole(userRole, editingTask?.status),
@@ -1397,7 +1408,8 @@ export function TasksView({
   const openNewTask = (status: TaskColumn = kanbanColumns[0]) => {
     const defaultProject = fixedProjectId || availableProjects[0]?.id || "";
     const defaultProfile =
-      assignees.find(p => namesMatch(p.name, userName)) ||
+      assignees.find(p => p.id === currentProfile?.id) ||
+      findProfileForUser(assignees, userName, userEmail) ||
       (personalView ? currentProfile : assignees[0]) ||
       currentProfile;
     setEditingTask(null);
@@ -1507,7 +1519,10 @@ export function TasksView({
 
     if (form.status === "in-progress") {
       const isAnotherInProgress = tasks.some(
-        t => t.status === "in-progress" && t.taskId !== editingTask?.taskId && t.assignee === form.assignee
+        t =>
+          t.status === "in-progress" &&
+          t.taskId !== editingTask?.taskId &&
+          taskMatchesAssignee(t, form.assigneeId, form.assignee)
       );
       if (isAnotherInProgress) {
         setFormError(`${form.assignee || "This user"} already has a task In Progress. Please complete it first.`);

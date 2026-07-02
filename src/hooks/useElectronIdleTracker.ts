@@ -2,8 +2,8 @@ import { useEffect, useState, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import { fetchActiveClockSession, fetchTodayOfficeSession, clockOutEmployee, clockInEmployee, EmployeeProfile } from "@/lib/database";
 
-// Idle threshold: 3 minutes of no activity → mark idle
-const IDLE_THRESHOLD_SECS = 180;
+// Idle threshold: 6 minutes of no activity → mark idle
+export const IDLE_THRESHOLD_SECS = 360;
 
 // How often to ping DB with last_active_at (30 seconds)
 const ACTIVE_PING_INTERVAL_MS = 30_000;

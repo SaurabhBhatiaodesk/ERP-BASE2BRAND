@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { CACHE_KEYS, invalidateDataCachePrefix } from "@/lib/dataCache";
 import { supabase } from "@/lib/supabase";
 import {
   fetchChatChannelReadStates,
@@ -121,7 +122,10 @@ export function useChatUnreadCounts(userId: string) {
     { event: "*", table: "chat_channel_reads" },
   ]).current;
 
-  useChatRealtimeRefresh("chat-unread", userId, refresh, realtimeTables);
+  useChatRealtimeRefresh("chat-unread", userId, () => {
+    invalidateDataCachePrefix(`${CACHE_KEYS.chatUnread}:`);
+    refresh({ silent: true });
+  }, realtimeTables);
 
   return { data, loading, error, refresh };
 }

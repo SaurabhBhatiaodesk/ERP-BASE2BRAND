@@ -1079,6 +1079,8 @@ export function ChatView({
     [profiles, userName, userEmail]
   );
 
+  const { data: unreadCounts, refresh: refreshUnread } = useChatUnreadCounts(currentUser?.id ?? "");
+
   const {
     data: channels,
     loading: channelsLoading,
@@ -1145,8 +1147,23 @@ export function ChatView({
     if (q) {
       list = list.filter(c => c.displayName.toLowerCase().includes(q));
     }
-    return list;
-  }, [chatChannels, activeTab, channelSearchQuery]);
+
+    return [...list].sort((a, b) => {
+      const aUnread = unreadCounts[a.id] ?? 0;
+      const bUnread = unreadCounts[b.id] ?? 0;
+      if (aUnread > 0 && bUnread === 0) return -1;
+      if (bUnread > 0 && aUnread === 0) return 1;
+      if (aUnread !== bUnread) return bUnread - aUnread;
+
+      const aTime = latestMsgs[a.id]?.time || a.createdAt || "";
+      const bTime = latestMsgs[b.id]?.time || b.createdAt || "";
+      const aMs = aTime ? new Date(aTime).getTime() : 0;
+      const bMs = bTime ? new Date(bTime).getTime() : 0;
+      if (aMs !== bMs) return bMs - aMs;
+
+      return a.displayName.localeCompare(b.displayName);
+    });
+  }, [chatChannels, activeTab, channelSearchQuery, latestMsgs, unreadCounts]);
 
   const activeChannel = useMemo(
     () => tabChannels.find(c => c.id === activeChannelId) ?? tabChannels[0] ?? null,
@@ -1176,7 +1193,6 @@ export function ChatView({
   } = useChatMessages(activeChannel?.id ?? null);
 
   const { data: channelReadStates, refresh: refreshReadStates } = useChatChannelReads(activeChannel?.id ?? null);
-  const { data: unreadCounts, refresh: refreshUnread } = useChatUnreadCounts(currentUser?.id ?? "");
 
   const tablesMissing = channelsError ? isMissingChatTables(channelsError) : false;
   const cloudinaryReady = isCloudinaryConfigured();
@@ -1263,6 +1279,13 @@ export function ChatView({
     return counts;
   }, [chatChannels, unreadCounts]);
 
+  function bumpChannelPreview(channelId: string, content: string, isOwn: boolean, time = new Date().toISOString()) {
+    setLatestMsgs(prev => ({
+      ...prev,
+      [channelId]: { content, isOwn, time },
+    }));
+  }
+
   async function handleSend() {
     const text = currentMsgRef.current.trim();
     if (sendingRef.current || !activeChannel || !currentUser || !text) return;
@@ -1282,6 +1305,7 @@ export function ChatView({
     setSending(true);
     setSendError("");
     appendMessage(optimistic);
+    bumpChannelPreview(activeChannel.id, outgoing.content || "Message", true, optimistic.createdAt);
     try {
       const sent = await sendChatMessage({
         channelId: activeChannel.id,
@@ -1294,6 +1318,7 @@ export function ChatView({
         isBroadcast: false,
       });
       replaceMessage(optimistic.id, sent);
+      bumpChannelPreview(activeChannel.id, sent.content || outgoing.content || "Message", true, sent.createdAt);
       refreshUnread({ silent: true });
     } catch (err) {
       patchMessage(optimistic.id, { clientStatus: "failed" });
@@ -1329,6 +1354,7 @@ export function ChatView({
       fileSize: file.size,
     });
     appendMessage(optimistic);
+    bumpChannelPreview(activeChannel.id, isImage ? "🖼️ Photo" : caption, true, optimistic.createdAt);
     try {
       const uploaded = await uploadChatAttachment(file);
       const sent = await sendChatMessage({
@@ -1369,6 +1395,7 @@ export function ChatView({
     setSending(true);
     setSendError("");
     appendMessage(optimistic);
+    bumpChannelPreview(activeChannel.id, "GIF", true, optimistic.createdAt);
     try {
       const sent = await sendChatMessage({
         channelId: activeChannel.id,
@@ -1520,7 +1547,7 @@ export function ChatView({
     }
     fetchLatest();
     return () => { cancelled = true; };
-  }, [tabChannels, messages, currentUser]);
+  }, [tabChannels, messages, currentUser, unreadCounts]);
 
   if (channelsLoading && chatChannels.length === 0) return <DataLoading label="Loading chat..." />;
   if (channelsError && !tablesMissing) return <DataError message={channelsError} />;

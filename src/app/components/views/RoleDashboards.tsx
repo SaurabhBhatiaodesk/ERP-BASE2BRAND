@@ -24,6 +24,7 @@ import {
   updateLeaveStatus,
   type ClockOutReason,
   filterTasksForUser,
+  findProfileForUser,
   isClockSessionsTableReady,
   isEmployeeDashboardTask,
   isTaskDueToday,
@@ -322,7 +323,7 @@ export function TeamLeaderDashboard() {
 
 export type EmployeeNavigateOptions = { projectId?: string };
 
-export function LeavesView({ userName }: { userName?: string }) {
+export function LeavesView({ userName, userEmail = "" }: { userName?: string; userEmail?: string }) {
   const { data: profiles } = useEmployeeProfiles();
   const { data: leaves, refresh: refreshLeaves, loading } = useLeaveRequests();
   const [filterStatus, setFilterStatus] = useState<"All" | "Pending" | "Approved" | "Rejected">("All");
@@ -358,8 +359,8 @@ export function LeavesView({ userName }: { userName?: string }) {
   }, [reportingOfficers, leaveData.reportingOfficer]);
 
   const myProfile = useMemo(
-    () => profiles.find(p => namesMatch(p.name, userName || "")),
-    [profiles, userName]
+    () => findProfileForUser(profiles, userName || "", userEmail),
+    [profiles, userName, userEmail]
   );
 
   const myLeaves = useMemo(
@@ -745,9 +746,11 @@ export function LeavesView({ userName }: { userName?: string }) {
 
 export function EmployeeDashboard({
   userName = "",
+  userEmail = "",
   onNavigate,
 }: {
   userName?: string;
+  userEmail?: string;
   onNavigate?: (view: string, options?: EmployeeNavigateOptions) => void;
 }) {
   const { data: tasks, loading: tLoading, error: tError, refresh: refreshTasks } = useProjectTasks();
@@ -771,8 +774,8 @@ export function EmployeeDashboard({
   const [attendanceFetchTime, setAttendanceFetchTime] = useState(Date.now());
 
   const myProfile = useMemo(
-    () => profiles.find(p => namesMatch(p.name, userName)),
-    [profiles, userName]
+    () => findProfileForUser(profiles, userName, userEmail),
+    [profiles, userName, userEmail]
   );
 
   const refreshClockState = useCallback(async () => {
@@ -907,6 +910,12 @@ export function EmployeeDashboard({
 
   const handleClockIn = useCallback(async () => {
     if (!userName) return;
+    if (!myProfile?.id) {
+      setClockError(
+        "Could not identify your employee profile. Log in with your registered email so your timer stays separate."
+      );
+      return;
+    }
     setClockLoading(true);
     setClockError("");
     try {
@@ -1209,23 +1218,31 @@ const SPRINT_STATUS_MAP: Record<string, DevHubNavigateOptions["status"]> = {
 
 export function DevDashboard({
   userName = "",
+  userEmail = "",
   onNavigate,
 }: {
   userName?: string;
+  userEmail?: string;
   onNavigate?: (view: string, options?: DevHubNavigateOptions) => void;
 }) {
   const uid = useId().replace(/:/g, "");
   const { data: tasks, loading: tLoading, error: tError } = useProjectTasks();
   const { data: projects, loading: pLoading, error: pError } = useProjects();
   const { data: timesheets, loading: tsLoading, error: tsError } = useTimesheets();
+  const { data: profiles } = useEmployeeProfiles();
+
+  const myProfile = React.useMemo(
+    () => findProfileForUser(profiles, userName, userEmail),
+    [profiles, userName, userEmail]
+  );
 
   const loading = tLoading || pLoading || tsLoading;
   const error = tError || pError || tsError;
 
   const myTasks = React.useMemo(() => {
-    if (!userName) return tasks;
-    return filterTasksForUser(tasks, userName);
-  }, [tasks, userName]);
+    if (!userName && !myProfile?.id) return tasks;
+    return filterTasksForUser(tasks, userName, myProfile?.id);
+  }, [tasks, userName, myProfile?.id]);
 
   const sprintData = React.useMemo(() => {
     const done = myTasks.filter(t => t.status === "done").length;
@@ -1271,7 +1288,9 @@ export function DevDashboard({
     ).length;
     const prsOpen = myTasks.filter(t => t.status === "review").length;
     const myProjects = userName ? projects.filter(p =>
-      p.team.some(m => namesMatch(m, userName)) || namesMatch(p.lead, userName)
+      (myProfile?.id && (p.teamIds?.includes(myProfile.id) || p.leadId === myProfile.id)) ||
+      p.team.some(m => namesMatch(m, userName)) ||
+      namesMatch(p.lead, userName)
     ) : projects;
     const coverage =
       myProjects.length > 0

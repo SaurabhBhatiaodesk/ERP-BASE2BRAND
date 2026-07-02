@@ -32,6 +32,7 @@ import {
 import {
   aggregateStageSeconds,
   buildProportionalStageSegments,
+  computeTaskStageTotals,
   formatClockInLive,
   formatStageDuration,
   formatStageEnteredAt,
@@ -294,13 +295,15 @@ function TaskStageDetail({
   assigneeId?: string;
   attendanceSessions?: AttendanceTimeWindow[];
 }) {
-  const totals = aggregateStageSeconds(
+  const totals = computeTaskStageTotals(
     task.stageHistory,
     task.status,
     task.statusEnteredAt,
-    targetDate,
-    assigneeId,
-    attendanceSessions,
+    {
+      targetDate,
+      assigneeId,
+      attendanceSessions,
+    },
   );
   
   if (maxActiveSeconds !== undefined && (task.status === "in-progress" || task.status === "progress")) {
@@ -463,13 +466,15 @@ function TaskStageBar({
   assigneeId?: string;
   attendanceSessions?: AttendanceTimeWindow[];
 }) {
-  const totals = aggregateStageSeconds(
+  const totals = computeTaskStageTotals(
     task.stageHistory,
     task.status,
     task.statusEnteredAt,
-    targetDate,
-    assigneeId,
-    attendanceSessions,
+    {
+      targetDate,
+      assigneeId,
+      attendanceSessions,
+    },
   );
 
   if (maxActiveSeconds !== undefined && (task.status === "in-progress" || task.status === "progress")) {
@@ -599,7 +604,8 @@ export function StageTimelineBar({
     return new Set(
       allTasks
         .filter(t =>
-          (t.assigneeId === emp.id || namesMatch(t.assignee, emp.name)) &&
+          (t.assigneeId === emp.id ||
+            (!t.assigneeId && t.assignee.trim().toLowerCase() === emp.name.trim().toLowerCase())) &&
           isTaskInKanbanListForDate(t, targetDate)
         )
         .map(t => t.taskId)
@@ -609,13 +615,11 @@ export function StageTimelineBar({
   const sortedTasks = useMemo(() => {
     const list = (emp.trackedTasks || []).filter(task => {
       if (kanbanTaskIds && !kanbanTaskIds.has(task.taskId)) return false;
-      const totals = aggregateStageSeconds(
+      const totals = computeTaskStageTotals(
         task.stageHistory,
         task.status,
         task.statusEnteredAt,
-        targetDate,
-        emp.id,
-        attendanceSessions,
+        { targetDate, assigneeId: emp.id, attendanceSessions },
       );
       return Object.values(totals).reduce((a, b) => a + b, 0) > 0;
     });
@@ -624,8 +628,16 @@ export function StageTimelineBar({
       const bProg = b.status === "in-progress" ? 1 : 0;
       if (aProg !== bProg) return bProg - aProg;
 
-      const aTotals = aggregateStageSeconds(a.stageHistory, a.status, a.statusEnteredAt, targetDate, emp.id, attendanceSessions);
-      const bTotals = aggregateStageSeconds(b.stageHistory, b.status, b.statusEnteredAt, targetDate, emp.id, attendanceSessions);
+      const aTotals = computeTaskStageTotals(a.stageHistory, a.status, a.statusEnteredAt, {
+        targetDate,
+        assigneeId: emp.id,
+        attendanceSessions,
+      });
+      const bTotals = computeTaskStageTotals(b.stageHistory, b.status, b.statusEnteredAt, {
+        targetDate,
+        assigneeId: emp.id,
+        attendanceSessions,
+      });
       
       const aHasInProgress = (aTotals["in-progress"] || 0) > 0 ? 1 : 0;
       const bHasInProgress = (bTotals["in-progress"] || 0) > 0 ? 1 : 0;
@@ -792,7 +804,8 @@ export function EmployeeDetailPanel({
     const kanbanTaskIds = new Set(
       allTasks
         .filter(t =>
-          (t.assigneeId === emp.id || namesMatch(t.assignee, emp.name)) &&
+          (t.assigneeId === emp.id ||
+            (!t.assigneeId && t.assignee.trim().toLowerCase() === emp.name.trim().toLowerCase())) &&
           isTaskInKanbanListForDate(t, taskStageDate)
         )
         .map(t => t.taskId)
@@ -805,8 +818,16 @@ export function EmployeeDetailPanel({
       const bIsInProgress = b.status === "in-progress" ? 1 : 0;
       if (aIsInProgress !== bIsInProgress) return bIsInProgress - aIsInProgress;
 
-      const aTotals = aggregateStageSeconds(a.stageHistory, a.status, a.statusEnteredAt, taskStageDate, emp.id, attendanceSessions);
-      const bTotals = aggregateStageSeconds(b.stageHistory, b.status, b.statusEnteredAt, taskStageDate, emp.id, attendanceSessions);
+      const aTotals = computeTaskStageTotals(a.stageHistory, a.status, a.statusEnteredAt, {
+        targetDate: taskStageDate,
+        assigneeId: emp.id,
+        attendanceSessions,
+      });
+      const bTotals = computeTaskStageTotals(b.stageHistory, b.status, b.statusEnteredAt, {
+        targetDate: taskStageDate,
+        assigneeId: emp.id,
+        attendanceSessions,
+      });
       
       const aHasInProgress = (aTotals["in-progress"] || 0) > 0 ? 1 : 0;
       const bHasInProgress = (bTotals["in-progress"] || 0) > 0 ? 1 : 0;
@@ -1670,13 +1691,15 @@ export function ShiftView({
 
               const currentWorkTask = emp.status === "working" && emp.workTasks[0] ? emp.workTasks[0] : null;
               const currentWorkTaskTodayTotals = currentWorkTask
-                ? aggregateStageSeconds(
+                ? computeTaskStageTotals(
                     currentWorkTask.stageHistory,
                     currentWorkTask.status,
                     currentWorkTask.statusEnteredAt,
-                    targetDate,
-                    emp.id,
-                    attendanceWindows,
+                    {
+                      targetDate,
+                      assigneeId: emp.id,
+                      attendanceSessions: attendanceWindows,
+                    },
                   )
                 : null;
               

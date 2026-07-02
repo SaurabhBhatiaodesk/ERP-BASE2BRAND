@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { AppNotification } from "@/lib/database";
 import { requestFirebaseToken } from "@/lib/firebase";
+import { playNotificationBeep } from "@/lib/audio";
 import { toast } from "sonner";
 
 export function useNotifications(userId?: string, onNotificationClick?: (n: AppNotification) => void) {
@@ -52,10 +53,19 @@ export function useNotifications(userId?: string, onNotificationClick?: (n: AppN
           setNotifications(prev => [newNotif, ...prev]);
           setUnreadCount(prev => prev + 1);
 
+          playNotificationBeep(newNotif.type);
+
           // In-app toast notification
-          toast.info(newNotif.title, {
-            description: newNotif.message,
-          });
+          if (newNotif.type === "call") {
+            toast.warning(newNotif.title, {
+              description: newNotif.message,
+              duration: 8000,
+            });
+          } else {
+            toast.info(newNotif.title, {
+              description: newNotif.message,
+            });
+          }
 
           // Trigger native browser notification
           if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {

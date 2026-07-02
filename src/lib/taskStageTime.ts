@@ -271,12 +271,16 @@ export function aggregateStageSeconds(
     // Open rows are handled below — only the current column may accumulate live time.
     if (!row.exited_at) continue;
 
-    let seconds =
-      row.duration_seconds != null && row.duration_seconds >= 0
-        ? row.duration_seconds
-        : getStageOverlapSeconds(row.entered_at, row.exited_at, targetDate);
+    let seconds: number;
+    if (attendanceScoped) {
+      seconds = getStageOverlapSeconds(row.entered_at, row.exited_at, targetDate);
+    } else if (row.duration_seconds != null && row.duration_seconds >= 0) {
+      seconds = row.duration_seconds;
+    } else {
+      seconds = getStageOverlapSeconds(row.entered_at, row.exited_at, targetDate);
+    }
 
-    if (row.duration_seconds == null && row.exited_at) {
+    if (row.exited_at) {
       const wallCap = Math.max(
         0,
         Math.floor((new Date(row.exited_at).getTime() - new Date(row.entered_at).getTime()) / 1000),
@@ -298,6 +302,35 @@ export function aggregateStageSeconds(
     }
   }
   return totals;
+}
+
+/** Same totals logic as employee Kanban — attendance overlap + daily clock cap. */
+export function computeTaskStageTotals(
+  history: TaskStageHistoryRow[],
+  currentStatus: string,
+  statusEnteredAt?: string | null,
+  options?: {
+    targetDate?: string;
+    assigneeId?: string | null;
+    attendanceSessions?: AttendanceOverlapWindow[];
+  },
+): Record<string, number> {
+  const targetDate = options?.targetDate;
+  const assigneeId = options?.assigneeId;
+  const attendanceSessions = options?.attendanceSessions;
+  const raw = aggregateStageSeconds(
+    history,
+    currentStatus,
+    statusEnteredAt,
+    targetDate,
+    assigneeId,
+    attendanceSessions,
+  );
+  const maxSeconds =
+    assigneeId && attendanceSessions?.length
+      ? attendanceWindowsTotalSeconds(attendanceSessions, assigneeId, targetDate)
+      : undefined;
+  return capWorkStageTotals(raw, maxSeconds);
 }
 
 /** Instant UI update when a card moves — closes the old stage and opens the new one. */
@@ -476,11 +509,8 @@ function tasksForEmployee(tasks: AppTask[], profileId: string, profileName: stri
   return tasks.filter(t => {
     if (t.status === "done" && !includeDoneToday) return false;
     if (t.status === "done" && includeDoneToday && !isTaskTrackedToday(t)) return false;
-    if (profileId && t.assigneeId) return t.assigneeId === profileId;
-    if (profileId && !t.assigneeId) {
-      return t.assignee.trim().toLowerCase() === profileName.trim().toLowerCase();
-    }
-    return t.assignee.trim().toLowerCase() === profileName.trim().toLowerCase();
+    if (profileId?.trim()) return t.assigneeId?.trim() === profileId.trim();
+    return profileName.trim() && t.assignee.trim().toLowerCase() === profileName.trim().toLowerCase();
   });
 }
 

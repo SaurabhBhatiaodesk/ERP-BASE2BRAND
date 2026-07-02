@@ -5,6 +5,7 @@ import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
 import { useEmployeeProfiles, useProjectTasks, useProjects } from "@/hooks/useSupabaseData";
 import {
   filterTasksForUser,
+  findProfileForUser,
   getEmployeeProjects,
   namesMatch,
   updateProjectDetails,
@@ -207,11 +208,13 @@ function ProjectCard({
 export function ProjectsView({
   userRole = "employee",
   userName = "",
+  userEmail = "",
   onOpenProject,
   onNavigate,
 }: {
   userRole?: string;
   userName?: string;
+  userEmail?: string;
   onOpenProject?: (projectId: string) => void;
   onNavigate?: (view: string, tab?: any) => void;
 }) {
@@ -219,8 +222,8 @@ export function ProjectsView({
   const { data: tasks, loading: tLoading, error: tError } = useProjectTasks();
   const { data: profiles, refresh: refreshProfiles } = useEmployeeProfiles();
   const currentProfile = useMemo(
-    () => profiles.find(p => p.name.toLowerCase() === userName.toLowerCase()),
-    [profiles, userName]
+    () => findProfileForUser(profiles, userName, userEmail),
+    [profiles, userName, userEmail]
   );
   const [search, setSearch] = useState("");
   const [favorites, setFavorites] = useState<Set<string>>(() => readFavorites());
