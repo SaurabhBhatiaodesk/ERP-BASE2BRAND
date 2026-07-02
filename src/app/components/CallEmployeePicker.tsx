@@ -1,3 +1,5 @@
+import { useMemo, useState } from "react";
+import { Search } from "lucide-react";
 import { playCeoCallBeep } from "@/lib/audio";
 import type { EmployeeProfile } from "@/lib/database";
 
@@ -16,6 +18,20 @@ export function CallEmployeePicker({
   labelClassName = "block text-[11px] font-semibold text-[#6b7fa8] uppercase tracking-wider mb-1.5 font-['Geist_Mono']",
   listClassName = "max-h-52 overflow-y-auto rounded-xl border border-[rgba(99,102,241,0.15)] bg-[#131a35] divide-y divide-[rgba(99,102,241,0.08)]",
 }: CallEmployeePickerProps) {
+  const [search, setSearch] = useState("");
+
+  const filteredEmployees = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return employees;
+    return employees.filter(
+      p =>
+        p.name.toLowerCase().includes(q) ||
+        p.dept.toLowerCase().includes(q) ||
+        p.role.toLowerCase().includes(q) ||
+        p.email?.toLowerCase().includes(q)
+    );
+  }, [employees, search]);
+
   const toggle = (id: string) => {
     onChange(
       selectedIds.includes(id)
@@ -24,7 +40,8 @@ export function CallEmployeePicker({
     );
   };
 
-  const selectAll = () => onChange(employees.map(p => p.id));
+  const selectAll = () =>
+    onChange([...new Set([...selectedIds, ...filteredEmployees.map(p => p.id)])]);
   const clearAll = () => onChange([]);
 
   const selectedProfiles = employees.filter(p => selectedIds.includes(p.id));
@@ -54,8 +71,24 @@ export function CallEmployeePicker({
         </div>
       </div>
 
+      <div className="relative">
+        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#6b7fa8] pointer-events-none" />
+        <input
+          type="text"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search name or department..."
+          className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl pl-9 pr-3 py-2 text-sm text-white placeholder:text-[#6b7fa8] focus:outline-none focus:border-indigo-500/40 font-['Plus_Jakarta_Sans']"
+        />
+      </div>
+
       <div className={listClassName}>
-        {employees.map(p => {
+        {filteredEmployees.length === 0 ? (
+          <p className="px-3 py-6 text-center text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans']">
+            No employees match &quot;{search.trim()}&quot;
+          </p>
+        ) : (
+          filteredEmployees.map(p => {
           const checked = selectedIds.includes(p.id);
           return (
             <label
@@ -76,7 +109,8 @@ export function CallEmployeePicker({
               <span className="text-[10px] text-[#6b7fa8] shrink-0">{p.dept}</span>
             </label>
           );
-        })}
+        })
+        )}
       </div>
 
       {selectedProfiles.length > 0 && (
