@@ -3,12 +3,12 @@ import { recordActivityLog } from "@/lib/database";
 const STORAGE_KEY = "b2b_quick_actions";
 
 export type QuickActionRecord =
-  | { id: string; type: "call"; employee: string; message: string; phone?: string; createdAt: string }
+  | { id: string; type: "call"; employees: string[]; message: string; phones?: string[]; createdAt: string }
   | { id: string; type: "meeting"; title: string; date: string; time: string; invite: string; createdAt: string }
   | { id: string; type: "broadcast"; message: string; audience: string; createdAt: string };
 
 export type QuickActionInput =
-  | { type: "call"; employee: string; message: string; phone?: string }
+  | { type: "call"; employees: string[]; message: string; phones?: string[] }
   | { type: "meeting"; title: string; date: string; time: string; invite: string }
   | { type: "broadcast"; message: string; audience: string };
 

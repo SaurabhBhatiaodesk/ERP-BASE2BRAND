@@ -14,6 +14,7 @@ import { revenueData, pieData, aiInsights, activityFeed } from "../../data";
 import { useEmployeeProfiles, useProjects, useLeaveRequests } from "@/hooks/useSupabaseData";
 import { addProjectTask, updateLeaveStatus, insertNotification } from "@/lib/database";
 import { saveQuickAction } from "@/lib/quickActions";
+import { CallEmployeePicker, sendCallToEmployees } from "../CallEmployeePicker";
 
 function formatIso(d = new Date()) {
   return d.toISOString().slice(0, 10);
@@ -41,6 +42,7 @@ export function CEODashboard() {
   const [qaModal, setQaModal] = useState<string | null>(null);
   const [qaInput, setQaInput] = useState("");
   const [qaSelect, setQaSelect] = useState("");
+  const [qaCallIds, setQaCallIds] = useState<string[]>([]);
   const [qaProject, setQaProject] = useState("");
   const [qaEst, setQaEst] = useState("4");
   const [qaDue, setQaDue] = useState(formatIso());
@@ -89,6 +91,7 @@ export function CEODashboard() {
     if (!qaModal) return;
     setQaInput("");
     setQaSelect("");
+    setQaCallIds([]);
     setQaProject(projects[0]?.id || "");
     setQaEst("4");
     setQaDue(formatIso());
@@ -101,6 +104,7 @@ export function CEODashboard() {
   function resetQaForm() {
     setQaInput("");
     setQaSelect("");
+    setQaCallIds([]);
     setQaProject(projects[0]?.id || "");
     setQaEst("4");
     setQaDue(formatIso());
@@ -128,25 +132,14 @@ export function CEODashboard() {
           est: qaEst,
         });
       } else if (qaModal === "call") {
-        if (!qaSelect) throw new Error("Please select an employee.");
-        
-        const callMessage = qaInput.trim() || "Please come to my cabin";
-        
-        await saveQuickAction({
-          type: "call",
-          employee: qaSelect,
-          message: callMessage,
-          phone: selectedProfile?.phone,
+        await sendCallToEmployees({
+          profiles: assignableEmployees,
+          selectedIds: qaCallIds,
+          message: qaInput,
+          callTitle: "CEO Calling",
+          insertNotification,
+          saveQuickAction,
         });
-
-        if (selectedProfile?.id) {
-          await insertNotification({
-            recipientId: selectedProfile.id,
-            title: "CEO Calling",
-            message: callMessage,
-            type: "call"
-          });
-        }
       } else if (qaModal === "meeting") {
         if (!qaInput.trim()) throw new Error("Please enter a meeting title.");
         if (!qaDate) throw new Error("Please select a date.");
@@ -300,25 +293,17 @@ export function CEODashboard() {
 
                 {qaModal === "call" && (
                   <div className="space-y-3">
-                    <div>
-                      <label className="block text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mb-1.5">Employee</label>
-                      <select value={qaSelect} onChange={e => setQaSelect(e.target.value)} className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-3 py-2.5 text-sm text-[#e2e8f7] outline-none focus:border-indigo-500/50 font-['Plus_Jakarta_Sans']">
-                        <option value="">Select employee</option>
-                        {assignableEmployees.map(e => (
-                          <option key={e.id} value={e.name}>{e.name} · {e.dept}</option>
-                        ))}
-                      </select>
-                    </div>
-                    {selectedProfile?.phone && (
-                      <p className="text-[11px] text-emerald-400 font-['Geist_Mono']">
-                        Phone: {selectedProfile.phone}
-                      </p>
-                    )}
+                    <CallEmployeePicker
+                      employees={assignableEmployees}
+                      selectedIds={qaCallIds}
+                      onChange={setQaCallIds}
+                      labelClassName="block text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mb-1.5"
+                    />
                     <div>
                       <label className="block text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mb-1.5">Message / Reason</label>
                       <input value={qaInput} onChange={e => setQaInput(e.target.value)} placeholder='e.g. "Please come to my cabin"' className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-3 py-2.5 text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-indigo-500/50 font-['Plus_Jakarta_Sans']" />
                     </div>
-                    <p className="text-[11px] text-[#6b7fa8] font-['Plus_Jakarta_Sans']">The employee will receive an instant pop-up notification on their screen.</p>
+                    <p className="text-[11px] text-[#6b7fa8] font-['Plus_Jakarta_Sans']">Selected employees will get an instant pop-up and phone-ring alert on their screen.</p>
                   </div>
                 )}
 

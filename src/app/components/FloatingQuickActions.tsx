@@ -3,6 +3,7 @@ import { Plus, CheckSquare, Phone, Calendar, Send, X, ChevronDown } from "lucide
 import { useEmployeeProfiles, useProjects } from "@/hooks/useSupabaseData";
 import { addProjectTask, insertNotification } from "@/lib/database";
 import { saveQuickAction } from "@/lib/quickActions";
+import { CallEmployeePicker, sendCallToEmployees } from "./CallEmployeePicker";
 
 function formatIso(d = new Date()) {
   return d.toISOString().slice(0, 10);
@@ -16,6 +17,7 @@ export function FloatingQuickActions({ roleLabel }: { roleLabel?: string }) {
   const [qaModal, setQaModal] = useState<string | null>(null);
   const [qaInput, setQaInput] = useState("");
   const [qaSelect, setQaSelect] = useState("");
+  const [qaCallIds, setQaCallIds] = useState<string[]>([]);
   const [qaProject, setQaProject] = useState("");
   const [qaEst, setQaEst] = useState("4");
   const [qaDue, setQaDue] = useState(formatIso());
@@ -61,6 +63,7 @@ export function FloatingQuickActions({ roleLabel }: { roleLabel?: string }) {
     if (!qaModal) return;
     setQaInput("");
     setQaSelect("");
+    setQaCallIds([]);
     setQaProject(projects[0]?.id || "");
     setQaEst("4");
     setQaDue(formatIso());
@@ -99,25 +102,14 @@ export function FloatingQuickActions({ roleLabel }: { roleLabel?: string }) {
           est: qaEst,
         });
       } else if (qaModal === "call") {
-        if (!qaSelect) throw new Error("Please select an employee.");
-        
-        const callMessage = qaInput.trim() || "Please come to my cabin";
-        
-        await saveQuickAction({
-          type: "call",
-          employee: qaSelect,
-          message: callMessage,
-          phone: selectedProfile?.phone,
+        await sendCallToEmployees({
+          profiles: assignableEmployees,
+          selectedIds: qaCallIds,
+          message: qaInput,
+          callTitle: roleLabel === "CEO / Admin" ? "CEO Calling" : "Message from Colleague",
+          insertNotification,
+          saveQuickAction,
         });
-
-        if (selectedProfile?.id) {
-          await insertNotification({
-            recipientId: selectedProfile.id,
-            title: roleLabel === "CEO" ? "CEO Calling" : "Message from Colleague",
-            message: callMessage,
-            type: "call"
-          });
-        }
       } else if (qaModal === "meeting") {
         if (!qaInput.trim()) throw new Error("Please enter a meeting title.");
         if (!qaDate) throw new Error("Please select a date.");
@@ -252,16 +244,11 @@ export function FloatingQuickActions({ roleLabel }: { roleLabel?: string }) {
                 
                 {qaModal === "call" && (
                   <div className="space-y-4">
-                    <div>
-                      <label className="block text-[11px] font-semibold text-[#6b7fa8] uppercase tracking-wider mb-1.5 font-['Geist_Mono']">Who to call?</label>
-                      <select value={qaSelect} onChange={e => setQaSelect(e.target.value)} className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500/40">
-                        <option value="">Select employee...</option>
-                        {assignableEmployees.map(p => <option key={p.name} value={p.name}>{p.name} ({p.dept})</option>)}
-                      </select>
-                    </div>
-                    {qaSelect && selectedProfile?.phone && (
-                      <p className="text-xs text-indigo-400">Phone: {selectedProfile.phone}</p>
-                    )}
+                    <CallEmployeePicker
+                      employees={assignableEmployees}
+                      selectedIds={qaCallIds}
+                      onChange={setQaCallIds}
+                    />
                     <div>
                       <label className="block text-[11px] font-semibold text-[#6b7fa8] uppercase tracking-wider mb-1.5 font-['Geist_Mono']">Message (Optional)</label>
                       <input type="text" value={qaInput} onChange={e => setQaInput(e.target.value)} placeholder="e.g. Please come to my cabin" className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-[#6b7fa8] focus:outline-none focus:border-indigo-500/40" />

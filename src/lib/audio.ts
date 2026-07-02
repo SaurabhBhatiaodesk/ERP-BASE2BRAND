@@ -31,6 +31,31 @@ function playTone(
   oscillator.stop(startTime + duration + 0.01);
 }
 
+/** Two frequencies together — classic telephone dual-tone. */
+function playDualPhoneRing(
+  audioCtx: AudioContext,
+  startTime: number,
+  duration: number,
+  f1: number,
+  f2: number,
+  volume = 0.55,
+) {
+  for (const freq of [f1, f2]) {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, startTime);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    gain.gain.setValueAtTime(0, startTime);
+    gain.gain.linearRampToValueAtTime(volume * 0.45, startTime + 0.025);
+    gain.gain.setValueAtTime(volume * 0.45, startTime + duration - 0.04);
+    gain.gain.linearRampToValueAtTime(0, startTime + duration);
+    osc.start(startTime);
+    osc.stop(startTime + duration + 0.02);
+  }
+}
+
 /** Idle reminder — short double digital beep. */
 export function playBeep() {
   try {
@@ -43,26 +68,21 @@ export function playBeep() {
   }
 }
 
-/** CEO / manager call — urgent ascending ring, clearly different from idle beep. */
+/** CEO call — desk-phone style "truun-triin" ring (clearly unlike idle beep). */
 export function playCeoCallBeep() {
   try {
     const audioCtx = createAudioContext();
     const t = audioCtx.currentTime;
-    const ring = [
-      { at: 0, freq: 587, dur: 0.16 },
-      { at: 0.18, freq: 740, dur: 0.16 },
-      { at: 0.36, freq: 880, dur: 0.22 },
-      { at: 0.64, freq: 880, dur: 0.22 },
-      { at: 0.92, freq: 740, dur: 0.16 },
-      { at: 1.1, freq: 587, dur: 0.3 },
-    ];
 
-    for (const note of ring) {
-      playTone(audioCtx, t + note.at, note.freq, note.dur, {
-        type: "triangle",
-        volume: 0.65,
-      });
-    }
+    const ringBurst = (offset: number) => {
+      playDualPhoneRing(audioCtx, t + offset, 0.55, 440, 480, 0.75);
+      playDualPhoneRing(audioCtx, t + offset + 0.62, 0.5, 520, 660, 0.7);
+      playDualPhoneRing(audioCtx, t + offset + 1.18, 0.55, 440, 480, 0.75);
+      playDualPhoneRing(audioCtx, t + offset + 1.8, 0.5, 520, 660, 0.7);
+    };
+
+    ringBurst(0);
+    ringBurst(2.55);
   } catch (e) {
     console.error("CEO call beep failed:", e);
   }
