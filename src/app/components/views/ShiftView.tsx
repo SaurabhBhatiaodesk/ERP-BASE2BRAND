@@ -15,7 +15,7 @@ import {
   isClockSessionsTableReady,
   isTaskInKanbanListForDate,
   clockSessionsToAttendanceWindows,
-  namesMatch,
+  findProfileForUser,
   type AttendanceTimeWindow,
   type ClockSessionRecord,
   type AppTask,
@@ -1227,9 +1227,11 @@ export function EmployeeDetailPanel({
 export function ShiftView({
   userRole = "ceo",
   userName = "",
+  userEmail = "",
 }: {
   userRole?: string;
   userName?: string;
+  userEmail?: string;
 }) {
   const { data: profiles, loading: pLoading, error: pError, refresh: refreshProfiles } = useEmployeeProfiles();
   const { data: tasks, loading: tLoading } = useProjectTasks();
@@ -1253,8 +1255,8 @@ export function ShiftView({
   );
 
   const viewerProfile = useMemo(
-    () => profiles.find(p => p.name.trim().toLowerCase() === userName.trim().toLowerCase()),
-    [profiles, userName]
+    () => findProfileForUser(profiles, userName, userEmail),
+    [profiles, userName, userEmail]
   );
 
   const refresh = useCallback(async (isBackground = false) => {

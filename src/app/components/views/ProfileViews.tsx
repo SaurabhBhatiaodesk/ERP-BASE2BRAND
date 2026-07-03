@@ -9,12 +9,12 @@ import { useEmployeeProfiles, useLeadsAsClients, useProjectTasks, useProjects, u
 import {
   createEmployee, createLead, createProject, assignProjectTeam,
   updateEmployeeProfile, getEmployeeProjects, getEmployeeRecentTasks,
-  buildWeeklyHoursFromAttendance, initialsFromName,
+  buildWeeklyHoursFromAttendance, initialsFromName, findProfileForUser,
 } from "@/lib/database";
 import { SHIFT_START_OPTIONS, formatShiftStartLabel } from "@/lib/shiftTimeline";
 import { ProfilePhotoUpload } from "../ProfilePhotoUpload";
 import { APP_ROLE_OPTIONS, isAdminRole, isExecutiveProfile, signUpWithRole } from "@/lib/auth";
-import { namesMatch, isPersonalTaskRole } from "@/lib/database";
+import { isPersonalTaskRole } from "@/lib/database";
 import {
   isValidEmail,
   isValidPhone,
@@ -160,6 +160,7 @@ export function EmployeeProfilePage({
   onNavigate,
   onProfileUpdated,
   userName = "",
+  userEmail = "",
   userRole = "employee",
   initialProfileId,
 }: {
@@ -167,6 +168,7 @@ export function EmployeeProfilePage({
   onNavigate?: (view: string, tab?: "employee" | "client" | "project" | "assign") => void;
   onProfileUpdated?: () => void;
   userName?: string;
+  userEmail?: string;
   userRole?: string;
   initialProfileId?: string;
 }) {
@@ -176,12 +178,18 @@ export function EmployeeProfilePage({
   const { data: attendance } = useAttendance();
   const { data: dbLeaves } = useLeaveRequests();
   const canManageAll = isAdminRole(userRole);
+  const myProfile = useMemo(
+    () => findProfileForUser(employeeProfiles, userName, userEmail),
+    [employeeProfiles, userName, userEmail]
+  );
   const visibleProfiles = useMemo(
     () =>
       canManageAll
         ? employeeProfiles
-        : employeeProfiles.filter(p => namesMatch(p.name, userName)),
-    [employeeProfiles, canManageAll, userName]
+        : myProfile
+          ? [myProfile]
+          : [],
+    [employeeProfiles, canManageAll, myProfile]
   );
   const [selectedId, setSelectedId] = useState<string | null>(initialProfileId || null);
   const [editing, setEditing] = useState(false);
@@ -202,9 +210,8 @@ export function EmployeeProfilePage({
   useEffect(() => {
     if (visibleProfiles.length === 0) return;
     if (initialProfileId) return;
-    const mine = visibleProfiles.find(p => namesMatch(p.name, userName));
-    if (!selectedId) setSelectedId(mine?.id ?? visibleProfiles[0].id);
-  }, [visibleProfiles, userName, initialProfileId]);
+    if (!selectedId) setSelectedId(myProfile?.id ?? visibleProfiles[0].id);
+  }, [visibleProfiles, myProfile?.id, initialProfileId, selectedId]);
 
   const activeId = selectedId ?? visibleProfiles[0]?.id ?? "";
   const profile = visibleProfiles.find(e => e.id === activeId) ?? visibleProfiles[0];
@@ -238,7 +245,7 @@ export function EmployeeProfilePage({
   }
 
   const emp = profile;
-  const isOwnProfile = namesMatch(emp.name, userName);
+  const isOwnProfile = myProfile?.id === emp.id;
   const maxH = Math.max(...weeklyHours.map(d => d.h), 8); // At least 8h scale
 
   const statsCards = [
@@ -530,7 +537,7 @@ export function EmployeeProfilePage({
                     const projectTasks = tasks.filter(
                       t =>
                         t.projectId === p.id &&
-                        (t.assigneeId === emp.id || namesMatch(t.assignee, emp.name))
+                        t.assigneeId === emp.id
                     );
                     const doneCount = projectTasks.filter(t => t.status === "done").length;
                     const progress = projectTasks.length > 0
@@ -915,7 +922,7 @@ export function RegistrationFormsView({
     memberIds: [] as string[],
   });
 
-  const managerOptions = [...new Set(["CEO Admin", ...profiles.filter(p => !isPersonalTaskRole(p.role || p.app_role || "")).map(p => p.name)])];
+  const managerOptions = [...new Set(["CEO Admin", ...profiles.filter(p => !isPersonalTaskRole(p.role || p.appRole || "")).map(p => p.name)])];
   const clientOptions = leads.map(l => l.company);
   const assignableEmployees = useMemo(
     () => profiles.filter(p => !isExecutiveProfile(p)),

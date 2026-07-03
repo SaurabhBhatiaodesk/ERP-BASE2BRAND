@@ -7,7 +7,6 @@ import {
   filterTasksForUser,
   findProfileForUser,
   getEmployeeProjects,
-  namesMatch,
   updateProjectDetails,
   assignProjectTeam,
   type EmployeeProfile,
@@ -71,7 +70,7 @@ function avatarColor(name: string) {
 }
 
 function memberPhoto(profiles: EmployeeProfile[], memberName: string) {
-  return profiles.find(p => namesMatch(p.name, memberName))?.profileImageUrl || "";
+  return profiles.find(p => p.name.trim().toLowerCase() === memberName.trim().toLowerCase())?.profileImageUrl || "";
 }
 
 function statusStyle(status: string) {

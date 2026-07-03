@@ -23,7 +23,6 @@ import {
   filterTasksForUser,
   getEmployeeProjects,
   isPersonalTaskRole,
-  namesMatch,
   updateProjectTask,
   updateProjectTaskStatus,
   taskDateToDateInput,
@@ -1477,8 +1476,12 @@ export function TasksView({
   }, [editingTask, scopedTasks]);
 
   const sprintSummary = useMemo(
-    () => getSprintSummary(scopedTasks, { userName: personalView ? userName : undefined, projects }),
-    [scopedTasks, userName, personalView, projects]
+    () => getSprintSummary(scopedTasks, {
+      userName: personalView ? userName : undefined,
+      userId: personalView ? currentProfile?.id : undefined,
+      projects,
+    }),
+    [scopedTasks, userName, currentProfile?.id, personalView, projects]
   );
 
   const taskSubtitle = useMemo(

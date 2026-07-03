@@ -45,7 +45,7 @@ export function FloatingQuickActions({ roleLabel }: { roleLabel?: string }) {
     return ["All Staff", ...teams, ...assignableEmployees.map(p => p.name)];
   }, [profiles, assignableEmployees]);
 
-  const selectedProfile = profiles.find(p => p.name === qaSelect);
+  const selectedAssignee = assignableEmployees.find(p => p.id === qaSelect);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -89,13 +89,14 @@ export function FloatingQuickActions({ roleLabel }: { roleLabel?: string }) {
     try {
       if (qaModal === "assign") {
         if (!qaProject) throw new Error("Please select a project.");
-        if (!qaSelect) throw new Error("Please select an employee.");
+        if (!qaSelect || !selectedAssignee) throw new Error("Please select an employee.");
         if (!qaInput.trim()) throw new Error("Please enter a task description.");
         if (!qaEst || Number(qaEst) <= 0) throw new Error("Please enter estimated hours.");
         await addProjectTask({
           projectId: qaProject,
           title: qaInput.trim(),
-          assignee: qaSelect,
+          assignee: selectedAssignee.name,
+          assigneeId: selectedAssignee.id,
           status: "todo",
           priority: "medium",
           due: qaDue,
@@ -222,7 +223,7 @@ export function FloatingQuickActions({ roleLabel }: { roleLabel?: string }) {
                       <label className="block text-[11px] font-semibold text-[#6b7fa8] uppercase tracking-wider mb-1.5 font-['Geist_Mono']">Assign To</label>
                       <select value={qaSelect} onChange={e => setQaSelect(e.target.value)} className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500/40">
                         <option value="">Select employee...</option>
-                        {assignableEmployees.map(p => <option key={p.name} value={p.name}>{p.name} ({p.dept})</option>)}
+                        {assignableEmployees.map(p => <option key={p.id} value={p.id}>{p.name} ({p.dept})</option>)}
                       </select>
                     </div>
                     <div>

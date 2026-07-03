@@ -8,15 +8,21 @@
     "build": "vite build",
     "dev": "vite",
     "typecheck": "tsc --noEmit",
-    "clean:win": "powershell -Command \"Stop-Process -Name '*BASE*' -Force -ErrorAction SilentlyContinue; Remove-Item -Path 'build-release' -Recurse -Force -ErrorAction SilentlyContinue; exit 0\"",
+    "clean:win": "powershell -Command \"Get-Process | Where-Object { $_.ProcessName -like '*Base2Brand*' -or $_.ProcessName -eq 'electron' } | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; if (Test-Path 'build-release') { Remove-Item -Path 'build-release' -Recurse -Force -ErrorAction SilentlyContinue }; exit 0\"",
     "package:win": "npm run clean:win && npm run build && electron-builder --win",
+    "package:win:fast": "npm run build && electron-builder --win",
+    "package:win:dir": "npm run build && electron-builder --win --dir",
     "package:mac": "npm run build && electron-builder --mac"
   },
   "build": {
     "appId": "com.base2brand.erp",
     "productName": "Base2Brand ERP",
-    "asar": false,
-    "compression": "store",
+    "asar": true,
+    "compression": "normal",
+    "npmRebuild": false,
+    "electronLanguages": [
+      "en-US"
+    ],
     "directories": {
       "output": "build-release",
       "buildResources": "assets"
@@ -39,7 +45,9 @@
     },
     "files": [
       "dist/**/*",
-      "dist-electron/**/*"
+      "dist-electron/**/*",
+      "assets/icon.png",
+      "!node_modules/**/*"
     ]
   },
   "dependencies": {

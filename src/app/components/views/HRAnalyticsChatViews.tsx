@@ -19,9 +19,9 @@ import { useChatChannelReads, useChatChannels, useChatMessages, useChatUnreadCou
 import {
   findProfileForUser,
   getMessageDeliveryStatus,
+  entryBelongsToEmployee,
   isMissingChatTables,
   markChatChannelRead,
-  namesMatch,
   sendChatMessage,
   createGroupChannel,
   findOrCreateDmChannel,
@@ -251,7 +251,7 @@ export function HRView({
         {[...employees]
           .filter(emp => (emp.name || "").toLowerCase().includes(searchQuery.toLowerCase()) || (emp.role || "").toLowerCase().includes(searchQuery.toLowerCase()))
           .sort((a, b) => (a.name || "").localeCompare(b.name || "")).map(emp => (
-          <div key={emp.name} className="bg-[#0f1528]/80 backdrop-blur-xl border border-indigo-500/20 shadow-[0_8px_32px_rgba(0,0,0,0.4)] rounded-2xl p-5 hover:border-indigo-500/40 hover:shadow-[0_8px_32px_rgba(99,102,241,0.15)] transition-all duration-300 flex flex-col gap-4 group">
+          <div key={emp.id} className="bg-[#0f1528]/80 backdrop-blur-xl border border-indigo-500/20 shadow-[0_8px_32px_rgba(0,0,0,0.4)] rounded-2xl p-5 hover:border-indigo-500/40 hover:shadow-[0_8px_32px_rgba(99,102,241,0.15)] transition-all duration-300 flex flex-col gap-4 group">
             
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-4">
@@ -278,16 +278,14 @@ export function HRView({
             <div className="flex items-center gap-2 pt-4 mt-auto border-t border-white/[0.05]">
               <button 
                 onClick={() => {
-                  const pid = profiles?.find(p => p.name === emp.name)?.id;
-                  onNavigate?.("profiles", { profileId: pid });
+                  onNavigate?.("profiles", { profileId: emp.id });
                 }}
                 className="flex-1 flex justify-center text-xs font-semibold font-['Plus_Jakarta_Sans'] text-white bg-indigo-600/80 hover:bg-indigo-500 py-2 rounded-lg transition-colors border border-indigo-500/50">
                 View Profile
               </button>
               <button 
                 onClick={() => {
-                  const pid = profiles?.find(p => p.name === emp.name)?.id;
-                  onNavigate?.("profiles", { profileId: pid });
+                  onNavigate?.("profiles", { profileId: emp.id });
                 }}
                 className="px-3 py-2 text-[#8b99b8] hover:text-white bg-white/5 hover:bg-white/10 rounded-lg transition-colors border border-white/5">
                 <Edit size={14} />
@@ -364,7 +362,9 @@ function HRTimesheetTab({ employees, profiles, onNavigate }: { employees: any[],
         }
         
         const dateStr = [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
-        const records = attendance.filter(a => a.employee === emp.name && a.date === dateStr);
+        const records = attendance.filter(
+          a => entryBelongsToEmployee(a, emp.id, emp.name) && a.date === dateStr
+        );
         const totalHours = Math.round(records.reduce((sum, r) => sum + r.hours, 0) * 10) / 10;
         
         const isWeekend = d.getDay() === 0 || d.getDay() === 6;
@@ -443,8 +443,8 @@ function HRTimesheetTab({ employees, profiles, onNavigate }: { employees: any[],
               .sort((a, b) => (a.name || "").localeCompare(b.name || "")).map(emp => {
               return (
                 <tr 
-                  key={emp.name} 
-                  onClick={() => onNavigate?.("employee-timesheet", { employeeName: emp.name })}
+                  key={emp.id} 
+                  onClick={() => onNavigate?.("employee-timesheet", { employeeId: emp.id, employeeName: emp.name })}
                   className="group hover:bg-indigo-500/[0.03] transition-colors cursor-pointer"
                 >
                   <td className="px-5 py-3 whitespace-nowrap sticky left-0 z-10 shadow-[4px_0_12px_rgba(0,0,0,0.2)] rounded-l-xl border-y border-l border-[rgba(99,102,241,0.15)] bg-[#0f1528] group-hover:bg-[#131a35] group-hover:border-[rgba(99,102,241,0.3)] transition-all">
@@ -466,7 +466,9 @@ function HRTimesheetTab({ employees, profiles, onNavigate }: { employees: any[],
                     const isLast = index === monthDates.length - 1;
                     const tdClass = `px-3 py-3 text-center border-y border-[rgba(99,102,241,0.15)] bg-[#0d1326] group-hover:bg-[#131a35] group-hover:border-y-[rgba(99,102,241,0.3)] transition-all ${isLast ? 'border-r rounded-r-xl group-hover:border-r-[rgba(99,102,241,0.3)]' : ''}`;
                     
-                    const records = attendance.filter(a => a.employee === emp.name && a.date === dateStr);
+                    const records = attendance.filter(
+                      a => entryBelongsToEmployee(a, emp.id, emp.name) && a.date === dateStr
+                    );
                     const totalHours = Math.round(records.reduce((sum, r) => sum + r.hours, 0) * 10) / 10;
                     
                     const isFuture = d.getTime() > new Date().getTime();
@@ -510,9 +512,11 @@ function HRTimesheetTab({ employees, profiles, onNavigate }: { employees: any[],
 }
 
 export function EmployeeMonthlyTimesheetView({
+  employeeId,
   employeeName,
   onBack,
 }: {
+  employeeId?: string;
   employeeName?: string;
   onBack: () => void;
 }) {
@@ -545,7 +549,7 @@ export function EmployeeMonthlyTimesheetView({
     let wo = 0;
     let totalHrs = 0;
     
-    if (!employeeName) return { present, absent, wo, totalHrs };
+    if (!employeeId && !employeeName) return { present, absent, wo, totalHrs };
     
     const now = new Date();
     
@@ -559,7 +563,9 @@ export function EmployeeMonthlyTimesheetView({
         String(d.getDate()).padStart(2, "0")
       ].join("-");
       
-      const records = attendance.filter(a => a.employee === employeeName && a.date === dateStr);
+      const records = attendance.filter(
+        a => entryBelongsToEmployee(a, employeeId, employeeName) && a.date === dateStr
+      );
       const hrs = records.reduce((sum, r) => sum + r.hours, 0);
       
       totalHrs += hrs;
@@ -575,9 +581,9 @@ export function EmployeeMonthlyTimesheetView({
     });
     
     return { present, absent, wo, totalHrs };
-  }, [monthDates, attendance, employeeName]);
+  }, [monthDates, attendance, employeeId, employeeName]);
 
-  if (!employeeName) {
+  if (!employeeId && !employeeName) {
     return (
       <div className="p-8 text-center text-white">
         <p>No employee selected.</p>
@@ -619,7 +625,9 @@ export function EmployeeMonthlyTimesheetView({
                 String(d.getDate()).padStart(2, "0")
               ].join("-");
               
-              const records = attendance.filter(a => a.employee === employeeName && a.date === dateStr);
+              const records = attendance.filter(
+        a => entryBelongsToEmployee(a, employeeId, employeeName) && a.date === dateStr
+      );
               const totalHours = Math.round(records.reduce((sum, r) => sum + r.hours, 0) * 10) / 10;
               
               const sortedRecords = [...records].sort((a, b) => new Date(a.clockIn).getTime() - new Date(b.clockIn).getTime());
@@ -665,7 +673,7 @@ export function EmployeeMonthlyTimesheetView({
             const encodedUri = encodeURI(csvContent);
             const link = document.createElement("a");
             link.setAttribute("href", encodedUri);
-            link.setAttribute("download", `${employeeName.replace(/\s+/g, '_')}_Timesheet_${monthLabel.replace(/\s+/g, '_')}.csv`);
+            link.setAttribute("download", `${(employeeName || "employee").replace(/\s+/g, '_')}_Timesheet_${monthLabel.replace(/\s+/g, '_')}.csv`);
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
@@ -729,7 +737,9 @@ export function EmployeeMonthlyTimesheetView({
                   String(d.getDate()).padStart(2, "0")
                 ].join("-");
                 
-                const records = attendance.filter(a => a.employee === employeeName && a.date === dateStr);
+                const records = attendance.filter(
+        a => entryBelongsToEmployee(a, employeeId, employeeName) && a.date === dateStr
+      );
                 const totalHours = Math.round(records.reduce((sum, r) => sum + r.hours, 0) * 10) / 10;
                 
                 // Sort records by clockIn to get first and last
@@ -918,8 +928,12 @@ function profilePhoto(
 ) {
   const byId = profiles.find(p => p.id === senderId);
   if (byId?.profileImageUrl) return byId.profileImageUrl;
-  const byName = profiles.find(p => namesMatch(p.name, senderName));
-  return byName?.profileImageUrl || "";
+  const normalized = senderName.trim().toLowerCase();
+  if (normalized) {
+    const exact = profiles.filter(p => p.name.trim().toLowerCase() === normalized);
+    if (exact.length === 1) return exact[0].profileImageUrl || "";
+  }
+  return "";
 }
 
 function buildOptimisticMessage(
@@ -1532,9 +1546,7 @@ export function ChatView({
       for (const row of data) {
          if (!map[row.channel_id]) {
             const isOwn = Boolean(
-              currentUser &&
-                ((row.sender_id && row.sender_id === currentUser.id) ||
-                  namesMatch(row.sender_name, currentUser.name))
+              currentUser && row.sender_id && row.sender_id === currentUser.id
             );
             let text = row.content || "";
             if (!text) {
@@ -1824,9 +1836,7 @@ export function ChatView({
             )}
             {filteredMessages.map((m) => {
               const isOwn = Boolean(
-                currentUser &&
-                  ((m.senderId && m.senderId === currentUser.id) ||
-                    namesMatch(m.senderName, currentUser.name))
+                currentUser && m.senderId && m.senderId === currentUser.id
               );
               const deliveryStatus = isOwn
                 ? getMessageDeliveryStatus(m, currentUser!.id, activeChannel, channelReadStates)

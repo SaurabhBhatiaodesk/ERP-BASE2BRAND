@@ -25,10 +25,10 @@ import {
   type ClockOutReason,
   filterTasksForUser,
   findProfileForUser,
+  getEmployeeProjects,
   isClockSessionsTableReady,
   isEmployeeDashboardTask,
   isTaskDueToday,
-  namesMatch,
   parseTaskDueDate,
   sortTodayTasks,
   type AppTask,
@@ -123,9 +123,12 @@ function sortDashboardTasks(tasks: AppTask[]) {
   });
 }
 
-function filterTimesheetsForUser(entries: TimesheetEntry[], userName: string) {
-  if (!userName) return entries;
-  return entries.filter(e => namesMatch(e.employee, userName));
+function filterTimesheetsForUser(entries: TimesheetEntry[], employeeId?: string, employeeName?: string) {
+  if (employeeId) return entries.filter(e => e.employeeId === employeeId);
+  if (!employeeName) return entries;
+  return entries.filter(
+    e => e.employee.trim().toLowerCase() === employeeName.trim().toLowerCase()
+  );
 }
 
 function secondsToHours(seconds: number) {
@@ -1287,19 +1290,16 @@ export function DevDashboard({
       t => (t.priority === "urgent" || t.priority === "high") && t.status !== "done"
     ).length;
     const prsOpen = myTasks.filter(t => t.status === "review").length;
-    const myProjects = userName ? projects.filter(p =>
-      (myProfile?.id && (p.teamIds?.includes(myProfile.id) || p.leadId === myProfile.id)) ||
-      p.team.some(m => namesMatch(m, userName)) ||
-      namesMatch(p.lead, userName)
-    ) : projects;
+    const myProjects = myProfile?.id
+      ? getEmployeeProjects(projects, userName, myProfile.id)
+      : projects;
     const coverage =
       myProjects.length > 0
         ? Math.round(myProjects.reduce((sum, p) => sum + p.progress, 0) / myProjects.length)
         : myTasks.length > 0
           ? Math.round((myTasks.filter(t => t.status === "done").length / myTasks.length) * 100)
           : 0;
-    const weekHours = timesheets
-      .filter(e => !userName || e.employee.toLowerCase() === userName.toLowerCase())
+    const weekHours = filterTimesheetsForUser(timesheets, myProfile?.id, userName)
       .reduce((sum, e) => sum + e.hours, 0);
 
     return {
@@ -1309,7 +1309,7 @@ export function DevDashboard({
       coverage: `${coverage}%`,
       totalTasks: myTasks.length,
     };
-  }, [myTasks, projects, timesheets, userName]);
+  }, [myTasks, projects, timesheets, userName, myProfile?.id]);
 
   if (loading) return <DataLoading label="Loading Dev Hub from Supabase..." />;
   if (error) return <DataError message={error} />;

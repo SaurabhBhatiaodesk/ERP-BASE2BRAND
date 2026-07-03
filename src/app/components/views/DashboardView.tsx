@@ -73,7 +73,7 @@ export function CEODashboard() {
     return ["All Staff", ...teams, ...assignableEmployees.map(p => p.name)];
   }, [profiles, assignableEmployees]);
 
-  const selectedProfile = profiles.find(p => p.name === qaSelect);
+  const selectedAssignee = assignableEmployees.find(p => p.id === qaSelect);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -119,13 +119,14 @@ export function CEODashboard() {
     try {
       if (qaModal === "assign") {
         if (!qaProject) throw new Error("Please select a project.");
-        if (!qaSelect) throw new Error("Please select an employee.");
+        if (!qaSelect || !selectedAssignee) throw new Error("Please select an employee.");
         if (!qaInput.trim()) throw new Error("Please enter a task description.");
         if (!qaEst || Number(qaEst) <= 0) throw new Error("Please enter estimated hours.");
         await addProjectTask({
           projectId: qaProject,
           title: qaInput.trim(),
-          assignee: qaSelect,
+          assignee: selectedAssignee.name,
+          assigneeId: selectedAssignee.id,
           status: "todo",
           priority: "medium",
           due: qaDue,
@@ -256,7 +257,7 @@ export function CEODashboard() {
                       <select value={qaSelect} onChange={e => setQaSelect(e.target.value)} className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-3 py-2.5 text-sm text-[#e2e8f7] outline-none focus:border-indigo-500/50 font-['Plus_Jakarta_Sans']">
                         <option value="">Select employee</option>
                         {assignableEmployees.map(e => (
-                          <option key={e.id} value={e.name}>{e.name} · {e.dept}</option>
+                          <option key={e.id} value={e.id}>{e.name} · {e.dept}</option>
                         ))}
                       </select>
                     </div>

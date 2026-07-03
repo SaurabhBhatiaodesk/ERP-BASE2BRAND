@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
   Clock,
@@ -10,7 +10,7 @@ import { TasksView } from "./CRMTasksViews";
 import { useEmployeeProfiles, useProjects, useTimesheets } from "@/hooks/useSupabaseData";
 import {
   addTimesheetEntry,
-  namesMatch,
+  findProfileForUser,
   type Project,
   type TimesheetEntry,
 } from "@/lib/database";
@@ -54,11 +54,11 @@ function projectTeamMembers(project: Project) {
   return [...members].sort((a, b) => a.localeCompare(b));
 }
 
-function calcProjectTimeStats(entries: TimesheetEntry[], projectId: string, employee: string) {
+function calcProjectTimeStats(entries: TimesheetEntry[], projectId: string, employeeId?: string) {
   const today = formatLocalDate(new Date());
   const weekStart = formatLocalDate(getWeekStart());
   const mine = entries.filter(
-    e => e.projectId === projectId && namesMatch(e.employee, employee)
+    e => e.projectId === projectId && (!employeeId || e.employeeId === employeeId)
   );
   const todayHours = mine
     .filter(e => e.date.slice(0, 10) === today)
@@ -82,29 +82,53 @@ function calcProjectTimeStats(entries: TimesheetEntry[], projectId: string, empl
 function ProjectTrackTimePanel({
   project,
   userName,
+  userEmail = "",
   userRole,
   onOpenFullTimesheet,
 }: {
   project: Project;
   userName: string;
+  userEmail?: string;
   userRole: string;
   onOpenFullTimesheet?: () => void;
 }) {
   const { data: entries, loading, error, refresh } = useTimesheets();
   const { data: profiles } = useEmployeeProfiles();
-  const team = useMemo(() => projectTeamMembers(project), [project]);
+  const myProfile = useMemo(
+    () => findProfileForUser(profiles, userName, userEmail),
+    [profiles, userName, userEmail]
+  );
 
-  const defaultPerson = useMemo(() => {
-    const mine = team.find(m => namesMatch(m, userName));
-    return mine || team[0] || userName;
-  }, [team, userName]);
+  const teamMembers = useMemo(() => {
+    if (project.teamIds?.length) {
+      return project.teamIds
+        .map(id => profiles.find(p => p.id === id))
+        .filter((p): p is NonNullable<typeof p> => Boolean(p));
+    }
+    return profiles.filter(p =>
+      project.team.some(m => m.trim().toLowerCase() === p.name.trim().toLowerCase()) ||
+      project.lead.trim().toLowerCase() === p.name.trim().toLowerCase()
+    );
+  }, [project, profiles]);
 
-  const [person, setPerson] = useState(defaultPerson);
+  const [personId, setPersonId] = useState("");
   const [date, setDate] = useState(formatLocalDate(new Date()));
   const [hours, setHours] = useState("");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
+
+  useEffect(() => {
+    if (personId && teamMembers.some(m => m.id === personId)) return;
+    if (myProfile?.id && teamMembers.some(m => m.id === myProfile.id)) {
+      setPersonId(myProfile.id);
+      return;
+    }
+    setPersonId(teamMembers[0]?.id || myProfile?.id || "");
+  }, [myProfile?.id, teamMembers, personId]);
+
+  const personProfile = teamMembers.find(p => p.id === personId) || myProfile;
+  const canPickPerson = isAdminRole(userRole) || teamMembers.length > 1;
 
   const projectEntries = useMemo(
     () =>
@@ -115,12 +139,9 @@ function ProjectTrackTimePanel({
   );
 
   const stats = useMemo(
-    () => calcProjectTimeStats(entries, project.id, person),
-    [entries, project.id, person]
+    () => calcProjectTimeStats(entries, project.id, personId || personProfile?.id),
+    [entries, project.id, personId, personProfile?.id]
   );
-
-  const personProfile = profiles.find(p => namesMatch(p.name, person));
-  const canPickPerson = isAdminRole(userRole) || team.length > 1;
 
   async function handleAdd() {
     const h = parseFloat(hours);
@@ -128,7 +149,7 @@ function ProjectTrackTimePanel({
       setFormError("Enter valid hours.");
       return;
     }
-    if (!person) {
+    if (!personProfile?.id) {
       setFormError("Select a person.");
       return;
     }
@@ -137,8 +158,8 @@ function ProjectTrackTimePanel({
     try {
       await addTimesheetEntry({
         projectId: project.id,
-        employee: person,
-        employeeId: personProfile?.id,
+        employee: personProfile.name,
+        employeeId: personProfile.id,
         date,
         hours: h,
         description: notes.trim() || `Work on ${project.name}`,
@@ -227,20 +248,22 @@ function ProjectTrackTimePanel({
         <div className="px-2 py-2 border-r border-dashed border-[rgba(99,102,241,0.08)]">
           {canPickPerson ? (
             <select
-              value={person}
-              onChange={e => setPerson(e.target.value)}
+              value={personId}
+              onChange={e => setPersonId(e.target.value)}
               className="w-full bg-transparent text-sm text-[#e2e8f7] outline-none font-['Plus_Jakarta_Sans'] cursor-pointer"
             >
-              {team.map(m => (
-                <option key={m} value={m} className="bg-[#0d1326]">
-                  {m}
+              {teamMembers.map(m => (
+                <option key={m.id} value={m.id} className="bg-[#0d1326]">
+                  {m.name}
                 </option>
               ))}
             </select>
           ) : (
             <div className="flex items-center gap-2 px-1 py-1">
-              <Avatar initials={person.slice(0, 2).toUpperCase()} size="sm" />
-              <span className="text-sm text-[#e2e8f7] truncate font-['Plus_Jakarta_Sans']">{person}</span>
+              <Avatar initials={(personProfile?.name || userName).slice(0, 2).toUpperCase()} size="sm" />
+              <span className="text-sm text-[#e2e8f7] truncate font-['Plus_Jakarta_Sans']">
+                {personProfile?.name || userName}
+              </span>
             </div>
           )}
         </div>
@@ -318,6 +341,7 @@ export function ProjectWorkspaceView({
   projectId,
   userRole = "employee",
   userName = "",
+  userEmail = "",
   initialTool = "tasks",
   onBack,
   onOpenFullTimesheet,
@@ -325,6 +349,7 @@ export function ProjectWorkspaceView({
   projectId: string;
   userRole?: string;
   userName?: string;
+  userEmail?: string;
   initialTool?: WorkspaceTool;
   onBack?: () => void;
   onOpenFullTimesheet?: () => void;
@@ -406,6 +431,7 @@ export function ProjectWorkspaceView({
         <div className="bg-[#0d1326]/40 border border-[rgba(99,102,241,0.1)] rounded-2xl p-4">
           <TasksView
             userName={userName}
+            userEmail={userEmail}
             userRole={userRole}
             fixedProjectId={projectId}
             embedded
@@ -417,6 +443,7 @@ export function ProjectWorkspaceView({
         <ProjectTrackTimePanel
           project={project}
           userName={userName}
+          userEmail={userEmail}
           userRole={userRole}
           onOpenFullTimesheet={onOpenFullTimesheet}
         />

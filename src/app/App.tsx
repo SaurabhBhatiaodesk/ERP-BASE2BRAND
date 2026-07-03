@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
-import { resolveLoginUser, saveAppSession, clearAppSession, isAdminRole, isShiftTrackerRole } from "@/lib/auth";
+import { resolveLoginUser, saveAppSession, clearAppSession, hasStoredAppSession, isAdminRole, isShiftTrackerRole } from "@/lib/auth";
+import { refreshSupabaseSessionIfNeeded, restoreSupabaseSession } from "@/lib/authSession";
 import { ImageWithFallback } from "@/app/components/figma/ImageWithFallback";
 import logo from "@/imports/image.png";
 import {
@@ -327,7 +328,14 @@ export default function App() {
   const [showAI, setShowAI] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [registerTab, setRegisterTab] = useState<"employee" | "client" | "project" | "assign">("employee");
-  const [taskNav, setTaskNav] = useState<{ taskId?: string; status?: string; projectId?: string } | null>(null);
+  const [taskNav, setTaskNav] = useState<{
+    taskId?: string;
+    status?: string;
+    projectId?: string;
+    employeeId?: string;
+    employeeName?: string;
+    profileId?: string;
+  } | null>(null);
   const [chatNav, setChatNav] = useState<{ channelId?: string } | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [timesheetNav, setTimesheetNav] = useState<{ projectId?: string; tab?: "office" | "project" } | null>(null);
@@ -463,15 +471,23 @@ export default function App() {
     let cancelled = false;
 
     async function syncAuthUser(user: import("@supabase/supabase-js").User) {
-      const { role, name } = await resolveLoginUser(user, { syncMetadata: false });
-      if (cancelled) return null;
-      saveAppSession(role, name);
-      const sessionData = applyUserSession(role, name);
-      setUserRole(sessionData.role);
-      setUserName(sessionData.name);
-      setUserEmail(user.email || "");
-      setIsLoggedIn(true);
-      return sessionData.role;
+      try {
+        const { role, name } = await resolveLoginUser(user, { syncMetadata: false });
+        if (cancelled) return null;
+        saveAppSession(role, name);
+        const sessionData = applyUserSession(role, name);
+        setUserRole(sessionData.role);
+        setUserName(sessionData.name);
+        setUserEmail(user.email || "");
+        setIsLoggedIn(true);
+        return sessionData.role;
+      } catch (err) {
+        console.error("Failed to sync auth user:", err);
+        if (!cancelled && hasStoredAppSession()) {
+          setIsLoggedIn(true);
+        }
+        return null;
+      }
     }
 
     function restoreNavOnce(role: RoleId) {
@@ -496,30 +512,49 @@ export default function App() {
       }
     }
 
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
+    void restoreSupabaseSession().then(async session => {
       try {
         if (session?.user) {
           const role = await syncAuthUser(session.user);
           if (role) restoreNavOnce(role);
+        } else if (hasStoredAppSession()) {
+          const savedRole = localStorage.getItem("b2b_app_role") as RoleId | null;
+          const savedName = localStorage.getItem("b2b_app_name") || "";
+          if (savedRole && savedName) {
+            const sessionData = applyUserSession(savedRole, savedName);
+            setUserRole(sessionData.role);
+            setUserName(sessionData.name);
+            setIsLoggedIn(true);
+            restoreNavOnce(savedRole);
+          }
         }
       } catch (err) {
-        console.error("Failed to sync auth session:", err);
-        // Session exists but sync failed (likely network issue), let them retry or handle gracefully
+        console.error("Failed to restore auth session:", err);
       } finally {
         if (!cancelled) setAuthLoading(false);
       }
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (session?.user) {
-        await syncAuthUser(session.user);
-        // Token refresh on tab focus must not reset the current page.
-      } else if (event === "SIGNED_OUT") {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "SIGNED_OUT") {
         clearAppSession();
         clearNavState();
         navRestoredRef.current = false;
         setIsLoggedIn(false);
+        return;
       }
+
+      if (!session?.user) return;
+
+      // Defer async Supabase calls — avoids refresh deadlocks / surprise sign-out.
+      window.setTimeout(() => {
+        if (cancelled) return;
+        void syncAuthUser(session.user).then(role => {
+          if (role && (event === "INITIAL_SESSION" || event === "SIGNED_IN")) {
+            restoreNavOnce(role);
+          }
+        });
+      }, 0);
     });
 
     return () => {
@@ -527,6 +562,32 @@ export default function App() {
       subscription.unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (!isLoggedIn) return;
+
+    const recoverSession = () => {
+      if (document.visibilityState !== "visible") return;
+      void refreshSupabaseSessionIfNeeded().then(session => {
+        if (session?.user) {
+          void resolveLoginUser(session.user, { syncMetadata: false }).then(({ role, name }) => {
+            saveAppSession(role, name);
+            setUserRole(role as RoleId);
+            setUserName(name);
+            setUserEmail(session.user.email || "");
+            setIsLoggedIn(true);
+          });
+        }
+      });
+    };
+
+    window.addEventListener("focus", recoverSession);
+    document.addEventListener("visibilitychange", recoverSession);
+    return () => {
+      window.removeEventListener("focus", recoverSession);
+      document.removeEventListener("visibilitychange", recoverSession);
+    };
+  }, [isLoggedIn]);
 
   useEffect(() => {
     if (!isLoggedIn) return;
@@ -589,7 +650,7 @@ export default function App() {
             </div>
           );
         }
-        return <ShiftView userRole={userRole} userName={userName} />;
+        return <ShiftView userRole={userRole} userName={userName} userEmail={userEmail} />;
       case "crm": return <CRMView />;
       case "tasks":
         if (isPersonalTaskRole(userRole)) {
@@ -600,6 +661,7 @@ export default function App() {
                 projectId={hubProjectId}
                 userRole={userRole}
                 userName={userName}
+                userEmail={userEmail}
                 initialTool="tasks"
                 onBack={() => {
                   setTaskNav(null);
@@ -654,6 +716,7 @@ export default function App() {
           <TimesheetView 
             userRole={userRole}
             userName={userName}
+            userEmail={userEmail}
           />
         );
       case "timereports":
@@ -667,6 +730,7 @@ export default function App() {
         );
       case "employee-timesheet": return (
         <EmployeeMonthlyTimesheetView 
+          employeeId={taskNav?.employeeId}
           employeeName={taskNav?.employeeName}
           onBack={() => setActiveView("timesheet")}
         />
@@ -726,6 +790,7 @@ export default function App() {
       case "profiles": return (
         <EmployeeProfilePage
           userName={userName}
+          userEmail={userEmail}
           userRole={userRole}
           initialProfileId={taskNav?.profileId}
           onProfileUpdated={refreshProfiles}
@@ -781,6 +846,7 @@ export default function App() {
           projectId={selectedProjectId}
           userRole={userRole}
           userName={userName}
+          userEmail={userEmail}
           onBack={() => {
             setSelectedProjectId(null);
             setActiveView("projects");

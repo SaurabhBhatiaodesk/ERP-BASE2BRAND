@@ -72,6 +72,10 @@ export function clearAppSession() {
   localStorage.removeItem(NAME_KEY);
 }
 
+export function hasStoredAppSession() {
+  return Boolean(localStorage.getItem(ROLE_KEY) && localStorage.getItem(NAME_KEY));
+}
+
 /** Maps employee_profiles row → app navigation role. */
 export function mapProfileToAppRole(profile: {
   name: string;

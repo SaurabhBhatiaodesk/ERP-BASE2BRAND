@@ -6,8 +6,10 @@ import { useAttendanceReport, useEmployeeProfiles, useProjects, useTimesheetRepo
 import {
   addTimesheetEntry,
   deleteTimesheetEntry,
+  entryBelongsToEmployee,
+  findProfileForUser,
   formatTaskStatusLabel,
-  namesMatch,
+  getEmployeeProjects,
   saveTimesheetEntryEdit,
   type AttendanceEntry,
   type TimesheetEntry,
@@ -151,12 +153,14 @@ type TimeTab = "office" | "project";
 export function TimesheetView({
   userRole = "employee",
   userName = "",
+  userEmail = "",
   initialProjectId,
   initialTab,
   onNavConsumed,
 }: {
   userRole?: string;
   userName?: string;
+  userEmail?: string;
   initialProjectId?: string;
   initialTab?: TimeTab;
   onNavConsumed?: () => void;
@@ -186,6 +190,19 @@ export function TimesheetView({
   const { data: profiles, loading: pLoading, error: pError } = useEmployeeProfiles();
   const { data: projects, loading: prLoading, error: prError, refresh: refreshProjects } = useProjects();
 
+  const myProfile = useMemo(
+    () => findProfileForUser(profiles, userName, userEmail),
+    [profiles, userName, userEmail]
+  );
+
+  const filterProfile = useMemo(() => {
+    if (personFilter === "everyone") return null;
+    return profiles.find(p => p.id === personFilter) ?? null;
+  }, [personFilter, profiles]);
+
+  const personFilterLabel =
+    filterProfile?.name ?? (personFilter === "everyone" ? "Everyone" : personFilter);
+
   const attendanceFilter = useMemo(() => {
     const filter = {
       startDate: formatLocalDate(rangeStart),
@@ -194,29 +211,16 @@ export function TimesheetView({
       startDate: string;
       endDate: string;
       employeeId?: string;
-      employeeName?: string;
     };
 
     if (personFilter !== "everyone") {
-      const picked = profiles.find(p => p.name === personFilter);
-      if (picked) {
-        filter.employeeId = picked.id;
-        filter.employeeName = picked.name;
-      } else {
-        filter.employeeName = personFilter;
-      }
-    } else if (!isAdminRole(userRole) && userName.trim()) {
-      const mine = profiles.find(p => p.name.toLowerCase() === userName.toLowerCase());
-      if (mine) {
-        filter.employeeId = mine.id;
-        filter.employeeName = mine.name;
-      } else {
-        filter.employeeName = userName;
-      }
+      if (filterProfile?.id) filter.employeeId = filterProfile.id;
+    } else if (!isAdminRole(userRole) && myProfile?.id) {
+      filter.employeeId = myProfile.id;
     }
 
     return filter;
-  }, [rangeStart, rangeEnd, personFilter, profiles, userRole, userName]);
+  }, [rangeStart, rangeEnd, personFilter, filterProfile?.id, userRole, myProfile?.id]);
 
   const timesheetFilter = useMemo(() => {
     if (timeTab !== "project") return null;
@@ -230,15 +234,13 @@ export function TimesheetView({
     };
 
     if (personFilter !== "everyone") {
-      const picked = profiles.find(p => p.name === personFilter);
-      if (picked?.id) filter.employeeId = picked.id;
-    } else if (!isAdminRole(userRole) && userName.trim()) {
-      const mine = profiles.find(p => p.name.toLowerCase() === userName.toLowerCase());
-      if (mine?.id) filter.employeeId = mine.id;
+      if (filterProfile?.id) filter.employeeId = filterProfile.id;
+    } else if (!isAdminRole(userRole) && myProfile?.id) {
+      filter.employeeId = myProfile.id;
     }
 
     return filter;
-  }, [timeTab, rangeStart, rangeEnd, personFilter, profiles, userRole, userName]);
+  }, [timeTab, rangeStart, rangeEnd, personFilter, filterProfile?.id, userRole, myProfile?.id]);
 
   const { data: attendance, loading: aLoading, error: aError, refresh: refreshAttendance } =
     useAttendanceReport(attendanceFilter);
@@ -262,9 +264,8 @@ export function TimesheetView({
 
   useEffect(() => {
     if (isAdminRole(userRole)) return;
-    const mine = visibleProfiles.find(p => p.name.toLowerCase() === userName.toLowerCase());
-    if (mine) setPersonFilter(mine.name);
-  }, [visibleProfiles, userName, userRole]);
+    if (myProfile?.id) setPersonFilter(myProfile.id);
+  }, [myProfile?.id, userRole]);
 
   useEffect(() => {
     if (!initialTab && !initialProjectId) return;
@@ -291,33 +292,23 @@ export function TimesheetView({
   }, [timeTab, hasLiveOfficeSession, refreshAttendance]);
 
   const activeEmployee = useMemo(() => {
-    if (personFilter === "everyone") {
-      return visibleProfiles.find(p => p.name.toLowerCase() === userName.toLowerCase()) ?? visibleProfiles[0];
-    }
-    return visibleProfiles.find(p => p.name === personFilter) ?? visibleProfiles[0];
-  }, [personFilter, visibleProfiles, userName]);
+    if (filterProfile) return filterProfile;
+    return myProfile ?? visibleProfiles[0];
+  }, [filterProfile, myProfile, visibleProfiles]);
 
   const employeeProjects = useMemo(() => {
     const emp = activeEmployee;
-    if (!emp) return projects;
-    const mine = projects.filter(
-      p =>
-        p.team.some(m => m.toLowerCase() === emp.name.toLowerCase()) ||
-        p.lead.toLowerCase() === emp.name.toLowerCase()
-    );
-    return mine;
+    if (!emp?.id) return projects;
+    return getEmployeeProjects(projects, emp.name, emp.id);
   }, [projects, activeEmployee]);
 
   const filteredEntries = useMemo(() => {
     let list = [...entries];
 
     if (personFilter !== "everyone") {
-      list = list.filter(
-        e => e.employee.toLowerCase() === personFilter.toLowerCase()
-      );
-    } else if (!isAdminRole(userRole)) {
-      const names = new Set(visibleProfiles.map(p => p.name.toLowerCase()));
-      list = list.filter(e => names.has(e.employee.toLowerCase()));
+      list = list.filter(e => entryBelongsToEmployee(e, personFilter));
+    } else if (!isAdminRole(userRole) && myProfile?.id) {
+      list = list.filter(e => entryBelongsToEmployee(e, myProfile.id));
     }
 
     if (projectFilter !== "all") {
@@ -350,9 +341,9 @@ export function TimesheetView({
     let list = [...attendance];
 
     if (personFilter !== "everyone") {
-      list = list.filter(a => namesMatch(a.employee, personFilter));
-    } else if (!isAdminRole(userRole)) {
-      list = list.filter(a => namesMatch(a.employee, userName));
+      list = list.filter(a => entryBelongsToEmployee(a, personFilter));
+    } else if (!isAdminRole(userRole) && myProfile?.id) {
+      list = list.filter(a => entryBelongsToEmployee(a, myProfile.id));
     }
 
     list = list.filter(a => isDateInRange(a.date, rangeStart, rangeEnd));
@@ -465,9 +456,8 @@ export function TimesheetView({
     setTextFilter("");
     if (isAdminRole(userRole)) {
       setPersonFilter("everyone");
-    } else {
-      const mine = visibleProfiles.find(p => p.name.toLowerCase() === userName.toLowerCase());
-      setPersonFilter(mine?.name || visibleProfiles[0]?.name || "");
+    } else if (myProfile?.id) {
+      setPersonFilter(myProfile.id);
     }
   }
 
@@ -479,7 +469,7 @@ export function TimesheetView({
 
   function canEditEntry(entry: TimesheetEntry) {
     if (isAdminRole(userRole)) return true;
-    return namesMatch(entry.employee, userName);
+    return myProfile?.id ? entry.employeeId === myProfile.id : false;
   }
 
   function openEditEntry(entry: TimesheetEntry) {
@@ -682,7 +672,7 @@ export function TimesheetView({
         >
           {isAdminRole(userRole) && <option value="everyone">Everyone</option>}
           {visibleProfiles.map(p => (
-            <option key={p.id} value={p.name}>
+            <option key={p.id} value={p.id}>
               {p.name}
             </option>
           ))}
@@ -981,7 +971,7 @@ export function TimesheetView({
               No office attendance for this period.
             </p>
             <p className="text-xs text-[#6b7fa8] font-['Geist_Mono']">
-              {personFilter !== "everyone" ? personFilter : "Everyone"} · {formatRangeLabel(rangeStart, rangeEnd)}
+              {personFilterLabel} · {formatRangeLabel(rangeStart, rangeEnd)}
             </p>
             <p className="text-xs text-indigo-400/80 font-['Plus_Jakarta_Sans'] mt-3">
               Use Dashboard → Clock In / Out to record office time.
@@ -995,7 +985,7 @@ export function TimesheetView({
               No project time logged for this period.
             </p>
             <p className="text-xs text-[#6b7fa8] font-['Geist_Mono'] mb-3">
-              {personFilter !== "everyone" ? personFilter : "Everyone"}
+              {personFilterLabel}
               {" · "}
               {projectFilter === "all"
                 ? "All projects"

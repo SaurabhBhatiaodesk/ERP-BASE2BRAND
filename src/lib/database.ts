@@ -1,4 +1,4 @@
-import type { RealtimeChannel } from "@supabase/supabase-js";
+import type { PostgrestSingleResponse, RealtimeChannel } from "@supabase/supabase-js";
 import { CACHE_KEYS, getCached, invalidateDataCache, invalidateDataCachePrefix } from "./dataCache";
 import { normalizeCloudinaryDeliveryUrl } from "./cloudinary";
 import { supabase } from "./supabase";
@@ -213,6 +213,7 @@ export type DbLeaveRequest = {
 // ─── App types (camelCase for UI) ────────────────────────────────────────────
 
 export type Employee = {
+  id: string;
   name: string;
   role: string;
   dept: string;
@@ -409,7 +410,11 @@ async function probeProjectRelations(): Promise<boolean> {
 const SUPABASE_PAGE_SIZE = 1000;
 const SUPABASE_IN_CHUNK_SIZE = 80;
 
-type SupabasePageResult<T> = { data: T[] | null; error: unknown };
+type SupabasePageResult<T> = PostgrestSingleResponse<T[]>;
+type SupabasePageFetcher<T> = (
+  from: number,
+  pageSize: number
+) => PromiseLike<SupabasePageResult<T>>;
 
 function chunkForInFilter<T>(items: T[], size = SUPABASE_IN_CHUNK_SIZE): T[][] {
   const chunks: T[][] = [];
@@ -420,7 +425,7 @@ function chunkForInFilter<T>(items: T[], size = SUPABASE_IN_CHUNK_SIZE): T[][] {
 }
 
 async function fetchAllPaginated<T>(
-  fetchPage: (from: number, pageSize: number) => Promise<SupabasePageResult<T>>
+  fetchPage: SupabasePageFetcher<T>
 ): Promise<T[]> {
   const all: T[] = [];
   let from = 0;
@@ -437,7 +442,7 @@ async function fetchAllPaginated<T>(
 
 async function fetchAllPaginatedInChunks<T>(
   ids: string[],
-  fetchChunkPage: (chunk: string[], from: number, pageSize: number) => Promise<SupabasePageResult<T>>
+  fetchChunkPage: (chunk: string[], from: number, pageSize: number) => PromiseLike<SupabasePageResult<T>>
 ): Promise<T[]> {
   const uniqueIds = [...new Set(ids.filter(Boolean))];
   if (!uniqueIds.length) return [];
@@ -916,6 +921,7 @@ export function initialsFromName(name: string) {
 /** HR list/card view — sourced from employee_profiles only. */
 export function profileToEmployee(row: DbEmployeeProfile): Employee {
   return {
+    id: row.id,
     name: row.name,
     role: row.role,
     dept: row.dept,
@@ -1570,15 +1576,15 @@ async function fetchProjectsRelational(rows: DbProject[], profiles: EmployeeProf
   if (projectIds.length === 0) return [];
 
   const [members, taskRows] = await Promise.all([
-    fetchAllPaginatedInChunks<DbProjectMemberRow>(projectIds, (chunk, from, pageSize) =>
-      supabase
+    fetchAllPaginatedInChunks<Pick<DbProjectMemberRow, "project_id" | "employee_id" | "role">>(projectIds, async (chunk, from, pageSize) =>
+      await supabase
         .from("project_members")
         .select("project_id, employee_id, role")
         .in("project_id", chunk)
         .range(from, from + pageSize - 1)
     ),
-    fetchAllPaginatedInChunks<DbProjectTaskRow>(projectIds, (chunk, from, pageSize) =>
-      supabase
+    fetchAllPaginatedInChunks<Pick<DbProjectTaskRow, "project_id" | "title" | "status" | "assignee_id" | "due">>(projectIds, async (chunk, from, pageSize) =>
+      await supabase
         .from("project_tasks")
         .select("project_id, title, status, assignee_id, due")
         .in("project_id", chunk)
@@ -1586,13 +1592,13 @@ async function fetchProjectsRelational(rows: DbProject[], profiles: EmployeeProf
     ),
   ]);
 
-  const membersByProject = new Map<string, DbProjectMemberRow[]>();
+  const membersByProject = new Map<string, Pick<DbProjectMemberRow, "project_id" | "employee_id" | "role">[]>();
   for (const m of members) {
     if (!membersByProject.has(m.project_id)) membersByProject.set(m.project_id, []);
     membersByProject.get(m.project_id)!.push(m);
   }
 
-  const tasksByProject = new Map<string, DbProjectTaskRow[]>();
+  const tasksByProject = new Map<string, Pick<DbProjectTaskRow, "project_id" | "title" | "status" | "assignee_id" | "due">[]>();
   for (const t of taskRows) {
     if (!tasksByProject.has(t.project_id)) tasksByProject.set(t.project_id, []);
     tasksByProject.get(t.project_id)!.push(t);
@@ -2181,8 +2187,8 @@ export async function assignProjectTeam(
   if (!allProjects.length) return;
 
   if (await probeProjectRelations()) {
-    const allMembers = await fetchAllPaginated<DbProjectMemberRow>((from, pageSize) =>
-      supabase
+    const allMembers = await fetchAllPaginated<Pick<DbProjectMemberRow, "project_id" | "employee_id">>(async (from, pageSize) =>
+      await supabase
         .from("project_members")
         .select("project_id, employee_id")
         .range(from, from + pageSize - 1)
@@ -2462,7 +2468,7 @@ export async function updateProjectTask(input: {
 
 export type ClockSessionStatus = "active" | "paused" | "completed";
 
-export type ClockSessionSegmentKind = "working" | "break" | "meeting" | "idle";
+export type ClockSessionSegmentKind = "working" | "break" | "meeting" | "idle" | "lunch_break" | "work";
 
 export type ClockSessionSegment = {
   id: string;
@@ -2534,7 +2540,7 @@ function mapClockSegment(row: {
   id: string;
   session_id: string;
   kind: string;
-  label: string;
+  label: string | null;
   started_at: string;
   ended_at: string | null;
 }): ClockSessionSegment {
@@ -2542,7 +2548,7 @@ function mapClockSegment(row: {
     id: row.id,
     sessionId: row.session_id,
     kind: row.kind as ClockSessionSegmentKind,
-    label: row.label,
+    label: row.label || "",
     startedAt: row.started_at,
     endedAt: row.ended_at,
   };
@@ -2598,7 +2604,14 @@ async function fetchSegmentsForSessions(
   if (!sessionIds.length || !(await probeClockSegments())) return map;
 
   try {
-    const rows = await fetchAllPaginatedInChunks<Record<string, unknown>>(
+    const rows = await fetchAllPaginatedInChunks<{
+      id: string;
+      session_id: string;
+      kind: string;
+      label: string | null;
+      started_at: string;
+      ended_at: string | null;
+    }>(
       sessionIds,
       (chunk, from, pageSize) =>
         supabase
@@ -2700,7 +2713,7 @@ function mapClockSession(row: {
 type ClockSessionDbRow = Parameters<typeof mapClockSession>[0];
 
 async function fetchPaginatedClockSessions(
-  fetchPage: (from: number, pageSize: number) => Promise<SupabasePageResult<ClockSessionDbRow>>
+  fetchPage: SupabasePageFetcher<ClockSessionDbRow>
 ): Promise<ClockSessionRecord[]> {
   const rows = await fetchAllPaginated(fetchPage);
   clockSessionsTableReady = true;
@@ -2845,14 +2858,15 @@ async function enforceAutoLunchBreak(session: ClockSessionRecord): Promise<Clock
   const now = new Date();
   const twoPM = new Date(); twoPM.setHours(14, 0, 0, 0);
   const twoFortyPM = new Date(); twoFortyPM.setHours(14, 40, 0, 0);
+  const segments = session.segments ?? [];
 
   if (now.getTime() < twoPM.getTime()) return session;
   if (new Date(session.clockIn).getTime() >= twoPM.getTime()) return session;
 
-  const hasLunch = session.segments.some(s => s.kind === "lunch_break" || s.label?.toLowerCase().includes("lunch"));
+  const hasLunch = segments.some(s => s.kind === "lunch_break" || s.label?.toLowerCase().includes("lunch"));
   
   if (hasLunch) {
-    const lunchSeg = session.segments.find(s => s.kind === "lunch_break" && !s.endedAt && new Date(s.startedAt).getTime() === twoPM.getTime());
+    const lunchSeg = segments.find(s => s.kind === "lunch_break" && !s.endedAt && new Date(s.startedAt).getTime() === twoPM.getTime());
     if (lunchSeg && now.getTime() >= twoFortyPM.getTime()) {
       await supabase.from("clock_session_segments").update({ ended_at: twoFortyPM.toISOString() }).eq("id", lunchSeg.id);
       lunchSeg.endedAt = twoFortyPM.toISOString();
@@ -2863,12 +2877,12 @@ async function enforceAutoLunchBreak(session: ClockSessionRecord): Promise<Clock
         started_at: twoFortyPM.toISOString(),
         ended_at: null
       }).select().single();
-      if (newWork) session.segments.push(mapClockSegment(newWork));
+      if (newWork) segments.push(mapClockSegment(newWork));
     }
-    return session;
+    return { ...session, segments };
   }
 
-  const activeNow = session.segments.find(s => !s.endedAt);
+  const activeNow = segments.find(s => !s.endedAt);
   if (!activeNow || new Date(activeNow.startedAt).getTime() > twoPM.getTime()) {
     return session;
   }
@@ -2886,7 +2900,7 @@ async function enforceAutoLunchBreak(session: ClockSessionRecord): Promise<Clock
     ended_at: lunchEndedAt
   }).select().single();
   
-  if (newLunch) session.segments.push(mapClockSegment(newLunch));
+  if (newLunch) segments.push(mapClockSegment(newLunch));
 
   if (isPastLunch) {
     const { data: newWork } = await supabase.from("clock_session_segments").insert({
@@ -2896,11 +2910,11 @@ async function enforceAutoLunchBreak(session: ClockSessionRecord): Promise<Clock
       started_at: twoFortyPM.toISOString(),
       ended_at: null
     }).select().single();
-    if (newWork) session.segments.push(mapClockSegment(newWork));
+    if (newWork) segments.push(mapClockSegment(newWork));
   }
 
-  session.segments.sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime());
-  return session;
+  segments.sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime());
+  return { ...session, segments };
 }
 
 export async function pauseEmployeeTaskTimers(employeeName: string, employeeId?: string) {
@@ -2957,7 +2971,7 @@ export async function resumeEmployeeTaskTimers(employeeName: string, employeeId?
     const enteredAt = await openInitialTaskStatusSegment({
       taskId: task.id,
       projectId: task.project_id,
-      status: task.status,
+      status: task.status ?? "todo",
     });
     await supabase.from("project_tasks").update({ status_entered_at: enteredAt }).eq("id", task.id);
   }
@@ -3458,7 +3472,7 @@ function timesheetReportCacheKey(filter: TimesheetReportFilter) {
 
 /** List view — skips segment fetch (faster). Live hours still computed from session fields. */
 async function fetchClockSessionsForReport(
-  fetchPage: (from: number, pageSize: number) => Promise<SupabasePageResult<ClockSessionDbRow>>
+  fetchPage: SupabasePageFetcher<ClockSessionDbRow>
 ): Promise<ClockSessionRecord[]> {
   const rows = await fetchAllPaginated(fetchPage);
   clockSessionsTableReady = true;
@@ -3886,7 +3900,7 @@ export function isPersonalTaskRole(role: string) {
   return true;
 }
 
-/** Resolve logged-in user row — email first, then unique name match. */
+/** Resolve logged-in user row — email first, then unique exact full name only. */
 export function findProfileForUser(
   profiles: EmployeeProfile[],
   userName: string,
@@ -3902,12 +3916,24 @@ export function findProfileForUser(
   if (normalized) {
     const exact = profiles.filter(p => p.name.trim().toLowerCase() === normalized);
     if (exact.length === 1) return exact[0];
-
-    const loose = profiles.filter(p => namesMatch(p.name, userName));
-    if (loose.length === 1) return loose[0];
   }
 
   return undefined;
+}
+
+/** Scope rows to one employee — ID first; never loose first-name match. */
+export function entryBelongsToEmployee(
+  row: { employeeId?: string | null; employee?: string },
+  employeeId?: string,
+  employeeName?: string
+) {
+  if (employeeId?.trim()) {
+    return row.employeeId === employeeId.trim();
+  }
+  if (employeeName?.trim() && row.employee) {
+    return row.employee.trim().toLowerCase() === employeeName.trim().toLowerCase();
+  }
+  return !employeeId?.trim() && !employeeName?.trim();
 }
 
 /** Match full name, first name, or partial name (e.g. "Deepak" ↔ "Deepak Kumar"). */
@@ -3968,11 +3994,7 @@ export function buildWeeklyHoursFromTimesheets(
   employeeName?: string
 ): { day: string; h: number }[] {
   const days = ["Mon", "Tue", "Wed", "Thu", "Fri"];
-  const scoped = entries.filter(e => {
-    if (employeeId && e.employeeId === employeeId) return true;
-    if (employeeName && namesMatch(e.employee, employeeName)) return true;
-    return false;
-  });
+  const scoped = entries.filter(e => entryBelongsToEmployee(e, employeeId, employeeName));
 
   const now = new Date();
   const monday = new Date(now);
@@ -3998,11 +4020,7 @@ export function buildWeeklyHoursFromAttendance(
   employeeName?: string
 ): { day: string; h: number }[] {
   const days = ["Mon", "Tue", "Wed", "Thu", "Fri"];
-  const scoped = entries.filter(e => {
-    if (employeeId && e.employeeId === employeeId) return true;
-    if (employeeName && namesMatch(e.employee, employeeName)) return true;
-    return false;
-  });
+  const scoped = entries.filter(e => entryBelongsToEmployee(e, employeeId, employeeName));
 
   const now = new Date();
   const monday = new Date(now);

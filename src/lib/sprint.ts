@@ -35,9 +35,9 @@ function getCurrentBiweeklyRange(date = new Date()) {
   return { start, end };
 }
 
-function scopeTasks(tasks: AppTask[], userName?: string) {
-  if (!userName) return tasks;
-  return tasks.filter(t => isTaskAssignedToUser(t.assignee, userName));
+function scopeTasks(tasks: AppTask[], userName?: string, userId?: string) {
+  if (!userName && !userId) return tasks;
+  return tasks.filter(t => isTaskAssignedToUser(t.assignee, userName || "", t.assigneeId, userId));
 }
 
 export type SprintSummary = {
@@ -49,11 +49,11 @@ export type SprintSummary = {
 
 export function getSprintSummary(
   tasks: AppTask[],
-  options?: { userName?: string; projects?: Project[] }
+  options?: { userName?: string; userId?: string; projects?: Project[] }
 ): SprintSummary {
   const now = new Date();
   const sprintNumber = getBiweeklySprintNumber(now);
-  const scope = scopeTasks(tasks, options?.userName);
+  const scope = scopeTasks(tasks, options?.userName, options?.userId);
   const projects = options?.projects ?? [];
 
   const projectIds = [...new Set(scope.map(t => t.projectId).filter(Boolean))];
@@ -87,9 +87,11 @@ export function getSprintSummary(
 
   const firstName = options?.userName?.split(" ")[0];
   const isPersonal =
-    Boolean(options?.userName) &&
+    Boolean(options?.userName || options?.userId) &&
     options!.userName !== "CEO Admin" &&
-    scope.some(t => isTaskAssignedToUser(t.assignee, options!.userName!));
+    scope.some(t =>
+      isTaskAssignedToUser(t.assignee, options!.userName || "", t.assigneeId, options!.userId)
+    );
 
   const prefix = isPersonal && firstName ? `${firstName}'s ` : "";
   const projectPrefix = singleProject ? `${singleProject.name} · ` : "";
