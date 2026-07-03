@@ -1,9 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus, Users, Calendar, Award, MoreHorizontal,
   Hash, Phone, Search, Send, Megaphone, X,
   MessageCircle, UserPlus, Paperclip, FileText, Loader2,
-  CheckCheck, AlertCircle, Download, ExternalLink, Smile, Settings2, Edit, ImagePlay,
+  CheckCheck, AlertCircle, Download, ExternalLink, Smile, Settings2, Edit, ImagePlay, Image as ImageIcon,
   ChevronLeft, ChevronRight, Eye
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
@@ -23,6 +23,7 @@ import {
   isMissingChatTables,
   markChatChannelRead,
   sendChatMessage,
+  toggleChatMessageReaction,
   createGroupChannel,
   findOrCreateDmChannel,
   initialsFromName,
@@ -958,6 +959,47 @@ function buildOptimisticMessage(
   };
 }
 
+const QUICK_CHAT_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏", "🔥"];
+
+function MessageReactionsRow({
+  message,
+  currentUserId,
+  onToggleReaction,
+  align,
+}: {
+  message: ChatMessage;
+  currentUserId?: string;
+  onToggleReaction?: (messageId: string, emoji: string) => void;
+  align: "left" | "right";
+}) {
+  const reactions = message.reactions || [];
+  if (!reactions.length) return null;
+
+  return (
+    <div className={`flex flex-wrap gap-1 mt-1 ${align === "right" ? "justify-end mr-1" : "justify-start ml-1"}`}>
+      {reactions.map(reaction => {
+        const mine = Boolean(currentUserId && reaction.userIds.includes(currentUserId));
+        return (
+          <button
+            key={reaction.emoji}
+            type="button"
+            onClick={() => onToggleReaction?.(message.id, reaction.emoji)}
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] border transition-colors ${
+              mine
+                ? "bg-indigo-500/20 border-indigo-400/40 text-indigo-100"
+                : "bg-[#131a35]/90 border-white/10 text-[#e2e8f7] hover:border-indigo-400/30"
+            }`}
+            title={mine ? "Remove your reaction" : "Add this reaction"}
+          >
+            <span>{reaction.emoji}</span>
+            <span className="font-['Geist_Mono'] text-[10px] opacity-90">{reaction.count}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function MessageStatusTicks({ status }: { status: MessageDeliveryStatus }) {
   if (status === "sending") {
     return <Loader2 size={12} className="animate-spin text-white/60 shrink-0" aria-label="Sending" />;
@@ -986,18 +1028,47 @@ function MessageBubble({
   showSenderName,
   photoUrl,
   deliveryStatus,
+  currentUserId,
+  onToggleReaction,
 }: {
   message: ChatMessage;
   isOwn: boolean;
   showSenderName: boolean;
   photoUrl?: string;
   deliveryStatus?: MessageDeliveryStatus;
+  currentUserId?: string;
+  onToggleReaction?: (messageId: string, emoji: string) => void;
 }) {
+  const [showReactionPicker, setShowReactionPicker] = useState(false);
+  const canReact = Boolean(onToggleReaction && currentUserId && !message.id.startsWith("pending-"));
+
   const bubbleBase = isOwn
     ? "bg-[#7c3aed] text-white rounded-[24px] rounded-br-sm shadow-[0_8px_20px_rgba(124,58,237,0.25)]"
     : "bg-white/[0.04] text-[#e2e8f7] border border-white/[0.08] rounded-[24px] rounded-bl-sm shadow-[0_8px_20px_rgba(0,0,0,0.15)] backdrop-blur-md";
 
   const timeClass = isOwn ? "text-white/75" : "text-[#6b7fa8]";
+
+  const reactionPicker = showReactionPicker && canReact ? (
+    <div
+      className={`absolute z-20 flex items-center gap-0.5 px-2 py-1.5 rounded-full bg-[#131a35] border border-indigo-500/30 shadow-xl ${
+        isOwn ? "right-0 -top-11" : "left-0 -top-11"
+      }`}
+    >
+      {QUICK_CHAT_REACTIONS.map(emoji => (
+        <button
+          key={emoji}
+          type="button"
+          onClick={() => {
+            onToggleReaction?.(message.id, emoji);
+            setShowReactionPicker(false);
+          }}
+          className="p-1 rounded-full hover:bg-white/10 text-base leading-none transition-colors"
+        >
+          {emoji}
+        </button>
+      ))}
+    </div>
+  ) : null;
 
   const content = (
     <>
@@ -1045,7 +1116,28 @@ function MessageBubble({
   if (isOwn) {
     return (
       <div className="flex justify-end items-end gap-2.5 pl-12 mb-4">
-        <div className={`max-w-[78%] px-4 py-3 relative ${bubbleBase}`}>{content}</div>
+        <div className="min-w-0 max-w-[78%] flex flex-col items-end">
+          <div className="relative group/bubble">
+            {reactionPicker}
+            <div className={`max-w-full px-4 py-3 relative ${bubbleBase}`}>{content}</div>
+            {canReact && (
+              <button
+                type="button"
+                onClick={() => setShowReactionPicker(v => !v)}
+                className="absolute -bottom-2 -left-2 opacity-0 group-hover/bubble:opacity-100 p-1.5 rounded-full bg-[#131a35] border border-white/10 text-[#a8b5d1] hover:text-white hover:border-indigo-400/40 transition-all shadow-lg"
+                title="React"
+              >
+                <Smile size={13} />
+              </button>
+            )}
+          </div>
+          <MessageReactionsRow
+            message={message}
+            currentUserId={currentUserId}
+            onToggleReaction={onToggleReaction}
+            align="right"
+          />
+        </div>
         <Avatar
           initials={initialsFromName(message.senderName)}
           src={photoUrl || undefined}
@@ -1068,7 +1160,26 @@ function MessageBubble({
             {message.senderName}
           </p>
         )}
-        <div className={`px-4 py-3 relative ${bubbleBase}`}>{content}</div>
+        <div className="relative group/bubble">
+          {reactionPicker}
+          <div className={`px-4 py-3 relative ${bubbleBase}`}>{content}</div>
+          {canReact && (
+            <button
+              type="button"
+              onClick={() => setShowReactionPicker(v => !v)}
+              className="absolute -bottom-2 -right-2 opacity-0 group-hover/bubble:opacity-100 p-1.5 rounded-full bg-[#131a35] border border-white/10 text-[#a8b5d1] hover:text-white hover:border-indigo-400/40 transition-all shadow-lg"
+              title="React"
+            >
+              <Smile size={13} />
+            </button>
+          )}
+        </div>
+        <MessageReactionsRow
+          message={message}
+          currentUserId={currentUserId}
+          onToggleReaction={onToggleReaction}
+          align="left"
+        />
       </div>
     </div>
   );
@@ -1107,6 +1218,7 @@ export function ChatView({
   const [msg, setMsg] = useState("");
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [sendError, setSendError] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -1124,14 +1236,59 @@ export function ChatView({
   const [gifResults, setGifResults] = useState<any[]>([]);
   const [gifLoading, setGifLoading] = useState(false);
   const [latestMsgs, setLatestMsgs] = useState<Record<string, { content: string, isOwn: boolean, time: string }>>({});
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
+  const userPickedChannelRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dragCounterRef = useRef(0);
   const sendingRef = useRef(false);
   const currentMsgRef = useRef(msg);
+  const pendingPreviewUrlRef = useRef<string | null>(null);
+
+  type PendingChatAttachment = { file: File; previewUrl: string | null };
+  const [pendingAttachment, setPendingAttachment] = useState<PendingChatAttachment | null>(null);
+
+  const clearPendingAttachment = useCallback(() => {
+    if (pendingPreviewUrlRef.current) {
+      URL.revokeObjectURL(pendingPreviewUrlRef.current);
+      pendingPreviewUrlRef.current = null;
+    }
+    setPendingAttachment(null);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (pendingPreviewUrlRef.current) {
+        URL.revokeObjectURL(pendingPreviewUrlRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    clearPendingAttachment();
+  }, [activeChannelId, clearPendingAttachment]);
 
   useEffect(() => {
     currentMsgRef.current = msg;
   }, [msg]);
+
+  function stageChatFile(file: File) {
+    if (!activeChannel || !currentUser || tablesMissing) return;
+
+    const isImage = file.type.startsWith("image/");
+    if (isImage && !cloudinaryReady) {
+      setSendError("Cloudinary not configured. Add VITE_CLOUDINARY_CLOUD_NAME and VITE_CLOUDINARY_UPLOAD_PRESET to .env");
+      return;
+    }
+
+    if (pendingPreviewUrlRef.current) {
+      URL.revokeObjectURL(pendingPreviewUrlRef.current);
+      pendingPreviewUrlRef.current = null;
+    }
+    const previewUrl = isImage ? URL.createObjectURL(file) : null;
+    pendingPreviewUrlRef.current = previewUrl;
+    setPendingAttachment({ file, previewUrl });
+    setSendError("");
+  }
 
   useEffect(() => {
     if (!showGifPicker) return;
@@ -1163,12 +1320,6 @@ export function ChatView({
     }
 
     return [...list].sort((a, b) => {
-      const aUnread = unreadCounts[a.id] ?? 0;
-      const bUnread = unreadCounts[b.id] ?? 0;
-      if (aUnread > 0 && bUnread === 0) return -1;
-      if (bUnread > 0 && aUnread === 0) return 1;
-      if (aUnread !== bUnread) return bUnread - aUnread;
-
       const aTime = latestMsgs[a.id]?.time || a.createdAt || "";
       const bTime = latestMsgs[b.id]?.time || b.createdAt || "";
       const aMs = aTime ? new Date(aTime).getTime() : 0;
@@ -1177,11 +1328,35 @@ export function ChatView({
 
       return a.displayName.localeCompare(b.displayName);
     });
-  }, [chatChannels, activeTab, channelSearchQuery, latestMsgs, unreadCounts]);
+  }, [chatChannels, activeTab, channelSearchQuery, latestMsgs]);
 
   const activeChannel = useMemo(
-    () => tabChannels.find(c => c.id === activeChannelId) ?? tabChannels[0] ?? null,
-    [tabChannels, activeChannelId]
+    () => chatChannels.find(c => c.id === activeChannelId) ?? null,
+    [chatChannels, activeChannelId]
+  );
+
+  const tabChannelIdsKey = useMemo(
+    () => [...tabChannels.map(c => c.id)].sort().join("|"),
+    [tabChannels]
+  );
+
+  useEffect(() => {
+    if (userPickedChannelRef.current || activeChannelId || tabChannels.length === 0) return;
+    setActiveChannelId(tabChannels[0].id);
+  }, [tabChannels, activeChannelId]);
+
+  const handleTabChange = useCallback(
+    (tab: ChatTab) => {
+      setActiveTab(tab);
+      const current = chatChannels.find(c => c.id === activeChannelId);
+      if (current?.channelType === tab) return;
+      const firstInTab = chatChannels.find(c => c.channelType === tab);
+      if (firstInTab) {
+        userPickedChannelRef.current = true;
+        setActiveChannelId(firstInTab.id);
+      }
+    },
+    [chatChannels, activeChannelId]
   );
 
   useEffect(() => {
@@ -1191,6 +1366,7 @@ export function ChatView({
         if (ch.channelType === "dm" || ch.channelType === "group") {
           setActiveTab(ch.channelType);
         }
+        userPickedChannelRef.current = true;
         setActiveChannelId(ch.id);
         if (onNavConsumed) onNavConsumed();
       }
@@ -1201,6 +1377,7 @@ export function ChatView({
     data: messages,
     loading: messagesLoading,
     error: messagesError,
+    refresh: refreshMessages,
     appendMessage,
     replaceMessage,
     patchMessage,
@@ -1240,9 +1417,25 @@ export function ChatView({
       .catch(() => {});
   }, [activeChannel?.id, currentUser?.id, messages.length, refreshUnread, refreshReadStates]);
 
+  const scrollMessagesToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
+  }, []);
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
-  }, [messages.length, activeChannel?.id]);
+    if (messagesLoading) return;
+    requestAnimationFrame(() => scrollMessagesToBottom("auto"));
+  }, [activeChannel?.id, messagesLoading, scrollMessagesToBottom]);
+
+  useEffect(() => {
+    if (messagesLoading) return;
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom > 160) return;
+    requestAnimationFrame(() => scrollMessagesToBottom("auto"));
+  }, [messages.length, messagesLoading, scrollMessagesToBottom]);
 
   const filteredMessages = useMemo(() => {
     // 1. Filter by search query
@@ -1276,8 +1469,13 @@ export function ChatView({
       
       uniqueMap.set(m.id, m);
     }
-    
-    return Array.from(uniqueMap.values());
+
+    return Array.from(uniqueMap.values()).sort((a, b) => {
+      const ta = new Date(a.createdAt).getTime();
+      const tb = new Date(b.createdAt).getTime();
+      if (ta !== tb) return ta - tb;
+      return a.id.localeCompare(b.id);
+    });
   }, [messages, searchQuery]);
 
   const totalUnread = useMemo(
@@ -1300,13 +1498,104 @@ export function ChatView({
     }));
   }
 
+  const handleToggleReaction = useCallback(
+    async (messageId: string, emoji: string) => {
+      if (!currentUser?.id || messageId.startsWith("pending-")) return;
+
+      patchMessage(messageId, {
+        reactions: (() => {
+          const message = messages.find(m => m.id === messageId);
+          const current = message?.reactions || [];
+          const existing = current.find(r => r.emoji === emoji);
+          if (existing?.userIds.includes(currentUser.id)) {
+            const nextUsers = existing.userIds.filter(id => id !== currentUser.id);
+            if (nextUsers.length === 0) {
+              return current.filter(r => r.emoji !== emoji);
+            }
+            return current.map(r =>
+              r.emoji === emoji ? { ...r, userIds: nextUsers, count: nextUsers.length } : r
+            );
+          }
+          if (existing) {
+            const nextUsers = [...existing.userIds, currentUser.id];
+            return current.map(r =>
+              r.emoji === emoji ? { ...r, userIds: nextUsers, count: nextUsers.length } : r
+            );
+          }
+          return [...current, { emoji, userIds: [currentUser.id], count: 1 }];
+        })(),
+      });
+
+      try {
+        const reactions = await toggleChatMessageReaction({
+          messageId,
+          userId: currentUser.id,
+          emoji,
+        });
+        patchMessage(messageId, { reactions });
+      } catch (err) {
+        refreshMessages();
+        setSendError(err instanceof Error ? err.message : "Failed to react");
+      }
+    },
+    [currentUser?.id, messages, patchMessage, refreshMessages]
+  );
+
   async function handleSend() {
+    const attachment = pendingAttachment;
     const text = currentMsgRef.current.trim();
-    if (sendingRef.current || !activeChannel || !currentUser || !text) return;
+    if (sendingRef.current || uploading || !activeChannel || !currentUser) return;
+    if (!attachment && !text) return;
+
+    if (attachment) {
+      sendingRef.current = true;
+      setUploading(true);
+      setSendError("");
+      const { file } = attachment;
+      const isImage = file.type.startsWith("image/");
+      const caption = text || file.name;
+      const optimistic = buildOptimisticMessage(activeChannel.id, currentUser, {
+        content: caption,
+        messageType: isImage ? "image" : "file",
+        mediaUrl: attachment.previewUrl || "",
+        mediaType: file.type,
+        fileName: file.name,
+        fileSize: file.size,
+      });
+      appendMessage(optimistic);
+      bumpChannelPreview(activeChannel.id, isImage ? "🖼️ Photo" : caption, true, optimistic.createdAt);
+      currentMsgRef.current = "";
+      setMsg("");
+      try {
+        const uploaded = await uploadChatAttachment(file);
+        const sent = await sendChatMessage({
+          channelId: activeChannel.id,
+          senderId: currentUser.id,
+          senderName: currentUser.name,
+          content: caption,
+          messageType: isImage ? "image" : "file",
+          mediaUrl: uploaded.url,
+          mediaType: file.type,
+          fileName: file.name,
+          fileSize: uploaded.bytes || file.size,
+        });
+        replaceMessage(optimistic.id, sent);
+        clearPendingAttachment();
+        refreshUnread({ silent: true });
+      } catch (err) {
+        patchMessage(optimistic.id, { clientStatus: "failed" });
+        setSendError(err instanceof Error ? err.message : "Failed to upload file");
+      } finally {
+        sendingRef.current = false;
+        setUploading(false);
+      }
+      return;
+    }
+
     sendingRef.current = true;
-    currentMsgRef.current = ""; // synchronously clear so rapid consecutive calls see empty text
+    currentMsgRef.current = "";
     setMsg("");
-    
+
     const outgoing = resolveOutgoingMessage(text);
     const optimistic = buildOptimisticMessage(activeChannel.id, currentUser, {
       content: outgoing.content,
@@ -1345,52 +1634,69 @@ export function ChatView({
     }
   }
 
+  function imageFromClipboard(data: DataTransfer | null): File | null {
+    if (!data) return null;
+    for (const item of Array.from(data.items)) {
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) {
+          if (file.name) return file;
+          const ext = file.type.split("/")[1] || "png";
+          return new File([file], `pasted-${Date.now()}.${ext}`, { type: file.type });
+        }
+      }
+    }
+    return null;
+  }
+
+  function fileFromDrop(data: DataTransfer | null): File | null {
+    if (!data?.files?.length) return null;
+    const files = Array.from(data.files);
+    return files.find(f => f.type.startsWith("image/")) || files[0] || null;
+  }
+
+  function handlePaste(e: React.ClipboardEvent) {
+    if (!activeChannel || !currentUser || tablesMissing || uploading) return;
+    const image = imageFromClipboard(e.clipboardData);
+    if (!image) return;
+    e.preventDefault();
+    stageChatFile(image);
+  }
+
+  function handleDragEnter(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!activeChannel || tablesMissing || !Array.from(e.dataTransfer.types).includes("Files")) return;
+    dragCounterRef.current += 1;
+    setIsDraggingFile(true);
+  }
+
+  function handleDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  function handleDragLeave(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) setIsDraggingFile(false);
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDraggingFile(false);
+    if (!activeChannel || !currentUser || tablesMissing || uploading) return;
+    const file = fileFromDrop(e.dataTransfer);
+    if (file) stageChatFile(file);
+  }
+
   async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
-    if (!file || !activeChannel || !currentUser) return;
-
-    const isImage = file.type.startsWith("image/");
-    if (isImage && !cloudinaryReady) {
-      setSendError("Cloudinary not configured. Add VITE_CLOUDINARY_CLOUD_NAME and VITE_CLOUDINARY_UPLOAD_PRESET to .env");
-      return;
-    }
-
-    setUploading(true);
-    setSendError("");
-    const caption = msg.trim() || file.name;
-    const optimistic = buildOptimisticMessage(activeChannel.id, currentUser, {
-      content: caption,
-      messageType: isImage ? "image" : "file",
-      mediaUrl: "",
-      mediaType: file.type,
-      fileName: file.name,
-      fileSize: file.size,
-    });
-    appendMessage(optimistic);
-    bumpChannelPreview(activeChannel.id, isImage ? "🖼️ Photo" : caption, true, optimistic.createdAt);
-    try {
-      const uploaded = await uploadChatAttachment(file);
-      const sent = await sendChatMessage({
-        channelId: activeChannel.id,
-        senderId: currentUser.id,
-        senderName: currentUser.name,
-        content: caption,
-        messageType: isImage ? "image" : "file",
-        mediaUrl: uploaded.url,
-        mediaType: file.type,
-        fileName: file.name,
-        fileSize: uploaded.bytes || file.size,
-      });
-      setMsg("");
-      replaceMessage(optimistic.id, sent);
-      refreshUnread({ silent: true });
-    } catch (err) {
-      patchMessage(optimistic.id, { clientStatus: "failed" });
-      setSendError(err instanceof Error ? err.message : "Failed to upload file");
-    } finally {
-      setUploading(false);
-    }
+    if (file) stageChatFile(file);
   }
 
   async function handleSendGif(gifUrl: string) {
@@ -1442,6 +1748,7 @@ export function ChatView({
   }
 
   function selectChannel(channel: ChatChannel) {
+    userPickedChannelRef.current = true;
     setActiveChannelId(channel.id);
     if (channel.channelType === "dm" || channel.channelType === "group") {
       setActiveTab(channel.channelType);
@@ -1464,6 +1771,7 @@ export function ChatView({
       setGroupName("");
       setGroupMembers([]);
       setActiveTab("group");
+      userPickedChannelRef.current = true;
       setActiveChannelId(channel.id);
       refreshChannels();
     } catch (err) {
@@ -1514,6 +1822,7 @@ export function ChatView({
       });
       setShowNewDm(false);
       setActiveTab("dm");
+      userPickedChannelRef.current = true;
       setActiveChannelId(channel.id);
       refreshChannels();
     } catch (err) {
@@ -1530,10 +1839,10 @@ export function ChatView({
   }
 
   useEffect(() => {
-    if (tabChannels.length === 0) return;
+    if (!tabChannelIdsKey || !currentUser?.id) return;
     let cancelled = false;
     async function fetchLatest() {
-      const channelIds = tabChannels.map(c => c.id);
+      const channelIds = tabChannelIdsKey.split("|").filter(Boolean);
       const { data } = await supabase
         .from("chat_messages")
         .select("channel_id, content, message_type, sender_id, sender_name, created_at")
@@ -1555,13 +1864,12 @@ export function ChatView({
             map[row.channel_id] = { content: text, isOwn, time: row.created_at };
          }
       }
-      setLatestMsgs(map);
+      setLatestMsgs(prev => ({ ...prev, ...map }));
     }
     fetchLatest();
     return () => { cancelled = true; };
-  }, [tabChannels, messages, currentUser, unreadCounts]);
+  }, [tabChannelIdsKey, currentUser?.id]);
 
-  if (channelsLoading && chatChannels.length === 0) return <DataLoading label="Loading chat..." />;
   if (channelsError && !tablesMissing) return <DataError message={channelsError} />;
 
   const displayName = currentUser?.name || userName || "You";
@@ -1587,8 +1895,8 @@ export function ChatView({
         </div>
       )}
 
-      <div className="flex gap-4 h-[calc(100vh-160px)] relative">
-        <div className="w-64 bg-gradient-to-b from-[#0a0f25] to-[#050814] border border-white/[0.05] rounded-2xl flex flex-col overflow-hidden shrink-0 shadow-2xl relative z-10">
+      <div className="flex gap-4 h-[calc(100vh-160px)] min-h-0 relative">
+        <div className="w-64 bg-gradient-to-b from-[#0a0f25] to-[#050814] border border-white/[0.05] rounded-2xl flex flex-col overflow-hidden shrink-0 shadow-2xl relative z-10 min-h-0">
           <div className="p-3 border-b border-[rgba(99,102,241,0.1)]">
             <div className="flex items-center justify-between mb-2">
               <p className="text-xs font-semibold text-white font-['Plus_Jakarta_Sans']">Messages</p>
@@ -1603,7 +1911,7 @@ export function ChatView({
                 <button
                   key={tab.id}
                   type="button"
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => handleTabChange(tab.id)}
                   className={`flex-1 px-1.5 py-1.5 rounded-md text-[10px] font-['Geist_Mono'] transition-colors relative ${
                     activeTab === tab.id
                       ? "bg-indigo-600/25 text-indigo-300"
@@ -1650,10 +1958,15 @@ export function ChatView({
             )}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+          <div className="flex-1 overflow-y-auto p-2 space-y-0.5 min-h-0">
+            {channelsLoading && tabChannels.length === 0 && (
+              <div className="px-3 py-6">
+                <DataLoading label="Loading chats..." />
+              </div>
+            )}
             {tabChannels.map(ch => {
               const unread = unreadCounts[ch.id] ?? 0;
-              const isActive = activeChannel?.id === ch.id;
+              const isActive = activeChannelId === ch.id;
               const Icon = channelIcon(ch.channelType);
               const label = ch.displayName;
               const peerProfile =
@@ -1740,7 +2053,22 @@ export function ChatView({
           </div>
         </div>
 
-        <div className="flex-1 bg-gradient-to-br from-[#0d1326] to-[#080c1a] border border-white/[0.08] rounded-2xl flex flex-col overflow-hidden shadow-[0_0_50px_rgba(99,102,241,0.05)] relative">
+        <div
+          className="flex-1 min-h-0 bg-gradient-to-br from-[#0d1326] to-[#080c1a] border border-white/[0.08] rounded-2xl flex flex-col overflow-hidden shadow-[0_0_50px_rgba(99,102,241,0.05)] relative"
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          {isDraggingFile && activeChannel && !tablesMissing && (
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-indigo-950/80 border-2 border-dashed border-indigo-400/60 rounded-2xl pointer-events-none backdrop-blur-sm">
+              <div className="text-center px-6">
+                <ImageIcon size={40} className="text-indigo-300 mx-auto mb-3" />
+                <p className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Drop image here</p>
+                <p className="text-xs text-indigo-200/80 mt-1 font-['Geist_Mono']">Preview first · click Send to share</p>
+              </div>
+            </div>
+          )}
           <div className="p-4 border-b border-white/[0.05] flex items-center justify-between shrink-0 gap-3 bg-white/[0.02] backdrop-blur-xl z-10">
             <div className="flex items-center gap-2 min-w-0">
               {activeChannel?.channelType === "dm" && activeDmPeer ? (
@@ -1813,9 +2141,14 @@ export function ChatView({
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-5 py-6 space-y-2 relative z-0">
-            {messagesLoading && messages.length === 0 && (
-              <DataLoading label="Loading messages..." />
+          <div
+            ref={messagesScrollRef}
+            className="flex-1 min-h-0 overflow-y-auto px-5 py-6 space-y-2 relative z-0"
+          >
+            {messagesLoading && messages.length === 0 && activeChannel && (
+              <div className="py-8">
+                <DataLoading label="Loading messages..." />
+              </div>
             )}
             {messagesError && !isMissingChatTables(messagesError) && (
               <DataError message={messagesError} />
@@ -1849,14 +2182,42 @@ export function ChatView({
                   showSenderName={activeChannel?.channelType === "group" && !isOwn}
                   photoUrl={isOwn ? currentUser?.profileImageUrl : profilePhoto(profiles, m.senderId, m.senderName)}
                   deliveryStatus={deliveryStatus}
+                  currentUserId={currentUser?.id}
+                  onToggleReaction={handleToggleReaction}
                 />
               );
             })}
-            <div ref={messagesEndRef} />
           </div>
 
           <div className="p-4 shrink-0 space-y-2 bg-white/[0.02] backdrop-blur-xl border-t border-white/[0.05] z-10">
             {sendError && <p className="text-xs text-rose-400 pl-4">{sendError}</p>}
+            {pendingAttachment && (
+              <div className="px-2">
+                <div className="relative inline-flex max-w-full">
+                  {pendingAttachment.previewUrl ? (
+                    <img
+                      src={pendingAttachment.previewUrl}
+                      alt="Attachment preview"
+                      className="max-h-28 max-w-[220px] rounded-xl border border-indigo-500/30 object-cover shadow-lg"
+                    />
+                  ) : (
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-indigo-500/30 bg-[#131a35]">
+                      <FileText size={16} className="text-indigo-400 shrink-0" />
+                      <span className="text-xs text-[#e2e8f7] truncate max-w-[180px]">{pendingAttachment.file.name}</span>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={clearPendingAttachment}
+                    disabled={uploading}
+                    className="absolute -top-2 -right-2 p-1 rounded-full bg-[#131a35] border border-white/10 text-[#a8b5d1] hover:text-white hover:bg-rose-500/20 disabled:opacity-50"
+                    title="Remove attachment"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="flex items-center gap-2 bg-[#131a35]/80 border border-white/[0.08] rounded-full px-4 py-2.5 focus-within:border-indigo-500/50 focus-within:bg-[#181f3a] focus-within:shadow-[0_0_20px_rgba(99,102,241,0.15)] transition-all duration-300">
               <input
                 ref={fileInputRef}
@@ -1952,10 +2313,13 @@ export function ChatView({
                 value={msg}
                 onChange={e => setMsg(e.target.value)}
                 onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
                 disabled={!activeChannel || tablesMissing || uploading}
                 placeholder={
                   activeChannel
-                    ? `Message ${activeChannel.displayName}`
+                    ? pendingAttachment
+                      ? `Add a caption (optional) · ${activeChannel.displayName}`
+                      : `Message ${activeChannel.displayName} · paste or drop image`
                     : "Select a chat"
                 }
                 className="flex-1 bg-transparent text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none font-['Plus_Jakarta_Sans'] disabled:opacity-50"
@@ -1963,7 +2327,7 @@ export function ChatView({
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={sending || uploading || !msg.trim() || !activeChannel || tablesMissing}
+                disabled={sending || uploading || (!msg.trim() && !pendingAttachment) || !activeChannel || tablesMissing}
                 className="p-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors text-white"
               >
                 <Send size={13} />

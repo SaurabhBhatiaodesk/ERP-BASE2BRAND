@@ -2,10 +2,9 @@ import { useEffect, useState, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import { fetchActiveClockSession, fetchTodayOfficeSession, clockOutEmployee, clockInEmployee, EmployeeProfile } from "@/lib/database";
 
-// Idle threshold: 6 minutes of no activity → mark idle
-export const IDLE_THRESHOLD_SECS = 360;
+import { IDLE_THRESHOLD_SECS } from "@/lib/idleConfig";
 
-// How often to ping DB with last_active_at (30 seconds)
+export { IDLE_THRESHOLD_SECS };
 const ACTIVE_PING_INTERVAL_MS = 30_000;
 
 export function useElectronIdleTracker(userEmail: string, userProfile?: EmployeeProfile | null) {
@@ -52,7 +51,7 @@ export function useElectronIdleTracker(userEmail: string, userProfile?: Employee
       const lastActive = new Date(profile.last_active_at).getTime();
       const timeSinceActive = Math.floor((Date.now() - lastActive) / 1000);
 
-      if (timeSinceActive > IDLE_THRESHOLD_SECS) {
+      if (timeSinceActive >= IDLE_THRESHOLD_SECS) {
         const session = await fetchActiveClockSession(profile.name, profile.id);
         if (session && session.status === "active") {
           const sessionStart = new Date(session.sessionStart || session.clockIn).getTime();

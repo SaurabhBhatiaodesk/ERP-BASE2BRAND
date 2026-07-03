@@ -3,7 +3,7 @@ import { DndProvider, useDrag, useDrop } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
 import {
   Plus, Filter, Building2, Clock, MoreHorizontal, Layers, CheckSquare,
-  Calendar, GitBranch, Users, Save, X, Timer, Search
+  Calendar, GitBranch, Users, Save, X, Timer, Search, Trash2
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
@@ -14,6 +14,7 @@ import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
 import { useEmployeeProfiles, useLeads, useProjectTasks, useProjects } from "@/hooks/useSupabaseData";
 import {
   addProjectTask,
+  deleteProjectTask,
   clockRangeForDate,
   clockSessionsToAttendanceWindows,
   createLead,
@@ -94,14 +95,12 @@ function taskMatchesAssignee(task: AppTask, assigneeId?: string, assigneeName?: 
 
 function taskStageTotalsForKanban(
   task: AppTask,
-  targetDate: string,
   attendanceWindows: AttendanceTimeWindow[],
   assigneeIdOverride?: string | null,
   profiles?: EmployeeProfile[],
 ) {
   const assigneeId = resolveTaskAssigneeId(task, assigneeIdOverride, profiles);
   return computeTaskStageTotals(task.stageHistory, task.status, effectiveStatusEnteredAt(task), {
-    targetDate,
     assigneeId,
     attendanceSessions: attendanceWindows,
   });
@@ -129,7 +128,6 @@ function TaskStageBreakdown({
   const todayIso = targetDate ?? new Date().toLocaleDateString("en-CA");
   const totals = stageTotals ?? taskStageTotalsForKanban(
     task,
-    todayIso,
     attendanceSessions || [],
     assigneeIdOverride,
     profiles,
@@ -623,8 +621,8 @@ function KanbanCard({
   liveTick?: number;
 }) {
   const stageTotals = useMemo(
-    () => taskStageTotalsForKanban(task, targetDate, attendanceSessions || [], assigneeIdOverride, profiles),
-    [task, targetDate, attendanceSessions, assigneeIdOverride, profiles, liveTick],
+    () => taskStageTotalsForKanban(task, attendanceSessions || [], assigneeIdOverride, profiles),
+    [task, attendanceSessions, assigneeIdOverride, profiles, liveTick],
   );
   const trackedSeconds = taskWorkStageSeconds(stageTotals);
   const [{ isDragging }, drag] = useDrag(
@@ -1186,6 +1184,7 @@ export function TasksView({
   const [showForm, setShowForm] = useState(false);
   const [editingTask, setEditingTask] = useState<AppTask | null>(null);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [formError, setFormError] = useState("");
   const [form, setForm] = useState({
     title: "",
@@ -1573,6 +1572,38 @@ export function TasksView({
       setFormError(err instanceof Error ? err.message : "Failed to save task");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const canDeleteOwnTask = Boolean(
+    personalView &&
+    editingTask &&
+    currentProfile &&
+    taskMatchesAssignee(editingTask, currentProfile.id, currentProfile.name)
+  );
+
+  const handleDeleteTask = async () => {
+    if (!editingTask || !canDeleteOwnTask) return;
+    const confirmed = window.confirm(
+      `Delete "${editingTask.title}"?\n\nThis will remove the task and any linked time entries. This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setDeleting(true);
+    setFormError("");
+    try {
+      await deleteProjectTask({
+        projectId: editingTask.projectId,
+        taskId: editingTask.taskId,
+        title: editingTask.title,
+      });
+      refresh();
+      setShowForm(false);
+      setEditingTask(null);
+    } catch (err: unknown) {
+      setFormError(err instanceof Error ? err.message : "Failed to delete task");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -1978,12 +2009,27 @@ export function TasksView({
                 />
               )}
             </div>
-            <div className="flex justify-end gap-2 mt-6">
+            <div className="flex items-center justify-between gap-2 mt-6">
+              <div>
+                {canDeleteOwnTask && (
+                  <button
+                    type="button"
+                    onClick={handleDeleteTask}
+                    disabled={deleting || saving}
+                    className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-xl transition-colors disabled:opacity-60"
+                  >
+                    <Trash2 size={13} />
+                    {deleting ? "Deleting..." : "Delete Task"}
+                  </button>
+                )}
+              </div>
+              <div className="flex gap-2">
               <button type="button" onClick={() => { setShowForm(false); setEditingTask(null); }} className="px-4 py-2 text-xs text-[#6b7fa8] hover:text-white">Cancel</button>
-              <button type="button" onClick={handleSaveTask} disabled={saving}
+              <button type="button" onClick={handleSaveTask} disabled={saving || deleting}
                 className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white text-xs font-semibold rounded-xl">
                 <Save size={13} /> {saving ? "Saving..." : editingTask ? "Update Task" : "Save Task"}
               </button>
+              </div>
             </div>
           </div>
         </div>

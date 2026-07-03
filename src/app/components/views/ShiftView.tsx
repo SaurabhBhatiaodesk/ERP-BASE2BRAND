@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useMemo, useState, useRef } from "react"
 import {
   Brain, AlertTriangle, Star, ArrowUpRight, Calendar,
   CheckSquare, Monitor, Globe, Timer, Clock, Zap, Activity,
-  Users, WifiOff, Coffee, MapPin, X, ChevronLeft, ChevronRight, Search
+  Users, WifiOff, Coffee, MapPin, X, ChevronLeft, ChevronRight, Search,
+  Crown, LayoutGrid,
 } from "lucide-react";
 import { Avatar } from "../ui";
 import { DataEmpty, DataError, DataLoading } from "../ui/DataStatus";
@@ -151,6 +152,94 @@ export function timelineHourLabels(compact = true) {
   return labels;
 }
 
+export type ShiftDeptFilter =
+  | "all"
+  | "digital-marketing"
+  | "development"
+  | "sales"
+  | "csr"
+  | "hr"
+  | "tl";
+
+type ShiftFilterOption = {
+  id: ShiftDeptFilter;
+  label: string;
+  group: "all" | "team" | "leadership";
+  activeClass: string;
+};
+
+export const SHIFT_DEPT_OPTIONS: ShiftFilterOption[] = [
+  { id: "all", label: "All Teams", group: "all", activeClass: "bg-indigo-600 text-white border-indigo-500 shadow-lg shadow-indigo-500/25" },
+  { id: "digital-marketing", label: "Digital Marketing", group: "team", activeClass: "bg-cyan-600/90 text-white border-cyan-500/50 shadow-lg shadow-cyan-500/20" },
+  { id: "development", label: "Development", group: "team", activeClass: "bg-violet-600/90 text-white border-violet-500/50 shadow-lg shadow-violet-500/20" },
+  { id: "sales", label: "Sales", group: "team", activeClass: "bg-emerald-600/90 text-white border-emerald-500/50 shadow-lg shadow-emerald-500/20" },
+  { id: "csr", label: "CSR", group: "team", activeClass: "bg-sky-600/90 text-white border-sky-500/50 shadow-lg shadow-sky-500/20" },
+  { id: "hr", label: "HR", group: "team", activeClass: "bg-amber-600/90 text-white border-amber-500/50 shadow-lg shadow-amber-500/20" },
+  { id: "tl", label: "Team Lead", group: "leadership", activeClass: "bg-fuchsia-600/90 text-white border-fuchsia-500/50 shadow-lg shadow-fuchsia-500/20" },
+];
+
+function profileMatchesShiftDeptFilter(dept: string, filter: ShiftDeptFilter): boolean {
+  const d = dept.trim().toLowerCase();
+  switch (filter) {
+    case "digital-marketing":
+      return /marketing|digital|design|mktg|content|seo|social|brand/.test(d);
+    case "development":
+      return /develop|dev|engineer|software|tech|frontend|backend|full.?stack|qa|testing/.test(d);
+    case "sales":
+      return /sales|business development|\bbd\b/.test(d);
+    case "csr":
+      return /csr|customer service|customer support|client service|support team|operations support/.test(d);
+    case "hr":
+      return /\bhr\b|human resource|people ops|hr &|recruitment|payroll/.test(d);
+    default:
+      return true;
+  }
+}
+
+function profileMatchesTeamLeadFilter(profile: { role: string; appRole?: string }): boolean {
+  const role = profile.role.trim().toLowerCase();
+  const appRole = (profile.appRole || "").trim().toLowerCase();
+  return (
+    appRole === "teamlead" ||
+    /\bteam lead\b|\bteam leader\b|\btl\b|\btech lead\b|\bdev lead\b|\blead developer\b/.test(role)
+  );
+}
+
+export function profileMatchesShiftFilter(
+  profile: { dept: string; role: string; appRole?: string },
+  filter: ShiftDeptFilter
+): boolean {
+  if (filter === "all") return true;
+  if (filter === "tl") return profileMatchesTeamLeadFilter(profile);
+  return profileMatchesShiftDeptFilter(profile.dept, filter);
+}
+
+/** Total task time across all days — matches employee Kanban cards. */
+function cumulativeTaskStageTotals(
+  task: Pick<ShiftActiveTask, "stageHistory" | "status" | "statusEnteredAt">,
+  assigneeId?: string,
+  attendanceSessions?: AttendanceTimeWindow[],
+) {
+  return computeTaskStageTotals(task.stageHistory, task.status, task.statusEnteredAt, {
+    assigneeId,
+    attendanceSessions,
+  });
+}
+
+/** One calendar day — for history audit and “did this task run on this date?” filters. */
+function dailyTaskStageTotals(
+  task: Pick<ShiftActiveTask, "stageHistory" | "status" | "statusEnteredAt">,
+  targetDate: string | undefined,
+  assigneeId?: string,
+  attendanceSessions?: AttendanceTimeWindow[],
+) {
+  return computeTaskStageTotals(task.stageHistory, task.status, task.statusEnteredAt, {
+    targetDate,
+    assigneeId,
+    attendanceSessions,
+  });
+}
+
 export function TaskStageGrid({
   task,
   compact = false,
@@ -282,41 +371,17 @@ function TaskStageDetail({
   task,
   compact = false,
   large = false,
-  targetDate,
-  maxActiveSeconds,
   assigneeId,
   attendanceSessions,
 }: {
   task: ShiftActiveTask;
   compact?: boolean;
   large?: boolean;
-  targetDate?: string;
-  maxActiveSeconds?: number;
   assigneeId?: string;
   attendanceSessions?: AttendanceTimeWindow[];
 }) {
-  const totals = computeTaskStageTotals(
-    task.stageHistory,
-    task.status,
-    task.statusEnteredAt,
-    {
-      targetDate,
-      assigneeId,
-      attendanceSessions,
-    },
-  );
-  
-  if (maxActiveSeconds !== undefined && (task.status === "in-progress" || task.status === "progress")) {
-    const dateStr = targetDate || new Date().toLocaleDateString("en-CA");
-    const firstHistory = task.stageHistory.find(r => r.to_status === task.status);
-    const firstEntered = firstHistory ? firstHistory.entered_at : task.statusEnteredAt;
-    
-    if (firstEntered && firstEntered.startsWith(dateStr)) {
-      if ((totals[task.status] || 0) > maxActiveSeconds) {
-        totals[task.status] = maxActiveSeconds;
-      }
-    }
-  }
+  const totals = cumulativeTaskStageTotals(task, assigneeId, attendanceSessions);
+
   const rows = getAllStageEntries(task.status, totals);
 
   function stageUi(status: string) {
@@ -452,42 +517,17 @@ export const kindMeta: Record<ActivityKind, { color: string; bg: string; dot: st
 function TaskStageBar({
   task,
   shiftWindow,
-  targetDate,
   nowMin,
-  maxActiveSeconds,
   assigneeId,
   attendanceSessions,
 }: {
   task: ShiftActiveTask;
   shiftWindow: { left: number; width: number };
-  targetDate?: string;
   nowMin: number;
-  maxActiveSeconds?: number;
   assigneeId?: string;
   attendanceSessions?: AttendanceTimeWindow[];
 }) {
-  const totals = computeTaskStageTotals(
-    task.stageHistory,
-    task.status,
-    task.statusEnteredAt,
-    {
-      targetDate,
-      assigneeId,
-      attendanceSessions,
-    },
-  );
-
-  if (maxActiveSeconds !== undefined && (task.status === "in-progress" || task.status === "progress")) {
-    const dateStr = targetDate || new Date().toLocaleDateString("en-CA");
-    const firstHistory = task.stageHistory.find(r => r.to_status === task.status);
-    const firstEntered = firstHistory ? firstHistory.entered_at : task.statusEnteredAt;
-    
-    if (firstEntered && firstEntered.startsWith(dateStr)) {
-      if ((totals[task.status] || 0) > maxActiveSeconds) {
-        totals[task.status] = maxActiveSeconds;
-      }
-    }
-  }
+  const totals = cumulativeTaskStageTotals(task, assigneeId, attendanceSessions);
 
   const segments = buildProportionalStageSegments(totals);
   const currentStageMeta = stageMeta[task.status as (typeof STAGE_ORDER)[number]];
@@ -594,11 +634,6 @@ export function StageTimelineBar({
   const shiftWindow = shiftWindowOnAxis(emp);
   const hourMarks = Array.from({ length: TIMELINE_AXIS_DURATION / 60 + 1 }, (_, i) => i * 60).slice(1, -1);
   
-  const workingMins = emp.timeline
-    .filter(b => b.kind === "working" || b.kind === "meeting")
-    .reduce((sum, b) => sum + Math.max(0, (b.end !== null ? b.end : nowMin) - b.start), 0);
-  const maxActiveSeconds = workingMins * 60;
-
   const kanbanTaskIds = useMemo(() => {
     if (!targetDate || !allTasks?.length) return null;
     return new Set(
@@ -613,14 +648,21 @@ export function StageTimelineBar({
   }, [allTasks, emp.id, emp.name, targetDate]);
   
   const sortedTasks = useMemo(() => {
-    const list = (emp.trackedTasks || []).filter(task => {
-      if (kanbanTaskIds && !kanbanTaskIds.has(task.taskId)) return false;
-      const totals = computeTaskStageTotals(
-        task.stageHistory,
-        task.status,
-        task.statusEnteredAt,
-        { targetDate, assigneeId: emp.id, attendanceSessions },
+    const merged = new Map<string, ShiftActiveTask>();
+    for (const task of emp.trackedTasks || []) merged.set(task.taskId, task);
+    for (const task of emp.workTasks || []) merged.set(task.taskId, task);
+
+    const list = [...merged.values()].filter(task => {
+      const isInProgress = task.status === "in-progress";
+      // In-progress work always shows on shift tracker — even if task_date is an older day.
+      if (!isInProgress && kanbanTaskIds && !kanbanTaskIds.has(task.taskId)) return false;
+      const totals = dailyTaskStageTotals(
+        task,
+        targetDate,
+        emp.id,
+        attendanceSessions,
       );
+      if (isInProgress) return true;
       return Object.values(totals).reduce((a, b) => a + b, 0) > 0;
     });
     return list.sort((a, b) => {
@@ -628,23 +670,15 @@ export function StageTimelineBar({
       const bProg = b.status === "in-progress" ? 1 : 0;
       if (aProg !== bProg) return bProg - aProg;
 
-      const aTotals = computeTaskStageTotals(a.stageHistory, a.status, a.statusEnteredAt, {
-        targetDate,
-        assigneeId: emp.id,
-        attendanceSessions,
-      });
-      const bTotals = computeTaskStageTotals(b.stageHistory, b.status, b.statusEnteredAt, {
-        targetDate,
-        assigneeId: emp.id,
-        attendanceSessions,
-      });
+      const aTotals = cumulativeTaskStageTotals(a, emp.id, attendanceSessions);
+      const bTotals = cumulativeTaskStageTotals(b, emp.id, attendanceSessions);
       
       const aHasInProgress = (aTotals["in-progress"] || 0) > 0 ? 1 : 0;
       const bHasInProgress = (bTotals["in-progress"] || 0) > 0 ? 1 : 0;
       
       return bHasInProgress - aHasInProgress;
     });
-  }, [emp.trackedTasks, emp.id, targetDate, attendanceSessions, kanbanTaskIds]);
+  }, [emp.trackedTasks, emp.workTasks, emp.id, targetDate, attendanceSessions, kanbanTaskIds]);
 
   const totalPages = Math.ceil(sortedTasks.length / PAGE_SIZE);
   const visibleTasks = sortedTasks.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -675,9 +709,7 @@ export function StageTimelineBar({
             key={task.taskId}
             task={task}
             shiftWindow={shiftWindow}
-            targetDate={targetDate}
             nowMin={nowMin}
-            maxActiveSeconds={maxActiveSeconds}
             assigneeId={emp.id}
             attendanceSessions={attendanceSessions}
           />
@@ -818,16 +850,8 @@ export function EmployeeDetailPanel({
       const bIsInProgress = b.status === "in-progress" ? 1 : 0;
       if (aIsInProgress !== bIsInProgress) return bIsInProgress - aIsInProgress;
 
-      const aTotals = computeTaskStageTotals(a.stageHistory, a.status, a.statusEnteredAt, {
-        targetDate: taskStageDate,
-        assigneeId: emp.id,
-        attendanceSessions,
-      });
-      const bTotals = computeTaskStageTotals(b.stageHistory, b.status, b.statusEnteredAt, {
-        targetDate: taskStageDate,
-        assigneeId: emp.id,
-        attendanceSessions,
-      });
+      const aTotals = cumulativeTaskStageTotals(a, emp.id, attendanceSessions);
+      const bTotals = cumulativeTaskStageTotals(b, emp.id, attendanceSessions);
       
       const aHasInProgress = (aTotals["in-progress"] || 0) > 0 ? 1 : 0;
       const bHasInProgress = (bTotals["in-progress"] || 0) > 0 ? 1 : 0;
@@ -1108,8 +1132,6 @@ export function EmployeeDetailPanel({
                 task={task}
                 compact
                 large
-                targetDate={taskStageDate}
-                maxActiveSeconds={isTaskStageToday ? (worked + meetings) * 60 : undefined}
                 assigneeId={emp.id}
                 attendanceSessions={attendanceSessions}
               />
@@ -1243,6 +1265,7 @@ export function ShiftView({
   const [nowMin, setNowMin] = useState(currentShiftNowMin());
   const [viewMode, setViewMode] = useState<"timeline" | "grid">("timeline");
   const [searchQuery, setSearchQuery] = useState("");
+  const [deptFilter, setDeptFilter] = useState<ShiftDeptFilter>("all");
   const dateInputRef = useRef<HTMLInputElement>(null);
 
   const [targetDate, setTargetDate] = useState<string>(
@@ -1334,7 +1357,9 @@ export function ShiftView({
   }, [sessions, profileCountByName]);
 
   const shiftEmployees = useMemo(() => {
-    let list = visibleProfiles.map(profile => {
+    let list = visibleProfiles
+      .filter(profile => profileMatchesShiftFilter(profile, deptFilter))
+      .map(profile => {
       const session =
         sessionByEmployeeId.get(profile.id) ||
         legacySessionByUniqueName.get(profile.name.trim().toLowerCase()) ||
@@ -1362,9 +1387,9 @@ export function ShiftView({
       const q = searchQuery.toLowerCase();
       return list.filter(emp => emp.name.toLowerCase().includes(q) || emp.dept.toLowerCase().includes(q));
     }
-    
+
     return list;
-  }, [visibleProfiles, sessionByEmployeeId, legacySessionByUniqueName, tasks, nowMin, searchQuery]);
+  }, [visibleProfiles, sessionByEmployeeId, legacySessionByUniqueName, tasks, nowMin, searchQuery, deptFilter]);
 
   useEffect(() => {
     if (!selected) return;
@@ -1499,6 +1524,73 @@ export function ShiftView({
               <ChevronRight size={16} />
             </button>
           </div>
+        </div>
+      </div>
+
+      <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.14)] rounded-xl p-4 shadow-sm shadow-indigo-500/5">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center">
+              <LayoutGrid size={15} className="text-indigo-400" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Filter by team</p>
+              <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono']">
+                {deptFilter === "all"
+                  ? `Showing all ${visibleProfiles.length} employees`
+                  : `${shiftEmployees.length} shown · ${SHIFT_DEPT_OPTIONS.find(o => o.id === deptFilter)?.label}`}
+              </p>
+            </div>
+          </div>
+          {deptFilter !== "all" && (
+            <button
+              type="button"
+              onClick={() => setDeptFilter("all")}
+              className="text-[11px] font-semibold text-indigo-300 hover:text-white px-3 py-1.5 rounded-lg border border-indigo-500/20 bg-indigo-500/10 transition-colors"
+            >
+              Clear filter
+            </button>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {SHIFT_DEPT_OPTIONS.filter(o => o.group === "all" || o.group === "team").map(opt => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => setDeptFilter(opt.id)}
+              className={`px-3.5 py-2 rounded-full text-xs font-semibold font-['Plus_Jakarta_Sans'] border transition-all duration-200 ${
+                deptFilter === opt.id
+                  ? opt.activeClass
+                  : "bg-[#131a35]/80 border-[rgba(99,102,241,0.12)] text-[#8fa0c4] hover:text-white hover:border-indigo-500/30 hover:bg-[#161f3d]"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+
+          <span className="hidden sm:block w-px h-7 bg-indigo-500/20 mx-1" />
+
+          <span className="w-full sm:w-auto text-[10px] font-['Geist_Mono'] text-[#6b7fa8] uppercase tracking-wide shrink-0 flex items-center gap-1.5">
+            <Crown size={12} className="text-fuchsia-400" />
+            Leadership
+          </span>
+
+          {SHIFT_DEPT_OPTIONS.filter(o => o.group === "leadership").map(opt => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => setDeptFilter(opt.id)}
+              className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-semibold font-['Plus_Jakarta_Sans'] border transition-all duration-200 ${
+                deptFilter === opt.id
+                  ? opt.activeClass
+                  : "bg-[#131a35]/80 border-[rgba(99,102,241,0.12)] text-[#8fa0c4] hover:text-white hover:border-indigo-500/30 hover:bg-[#161f3d]"
+              }`}
+            >
+              <Crown size={13} />
+              {opt.label}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -1686,29 +1778,18 @@ export function ShiftView({
               
 
 
-              const workedMins = emp.timeline
-                .filter(b => b.kind === "working")
-                .reduce((sum, b) => sum + Math.max(0, (b.end ?? nowMin) - b.start), 0);
-              const workedSeconds = workedMins * 60;
-
               const currentWorkTask = emp.status === "working" && emp.workTasks[0] ? emp.workTasks[0] : null;
-              const currentWorkTaskTodayTotals = currentWorkTask
-                ? computeTaskStageTotals(
-                    currentWorkTask.stageHistory,
-                    currentWorkTask.status,
-                    currentWorkTask.statusEnteredAt,
-                    {
-                      targetDate,
-                      assigneeId: emp.id,
-                      attendanceSessions: attendanceWindows,
-                    },
+              const currentWorkTaskTotals = currentWorkTask
+                ? cumulativeTaskStageTotals(
+                    currentWorkTask,
+                    emp.id,
+                    attendanceWindows,
                   )
                 : null;
               
-              let currentWorkTaskTodaySum = currentWorkTaskTodayTotals ? (currentWorkTaskTodayTotals["in-progress"] || 0) + (currentWorkTaskTodayTotals["progress"] || 0) : 0;
-              if (currentWorkTaskTodaySum > workedSeconds) {
-                currentWorkTaskTodaySum = workedSeconds;
-              }
+              let currentWorkTaskTimeSum = currentWorkTaskTotals
+                ? (currentWorkTaskTotals["in-progress"] || 0)
+                : 0;
 
               return (
                 <div key={i} className="flex items-center bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl hover:border-indigo-500/30 hover:shadow-[0_4px_20px_-4px_rgba(99,102,241,0.1)] transition-all cursor-pointer overflow-hidden group"
@@ -1731,9 +1812,9 @@ export function ShiftView({
                               || (emp.trackedTasks.length > 0 ? "Clocked in — task not started" : "Clocked in"))
                             : (emp.status === "idle" && (emp.idleDurationMins || 0) > 0 ? `Not at desk for ${emp.idleDurationMins}m` : meta.label)}
                         </span>
-                        {emp.status === "working" && currentWorkTaskTodaySum > 0 && (
+                        {emp.status === "working" && currentWorkTaskTimeSum > 0 && (
                           <span className="text-[10px] font-bold text-indigo-300 mt-2 bg-indigo-500/20 border border-indigo-500/30 px-2 py-1 rounded shadow-sm w-fit tracking-wide uppercase">
-                            Time Today: {formatStageDuration(currentWorkTaskTodaySum)}
+                            Task Time: {formatStageDuration(currentWorkTaskTimeSum)}
                           </span>
                         )}
                       </div>

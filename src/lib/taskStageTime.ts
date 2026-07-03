@@ -210,12 +210,13 @@ export function aggregateStageSeconds(
   history: TaskStageHistoryRow[],
   currentStatus: string,
   statusEnteredAt?: string | null,
-  targetDate?: string, // Format: YYYY-MM-DD
+  targetDate?: string, // Format: YYYY-MM-DD — omit for cumulative task totals across days
   assigneeId?: string | null,
   attendanceSessions?: AttendanceOverlapWindow[]
 ): Record<string, number> {
   const totals: Record<string, number> = {};
   const todayIso = new Date().toLocaleDateString("en-CA");
+  const cumulative = !targetDate;
   const scopedAssigneeId = normalizeAssigneeId(assigneeId);
   const attendanceScoped = Boolean(scopedAssigneeId);
   const mergedAttendance = attendanceSessions?.length
@@ -272,7 +273,10 @@ export function aggregateStageSeconds(
     if (!row.exited_at) continue;
 
     let seconds: number;
-    if (attendanceScoped) {
+    if (cumulative && row.duration_seconds != null && row.duration_seconds >= 0) {
+      // Cumulative Kanban — use time saved when the segment closed (all prior days).
+      seconds = row.duration_seconds;
+    } else if (attendanceScoped && targetDate) {
       seconds = getStageOverlapSeconds(row.entered_at, row.exited_at, targetDate);
     } else if (row.duration_seconds != null && row.duration_seconds >= 0) {
       seconds = row.duration_seconds;
@@ -296,7 +300,9 @@ export function aggregateStageSeconds(
   const openForCurrent = history.find(row => !row.exited_at && row.to_status === currentStatus);
   const liveStart = openForCurrent?.entered_at || statusEnteredAt;
   if (liveStart && liveStart !== "paused" && currentStatus) {
-    const live = getStageOverlapSeconds(liveStart, null, targetDate);
+    // Cumulative view: only add today's live clocked-in overlap for the open segment.
+    const liveDate = cumulative ? todayIso : targetDate;
+    const live = getStageOverlapSeconds(liveStart, null, liveDate);
     if (live > 0) {
       totals[currentStatus] = (totals[currentStatus] || 0) + live;
     }
@@ -304,7 +310,7 @@ export function aggregateStageSeconds(
   return totals;
 }
 
-/** Same totals logic as employee Kanban — attendance overlap + daily clock cap. */
+/** Kanban: cumulative task time. Shift tracker: pass targetDate for one-day view. */
 export function computeTaskStageTotals(
   history: TaskStageHistoryRow[],
   currentStatus: string,
@@ -326,6 +332,8 @@ export function computeTaskStageTotals(
     assigneeId,
     attendanceSessions,
   );
+  if (!targetDate) return raw;
+
   const maxSeconds =
     assigneeId && attendanceSessions?.length
       ? attendanceWindowsTotalSeconds(attendanceSessions, assigneeId, targetDate)

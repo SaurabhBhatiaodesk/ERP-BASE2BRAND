@@ -10,6 +10,7 @@ import {
   findProfileForUser,
   formatTaskStatusLabel,
   getEmployeeProjects,
+  liveAttendanceHours,
   saveTimesheetEntryEdit,
   type AttendanceEntry,
   type TimesheetEntry,
@@ -122,7 +123,7 @@ function downloadCsv(entries: TimesheetEntry[], attendance: AttendanceEntry[]) {
       "Office",
       "Office Attendance",
       `"${formatEntryDate(a.date)}"`,
-      a.hours,
+      liveAttendanceHours(a),
       `"${a.employee.replace(/"/g, '""')}"`,
       `"${formatClockTime(a.clockIn)}"`,
       a.clockOut ? `"${formatClockTime(a.clockOut)}"` : "",
@@ -186,6 +187,7 @@ export function TimesheetView({
   const [editForm, setEditForm] = useState({ date: "", hours: "", description: "" });
   const [editError, setEditError] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const [liveTick, setLiveTick] = useState(0);
 
   const { data: profiles, loading: pLoading, error: pError } = useEmployeeProfiles();
   const { data: projects, loading: prLoading, error: prError, refresh: refreshProjects } = useProjects();
@@ -286,9 +288,12 @@ export function TimesheetView({
 
   useEffect(() => {
     if (timeTab !== "office" || !hasLiveOfficeSession) return;
-    void refreshAttendance();
-    const id = window.setInterval(() => refreshAttendance(), 15_000);
-    return () => window.clearInterval(id);
+    const tickId = window.setInterval(() => setLiveTick(t => t + 1), 1000);
+    const syncId = window.setInterval(() => void refreshAttendance(), 30_000);
+    return () => {
+      window.clearInterval(tickId);
+      window.clearInterval(syncId);
+    };
   }, [timeTab, hasLiveOfficeSession, refreshAttendance]);
 
   const activeEmployee = useMemo(() => {
@@ -372,8 +377,8 @@ export function TimesheetView({
         map.set(key, { name: row.employee, officeHours: 0, projectHours: 0, days: new Set() });
       }
       const item = map.get(key)!;
-      item.officeHours += row.hours;
-      if (row.hours > 0) item.days.add(row.date);
+      item.officeHours += liveAttendanceHours(row);
+      if (liveAttendanceHours(row) > 0) item.days.add(row.date);
     }
 
     for (const row of filteredEntries) {
@@ -391,7 +396,7 @@ export function TimesheetView({
         daysWorked: e.days.size,
       }))
       .sort((a, b) => b.totalHours - a.totalHours || a.name.localeCompare(b.name));
-  }, [filteredAttendance, filteredEntries]);
+  }, [filteredAttendance, filteredEntries, liveTick]);
 
   const groupedByEmployee = useMemo(() => {
     const map = new Map<string, AttendanceEntry[]>();
@@ -419,8 +424,8 @@ export function TimesheetView({
   );
 
   const totalOfficeHours = useMemo(
-    () => filteredAttendance.reduce((sum, a) => sum + a.hours, 0),
-    [filteredAttendance]
+    () => filteredAttendance.reduce((sum, a) => sum + liveAttendanceHours(a), 0),
+    [filteredAttendance, liveTick]
   );
 
   const activeTabHours = timeTab === "office" ? totalOfficeHours : totalProjectHours;
@@ -886,7 +891,8 @@ export function TimesheetView({
 
       <div className="space-y-6 px-2">
         {timeTab === "office" && groupedByEmployee.map(([employeeName, rows]) => {
-          const empHours = rows.reduce((sum, r) => sum + r.hours, 0);
+          const empHours = rows.reduce((sum, r) => sum + liveAttendanceHours(r), 0);
+          void liveTick;
           return (
             <div
               key={`att-${employeeName}`}
@@ -934,7 +940,7 @@ export function TimesheetView({
                     {formatEntryDate(row.date)}
                   </div>
                   <div className="px-5 py-4 text-sm font-semibold text-white font-['Geist_Mono'] border-r border-dashed border-indigo-500/10">
-                    {formatHoursDisplay(row.hours)}
+                    {formatHoursDisplay(liveAttendanceHours(row))}
                   </div>
                   <div className="px-5 py-4 text-sm text-[#c8d4e8] font-['Geist_Mono'] border-r border-dashed border-indigo-500/10">
                     {formatClockTime(row.clockIn)}

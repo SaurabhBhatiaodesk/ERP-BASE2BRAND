@@ -40,7 +40,7 @@ function invalidateAttendanceCache() {
 }
 
 function invalidateTimesheetCaches() {
-  invalidateTimesheetCaches();
+  invalidateDataCache(CACHE_KEYS.timesheets);
   invalidateDataCachePrefix(`${CACHE_KEYS.timesheetReport}:`);
 }
 
@@ -2466,6 +2466,58 @@ export async function updateProjectTask(input: {
   invalidateTimesheetCaches();
 }
 
+export async function deleteProjectTask(input: {
+  projectId: string;
+  taskId: string;
+  title?: string;
+}) {
+  if (await probeProjectRelations()) {
+    await supabase.from("timesheet_entries").delete().eq("linked_task_id", input.taskId);
+    if (await probeTaskStageTracking()) {
+      await supabase.from("task_status_history").delete().eq("task_id", input.taskId);
+    }
+    const { error } = await supabase
+      .from("project_tasks")
+      .delete()
+      .eq("id", input.taskId)
+      .eq("project_id", input.projectId);
+    if (error) throw error;
+    invalidateTaskCaches();
+    invalidateDataCache(CACHE_KEYS.projects);
+    invalidateTimesheetCaches();
+    return;
+  }
+
+  const { data: project, error: fetchError } = await supabase
+    .from("projects")
+    .select("*")
+    .eq("id", input.projectId)
+    .single();
+  if (fetchError) throw fetchError;
+
+  const row = project as DbProject;
+  const title = input.title || "";
+  let found = false;
+  const tasks = (row.tasks || []).filter(t => {
+    if (isTimesheetEntry(t) && t.linkedTaskId === input.taskId) {
+      found = true;
+      return false;
+    }
+    if (isWorkTask(t) && dbTaskMatches(t, input.taskId, title)) {
+      found = true;
+      return false;
+    }
+    return true;
+  });
+  if (!found) throw new Error("Task not found");
+
+  const { error } = await supabase.from("projects").update({ tasks }).eq("id", input.projectId);
+  if (error) throw error;
+  invalidateTaskCaches();
+  invalidateDataCache(CACHE_KEYS.projects);
+  invalidateTimesheetCaches();
+}
+
 export type ClockSessionStatus = "active" | "paused" | "completed";
 
 export type ClockSessionSegmentKind = "working" | "break" | "meeting" | "idle" | "lunch_break" | "work";
@@ -3379,7 +3431,33 @@ export type AttendanceEntry = {
   clockOut: string | null;
   status: ClockSessionStatus;
   notes: string | null;
+  /** Raw DB hours — used with segments for live timer on open sessions. */
+  storedHours?: number | null;
+  sessionStart?: string | null;
+  segments?: ClockSessionSegment[];
 };
+
+export function attendanceEntryToClockSession(entry: AttendanceEntry): ClockSessionRecord {
+  return {
+    id: entry.id,
+    employeeId: entry.employeeId,
+    employeeName: entry.employee,
+    clockIn: entry.clockIn,
+    clockOut: entry.clockOut,
+    sessionStart: entry.sessionStart ?? null,
+    status: entry.status,
+    hours: entry.storedHours ?? null,
+    projectId: null,
+    notes: entry.notes,
+    segments: entry.segments,
+  };
+}
+
+/** Match dashboard timer — live hours for active/paused office sessions. */
+export function liveAttendanceHours(entry: AttendanceEntry, nowMs = Date.now()): number {
+  if (entry.status !== "active" && entry.status !== "paused") return entry.hours;
+  return calculateSessionAttendanceHours(attendanceEntryToClockSession(entry), nowMs);
+}
 
 /** Today's clock sessions for all employees (team shift tracker). */
 export async function fetchEmployeeHistoricalSessions(employeeId: string, startDateIso: string, endDateIso: string): Promise<ClockSessionRecord[]> {
@@ -3470,15 +3548,6 @@ function timesheetReportCacheKey(filter: TimesheetReportFilter) {
   return `${CACHE_KEYS.timesheetReport}:${filter.startDate}:${filter.endDate}:${filter.employeeId ?? "all"}`;
 }
 
-/** List view — skips segment fetch (faster). Live hours still computed from session fields. */
-async function fetchClockSessionsForReport(
-  fetchPage: SupabasePageFetcher<ClockSessionDbRow>
-): Promise<ClockSessionRecord[]> {
-  const rows = await fetchAllPaginated(fetchPage);
-  clockSessionsTableReady = true;
-  return rows.map(mapClockSession);
-}
-
 function mapSessionsToAttendanceEntries(sessions: ClockSessionRecord[]): AttendanceEntry[] {
   const nowMs = Date.now();
   return sessions.map(session => ({
@@ -3487,6 +3556,9 @@ function mapSessionsToAttendanceEntries(sessions: ClockSessionRecord[]): Attenda
     employeeId: session.employeeId,
     date: formatClockDate(new Date(session.clockIn)),
     hours: calculateSessionAttendanceHours(session, nowMs),
+    storedHours: session.hours,
+    sessionStart: session.sessionStart,
+    segments: session.segments,
     clockIn: session.clockIn,
     clockOut: session.clockOut,
     status: session.status,
@@ -3494,13 +3566,13 @@ function mapSessionsToAttendanceEntries(sessions: ClockSessionRecord[]): Attenda
   }));
 }
 
-/** List view — skips segment fetch (faster). Live hours still computed from session fields. */
+/** Office attendance rows — includes segments so hours match the dashboard timer. */
 async function loadAttendanceForReport(filter: AttendanceReportFilter): Promise<AttendanceEntry[]> {
   const { start, end } = clockQueryRangeFromDates(filter.startDate, filter.endDate);
 
   let sessions: ClockSessionRecord[];
   try {
-    sessions = await fetchClockSessionsForReport((from, pageSize) => {
+    sessions = await fetchPaginatedClockSessions((from, pageSize) => {
       let query = supabase
         .from("clock_sessions")
         .select("*")
@@ -4137,6 +4209,12 @@ export type ChatChannel = {
 
 export type MessageDeliveryStatus = "sending" | "sent" | "delivered" | "read" | "failed";
 
+export type ChatMessageReaction = {
+  emoji: string;
+  count: number;
+  userIds: string[];
+};
+
 export type ChatMessage = {
   id: string;
   channelId: string;
@@ -4150,6 +4228,7 @@ export type ChatMessage = {
   fileName: string;
   fileSize: number;
   createdAt: string;
+  reactions?: ChatMessageReaction[];
   /** Client-only state for optimistic send / failed send. */
   clientStatus?: MessageDeliveryStatus;
 };
@@ -4222,7 +4301,116 @@ export function mapChatMessage(row: DbChatMessage): ChatMessage {
     fileName,
     fileSize: row.file_size ?? 0,
     createdAt: row.created_at,
+    reactions: [],
   };
+}
+
+let chatReactionsReady: boolean | null = null;
+
+function isMissingChatReactionsTable(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const e = error as { code?: string; message?: string; status?: number; statusCode?: number };
+  const status = e.status ?? e.statusCode;
+  const msg = e.message || "";
+  return (
+    status === 404 ||
+    e.code === "PGRST205" ||
+    /chat_message_reactions/i.test(msg) ||
+    /could not find the table.*chat_message_reactions/i.test(msg)
+  );
+}
+
+async function probeChatReactions(): Promise<boolean> {
+  if (chatReactionsReady !== null) return chatReactionsReady;
+  const { error } = await supabase.from("chat_message_reactions").select("id").limit(1);
+  chatReactionsReady = !error || !isMissingChatReactionsTable(error);
+  return chatReactionsReady;
+}
+
+function aggregateChatReactions(
+  rows: { message_id: string; user_id: string; emoji: string }[]
+): Map<string, ChatMessageReaction[]> {
+  const byMessage = new Map<string, Map<string, string[]>>();
+  for (const row of rows) {
+    const emojiMap = byMessage.get(row.message_id) || new Map<string, string[]>();
+    const users = emojiMap.get(row.emoji) || [];
+    if (!users.includes(row.user_id)) users.push(row.user_id);
+    emojiMap.set(row.emoji, users);
+    byMessage.set(row.message_id, emojiMap);
+  }
+
+  const result = new Map<string, ChatMessageReaction[]>();
+  for (const [messageId, emojiMap] of byMessage) {
+    const reactions: ChatMessageReaction[] = [];
+    for (const [emoji, userIds] of emojiMap) {
+      reactions.push({ emoji, count: userIds.length, userIds });
+    }
+    reactions.sort((a, b) => b.count - a.count || a.emoji.localeCompare(b.emoji));
+    result.set(messageId, reactions);
+  }
+  return result;
+}
+
+async function fetchChatReactionsForMessages(messageIds: string[]): Promise<Map<string, ChatMessageReaction[]>> {
+  if (!messageIds.length || !(await probeChatReactions())) return new Map();
+  try {
+    const rows = await fetchAllPaginated<{ message_id: string; user_id: string; emoji: string }>(
+      (from, pageSize) =>
+        supabase
+          .from("chat_message_reactions")
+          .select("message_id, user_id, emoji")
+          .in("message_id", messageIds)
+          .range(from, from + pageSize - 1)
+    );
+    return aggregateChatReactions(rows);
+  } catch (error) {
+    if (isMissingChatReactionsTable(error)) {
+      chatReactionsReady = false;
+      return new Map();
+    }
+    throw error;
+  }
+}
+
+export async function fetchChatMessageReactions(messageId: string): Promise<ChatMessageReaction[]> {
+  const map = await fetchChatReactionsForMessages([messageId]);
+  return map.get(messageId) || [];
+}
+
+export async function toggleChatMessageReaction(input: {
+  messageId: string;
+  userId: string;
+  emoji: string;
+}): Promise<ChatMessageReaction[]> {
+  if (!(await probeChatReactions())) {
+    throw new Error("Run supabase/chat_reactions.sql in Supabase SQL Editor to enable message reactions.");
+  }
+
+  const emoji = input.emoji.trim();
+  if (!emoji) throw new Error("Invalid reaction");
+
+  const { data: existing, error: fetchError } = await supabase
+    .from("chat_message_reactions")
+    .select("id")
+    .eq("message_id", input.messageId)
+    .eq("user_id", input.userId)
+    .eq("emoji", emoji)
+    .maybeSingle();
+  if (fetchError) throw fetchError;
+
+  if (existing?.id) {
+    const { error } = await supabase.from("chat_message_reactions").delete().eq("id", existing.id);
+    if (error) throw error;
+  } else {
+    const { error } = await supabase.from("chat_message_reactions").insert({
+      message_id: input.messageId,
+      user_id: input.userId,
+      emoji,
+    });
+    if (error) throw error;
+  }
+
+  return fetchChatMessageReactions(input.messageId);
 }
 
 export function isMissingChatTables(error: unknown) {
@@ -4232,6 +4420,7 @@ export function isMissingChatTables(error: unknown) {
     msg.includes("chat_messages") ||
     msg.includes("chat_channel_reads") ||
     msg.includes("chat_channel_members") ||
+    msg.includes("chat_message_reactions") ||
     msg.includes("does not exist") ||
     msg.includes("Could not find the table")
   );
@@ -4426,7 +4615,9 @@ export async function fetchChatMessages(channelId: string, limit = 150): Promise
     .order("created_at", { ascending: true })
     .limit(limit);
   if (error) throw error;
-  return (data as DbChatMessage[]).map(mapChatMessage);
+  const messages = (data as DbChatMessage[]).map(mapChatMessage);
+  const reactionMap = await fetchChatReactionsForMessages(messages.map(m => m.id));
+  return messages.map(m => ({ ...m, reactions: reactionMap.get(m.id) || [] }));
 }
 
 export async function sendChatMessage(input: {

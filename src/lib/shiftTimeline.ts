@@ -1,3 +1,4 @@
+import { IDLE_THRESHOLD_MINUTES } from "./idleConfig";
 import type { ClockSessionRecord, ClockSessionSegment } from "./database";
 import type { ActivityKind, ShiftEmployee, TimelineBlock } from "@/app/components/views/ShiftView";
 import type { AppTask } from "./database";
@@ -316,7 +317,7 @@ export function buildShiftEmployee(input: {
   let idleMins = 0;
   if (status === "working" && lastActiveAt) {
     idleMins = Math.floor((Date.now() - new Date(lastActiveAt).getTime()) / 60000);
-    if (idleMins > 5) {
+    if (idleMins >= IDLE_THRESHOLD_MINUTES) {
       currentStatus = "idle";
       const lastBlock = timeline[timeline.length - 1];
       if (lastBlock && lastBlock.kind === "working" && lastBlock.end === null) {

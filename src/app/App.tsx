@@ -399,7 +399,7 @@ export default function App() {
     let cancelled = false;
 
     async function checkAndBeep() {
-      if (idleSeconds > IDLE_THRESHOLD_SECS && userRole !== "ceo" && userRole !== "hr" && currentProfile) {
+      if (idleSeconds >= IDLE_THRESHOLD_SECS && userRole !== "ceo" && userRole !== "hr" && currentProfile) {
         const { fetchActiveClockSession } = await import("@/lib/database");
         const session = await fetchActiveClockSession(currentProfile.name, currentProfile.id);
         if (cancelled) return;
@@ -424,7 +424,7 @@ export default function App() {
       cancelled = true;
       if (id) clearInterval(id);
     };
-  }, [idleSeconds > IDLE_THRESHOLD_SECS, userRole, currentProfile]);
+  }, [idleSeconds >= IDLE_THRESHOLD_SECS, userRole, currentProfile]);
 
   // Global Realtime Listener for Desktop Notifications
   useEffect(() => {
@@ -894,7 +894,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-[#06091a] overflow-hidden" style={{ fontFamily: "Inter, sans-serif" }}>
-      {idleSeconds > IDLE_THRESHOLD_SECS && userRole !== "ceo" && userRole !== "hr" && (
+      {idleSeconds >= IDLE_THRESHOLD_SECS && userRole !== "ceo" && userRole !== "hr" && (
         <div className="fixed top-6 right-6 z-50 flex items-center gap-4 bg-[#1e0f15] border border-red-500/40 text-red-200 px-5 py-4 rounded-2xl shadow-[0_10px_40px_-10px_rgba(239,68,68,0.4)] backdrop-blur-xl animate-in fade-in slide-in-from-top-4">
           <div className="bg-red-500/20 p-2 rounded-full">
             <AlertTriangle className="w-5 h-5 text-red-400 animate-pulse" />
@@ -989,7 +989,7 @@ export default function App() {
               <span className="text-white font-['Plus_Jakarta_Sans']">{viewTitles[activeView] ?? activeView}</span>
             </div>
             {/* DEBUG IDLE TRACKER WIDGET */}
-            <div className={`ml-4 px-2.5 py-1 rounded-md text-xs font-['Geist_Mono'] flex items-center gap-2 ${idleSeconds > 5 ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
+            <div className={`ml-4 px-2.5 py-1 rounded-md text-xs font-['Geist_Mono'] flex items-center gap-2 ${idleSeconds >= IDLE_THRESHOLD_SECS ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
                <Clock size={12} />
                <span>Idle: {idleSeconds}s</span>
             </div>

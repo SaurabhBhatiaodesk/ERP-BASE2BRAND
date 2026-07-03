@@ -5,6 +5,7 @@ import {
   fetchChatChannelReadStates,
   fetchChatChannelsForUser,
   fetchChatMessages,
+  fetchChatMessageReactions,
   fetchChatUnreadCounts,
   mapChatMessage,
   subscribeChatReadReceipts,
@@ -14,6 +15,15 @@ import {
 } from "@/lib/database";
 
 type RefreshOptions = { silent?: boolean };
+
+function sortChatMessages(messages: ChatMessage[]): ChatMessage[] {
+  return [...messages].sort((a, b) => {
+    const ta = new Date(a.createdAt).getTime();
+    const tb = new Date(b.createdAt).getTime();
+    if (ta !== tb) return ta - tb;
+    return a.id.localeCompare(b.id);
+  });
+}
 
 type LoadState<T> = {
   data: T;
@@ -142,7 +152,7 @@ export function useChatMessages(channelId: string | null) {
     setError(null);
     try {
       const messages = await fetchChatMessages(id);
-      if (channelIdRef.current === id) setData(messages);
+      if (channelIdRef.current === id) setData(sortChatMessages(messages));
     } catch (err) {
       if (channelIdRef.current === id) {
         setError(err instanceof Error ? err.message : "Failed to load messages");
@@ -157,7 +167,9 @@ export function useChatMessages(channelId: string | null) {
   }, [channelId, load]);
 
   const appendMessage = useCallback((message: ChatMessage) => {
-    setData(prev => (prev.some(m => m.id === message.id) ? prev : [...prev, message]));
+    setData(prev =>
+      prev.some(m => m.id === message.id) ? prev : sortChatMessages([...prev, message])
+    );
   }, []);
 
   const replaceMessage = useCallback((tempId: string, message: ChatMessage) => {
@@ -174,7 +186,7 @@ export function useChatMessages(channelId: string | null) {
 
       const next = [...prev];
       next[idx] = message;
-      return next;
+      return sortChatMessages(next);
     });
   }, []);
 
@@ -201,7 +213,27 @@ export function useChatMessages(channelId: string | null) {
           const row = payload.new as DbChatMessage;
           if (row.channel_id !== channelIdRef.current) return;
           const message = mapChatMessage(row);
-          setData(prev => (prev.some(m => m.id === message.id) ? prev : [...prev, message]));
+          setData(prev =>
+            prev.some(m => m.id === message.id) ? prev : sortChatMessages([...prev, message])
+          );
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "chat_message_reactions" },
+        payload => {
+          const messageId =
+            (payload.new as { message_id?: string } | null)?.message_id ||
+            (payload.old as { message_id?: string } | null)?.message_id;
+          if (!messageId) return;
+          void fetchChatMessageReactions(messageId)
+            .then(reactions => {
+              if (channelIdRef.current !== channelId) return;
+              setData(prev =>
+                prev.map(m => (m.id === messageId ? { ...m, reactions } : m))
+              );
+            })
+            .catch(() => {});
         }
       )
       .subscribe();
