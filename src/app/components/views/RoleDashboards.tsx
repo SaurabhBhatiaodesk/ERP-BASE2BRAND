@@ -36,6 +36,7 @@ import {
   type TimesheetEntry,
 } from "@/lib/database";
 import { sessionStatusToActivity } from "@/lib/shiftTimeline";
+import { EmployeeDailyTimeline } from "./EmployeeDailyTimeline";
 
 function employeeTimerSession(
   activeClock: ClockSessionRecord | null,
@@ -807,6 +808,14 @@ export function EmployeeDashboard({
     return () => { cancelled = true; };
   }, [userName, myProfile?.id, pLoading, refreshClockState]);
 
+  useEffect(() => {
+    const onClockSessionChanged = () => {
+      void refreshClockState();
+    };
+    window.addEventListener("clock-session-changed", onClockSessionChanged);
+    return () => window.removeEventListener("clock-session-changed", onClockSessionChanged);
+  }, [refreshClockState]);
+
   const timerSession = employeeTimerSession(activeClock, todaySession);
   const timerSessionId = timerSession?.id ?? null;
 
@@ -1102,6 +1111,24 @@ export function EmployeeDashboard({
           </div>
         ))}
       </div>
+
+      {myProfile ? (
+        <EmployeeDailyTimeline
+          profile={{
+            id: myProfile.id,
+            name: myProfile.name,
+            avatar: myProfile.avatar,
+            role: myProfile.role,
+            dept: myProfile.dept,
+            shiftStart: myProfile.shiftStart,
+            lastActiveAt: myProfile.last_active_at,
+            profileImageUrl: myProfile.profileImageUrl,
+          }}
+          session={activeClock ?? todaySession}
+          workTasks={allMyTasks}
+        />
+      ) : null}
+
       <div className="grid lg:grid-cols-2 gap-6">
         <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-5">
           <div className="flex items-center justify-between mb-1">

@@ -625,6 +625,51 @@ function profileIdByName(profiles: EmployeeProfile[], name?: string) {
   return resolveProfileIdFromName(profiles, name) || "";
 }
 
+function validProfileIdSet(profiles: EmployeeProfile[]) {
+  return new Set(profiles.map(p => p.id));
+}
+
+function pickValidProfileIds(ids: string[], valid: Set<string>) {
+  return ids.filter(id => valid.has(id));
+}
+
+function resolveProjectTeamMeta(
+  row: DbProject,
+  profiles: EmployeeProfile[],
+  projMembers: Pick<DbProjectMemberRow, "project_id" | "employee_id" | "role">[],
+  parsedTeam: ReturnType<typeof parseTeamFromDb>
+) {
+  const valid = validProfileIdSet(profiles);
+  const teamIdsFromRow = Array.isArray(row.team_ids) ? row.team_ids.filter(Boolean) : [];
+  const idsFromNames = parsedTeam.names
+    .map(name => profileIdByName(profiles, name))
+    .filter(Boolean);
+  const leadFromName = profileIdByName(profiles, row.lead);
+  const leadMember = projMembers.find(m => m.role === "lead");
+
+  const leadId = [row.lead_id, leadMember?.employee_id, leadFromName].find(
+    id => Boolean(id && valid.has(id))
+  );
+
+  const teamIds = [
+    ...new Set([
+      ...pickValidProfileIds(parsedTeam.ids, valid),
+      ...pickValidProfileIds(teamIdsFromRow, valid),
+      ...pickValidProfileIds(projMembers.map(m => m.employee_id), valid),
+      ...idsFromNames,
+      ...(leadId ? [leadId] : []),
+    ]),
+  ];
+
+  const teamMembers = parsedTeam.members.filter(m => m.id && valid.has(m.id)).length
+    ? parsedTeam.members.filter(m => m.id && valid.has(m.id))
+    : teamIds.map(id => ({ id, name: profileNameById(profiles, id) })).filter(m => m.name);
+
+  const leadName = profileNameById(profiles, leadId) || row.lead;
+
+  return { teamIds, leadId, teamMembers, leadName };
+}
+
 /** Resolve profile id from display name — returns null when ambiguous (e.g. two "Abhishek"). */
 export function resolveProfileIdFromName(profiles: EmployeeProfile[], name?: string): string | null {
   if (!name?.trim()) return null;
@@ -652,9 +697,18 @@ export function parseTeamFromDb(team: unknown, profiles?: EmployeeProfile[]) {
       }
       if (item && typeof item === "object") {
         const row = item as { id?: string; name?: string };
-        const name = (row.name || "").trim();
-        if (!name) return null;
-        return { id: row.id || (profiles ? profileIdByName(profiles, name) : ""), name };
+        const storedId = (row.id || "").trim();
+        let name = (row.name || "").trim();
+        if (!name && storedId && profiles) {
+          name = profileNameById(profiles, storedId) || "";
+        }
+        if (!name && !storedId) return null;
+        const idFromProfiles = profiles ? profileIdByName(profiles, name) : "";
+        const id =
+          storedId && profiles?.some(p => p.id === storedId)
+            ? storedId
+            : idFromProfiles || storedId;
+        return { id, name: name || profileNameById(profiles, id) || storedId };
       }
       return null;
     })
@@ -1479,6 +1533,20 @@ function stripShiftStart(payload: Record<string, unknown>) {
   return rest;
 }
 
+function formatDbError(error: { code?: string; message?: string; details?: string } | null, action: string) {
+  if (!error) return `${action} failed`;
+  const msg = String(error.message ?? "").trim();
+  if (error.code === "42501" || msg.toLowerCase().includes("row-level security")) {
+    return `${action} blocked by database security. Run supabase/rls_all_tables.sql in Supabase SQL Editor, then retry.`;
+  }
+  if (error.code === "23505" || msg.toLowerCase().includes("duplicate")) {
+    return "This email is already registered. Please sign in instead.";
+  }
+  if (msg) return msg;
+  if (error.details) return error.details;
+  return `${action} failed (${error.code ?? "unknown"})`;
+}
+
 async function insertEmployeeProfileRow(row: Record<string, unknown>) {
   let payload = { ...row };
   const optionalStrips: Array<(p: Record<string, unknown>) => Record<string, unknown>> = [
@@ -1508,7 +1576,7 @@ async function insertEmployeeProfileRow(row: Record<string, unknown>) {
       payload = stripShiftStart(payload);
       continue;
     }
-    throw error;
+    throw new Error(formatDbError(error, "Profile creation"));
   }
 }
 
@@ -1527,7 +1595,7 @@ async function updateEmployeeProfileRow(id: string, payload: Record<string, unkn
       "Profile photo column missing in database. Run supabase/profile_image.sql in Supabase SQL Editor, then try again."
     );
   }
-  if (error) throw error;
+  if (error) throw new Error(formatDbError(error, "Profile update"));
 }
 
 // ─── Fetchers ────────────────────────────────────────────────────────────────
@@ -1607,18 +1675,12 @@ async function fetchProjectsRelational(rows: DbProject[], profiles: EmployeeProf
   return rows.map(row => {
     const parsedTeam = parseTeamFromDb(row.team, profiles);
     const projMembers = membersByProject.get(row.id) || [];
-    const teamIdsFromRow = Array.isArray(row.team_ids) ? row.team_ids.filter(Boolean) : [];
-    const teamIds = parsedTeam.ids.length
-      ? parsedTeam.ids
-      : teamIdsFromRow.length
-        ? teamIdsFromRow
-        : projMembers.map(m => m.employee_id);
-    const teamMembers = parsedTeam.members.length
-      ? parsedTeam.members
-      : teamIds.map(id => ({ id, name: profileNameById(profiles, id) })).filter(m => m.name);
-    const leadMember = projMembers.find(m => m.role === "lead");
-    const leadId = row.lead_id || leadMember?.employee_id;
-    const leadName = profileNameById(profiles, leadId) || row.lead;
+    const { teamIds, leadId, teamMembers, leadName } = resolveProjectTeamMeta(
+      row,
+      profiles,
+      projMembers,
+      parsedTeam
+    );
 
     const projTasks = (tasksByProject.get(row.id) || []).map(t => ({
       title: t.title,
@@ -1639,14 +1701,31 @@ async function fetchProjectsRelational(rows: DbProject[], profiles: EmployeeProf
   });
 }
 
+async function loadProjectRows(): Promise<DbProject[]> {
+  const fetchPage = (ordered: boolean): SupabasePageFetcher<DbProject> => (from, pageSize) => {
+    let query = supabase.from("projects").select("*");
+    if (ordered) query = query.order("created_at", { ascending: false });
+    return query.range(from, from + pageSize - 1);
+  };
+
+  try {
+    const rows = await fetchAllPaginated(fetchPage(true));
+    if (rows.length > 0) return rows;
+  } catch (err) {
+    console.warn("projects fetch with created_at order failed:", err);
+  }
+
+  return fetchAllPaginated(fetchPage(false));
+}
+
 async function loadProjects(): Promise<Project[]> {
-  const rows = await fetchAllPaginated<DbProject>((from, pageSize) =>
-    supabase
-      .from("projects")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .range(from, from + pageSize - 1)
-  );
+  const rows = await loadProjectRows();
+
+  if (rows.length === 0) {
+    console.warn(
+      "[BASE2BRAND] projects query returned 0 rows. If Supabase Table Editor shows data, run supabase/rls_all_tables.sql (RLS/grants after DB import). Restart npm run dev after .env changes.",
+    );
+  }
 
   const profiles = await fetchEmployeeProfiles();
 
@@ -1654,7 +1733,12 @@ async function loadProjects(): Promise<Project[]> {
     return rows.map(row => mapProject(row, undefined, profiles));
   }
 
-  return fetchProjectsRelational(rows, profiles);
+  try {
+    return await fetchProjectsRelational(rows, profiles);
+  } catch (err) {
+    console.error("fetchProjectsRelational failed, using legacy project mapping:", err);
+    return rows.map(row => mapProject(row, undefined, profiles));
+  }
 }
 
 export async function fetchProjects(): Promise<Project[]> {
@@ -2159,6 +2243,9 @@ export async function assignProjectTeam(
   // Send Notifications
   if (newAssignments.length > 0) {
     const { data: { user } } = await supabase.auth.getUser();
+    const senderProfile = user?.email
+      ? profiles.find(p => p.email?.trim().toLowerCase() === user.email.trim().toLowerCase())
+      : undefined;
     const projName = oldProj?.name || "a project";
     for (const newId of newAssignments) {
       try {
@@ -2167,9 +2254,8 @@ export async function assignProjectTeam(
           title: "Project Assigned",
           message: `You have been assigned to project: ${projName}`,
           type: "project_assigned",
-          // Don't pass referenceId if projectId is not a valid UUID (e.g. 'P123') to avoid postgres 22P02 error
-          referenceId: projectId.startsWith('P') ? undefined : projectId,
-          senderId: user?.id
+          referenceId: projectId.startsWith("P") ? undefined : projectId,
+          senderId: senderProfile?.id,
         });
       } catch (notifErr) {
         console.error("Failed to send notification:", notifErr);
@@ -2795,6 +2881,23 @@ function applyEmployeeClockFilter<T extends { eq: (col: string, val: string) => 
 }
 
 /** One row per employee per day — returns today's row if any. */
+export function isIdlePausedSession(session: ClockSessionRecord | null | undefined): boolean {
+  if (!session || session.status !== "paused") return false;
+  const segments = session.segments || [];
+  const lastSeg = [...segments]
+    .sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime())
+    .slice(-1)[0];
+  if (lastSeg?.kind === "idle") return true;
+  if (
+    lastSeg?.kind === "break" &&
+    (lastSeg.label.toLowerCase().includes("idle") || lastSeg.label === "System Idle")
+  ) {
+    return true;
+  }
+  const notes = session.notes?.toLowerCase() || "";
+  return notes.includes("idle") || notes.includes("system idle");
+}
+
 export async function fetchTodayOfficeSession(
   employeeName: string,
   employeeId?: string
@@ -3086,6 +3189,10 @@ export async function clockInEmployee(input: {
         startedAtMs: nowMs,
       });
       clockSessionsTableReady = true;
+      await supabase
+        .from("employee_profiles")
+        .update({ last_active_at: now })
+        .eq("id", employeeId);
       await resumeEmployeeTaskTimers(input.employeeName, employeeId);
       invalidateAttendanceCache();
       return mapClockSession(data);
@@ -3116,6 +3223,10 @@ export async function clockInEmployee(input: {
     label: "Office attendance",
     startedAtMs: nowMs,
   });
+  await supabase
+    .from("employee_profiles")
+    .update({ last_active_at: now })
+    .eq("id", employeeId);
   await resumeEmployeeTaskTimers(input.employeeName, employeeId);
   invalidateAttendanceCache();
   return mapClockSession(data);
@@ -3988,6 +4099,8 @@ export function findProfileForUser(
   if (normalized) {
     const exact = profiles.filter(p => p.name.trim().toLowerCase() === normalized);
     if (exact.length === 1) return exact[0];
+    const loose = profiles.filter(p => namesMatch(p.name, userName));
+    if (loose.length === 1) return loose[0];
   }
 
   return undefined;
@@ -4037,18 +4150,18 @@ export function filterTasksForUser(tasks: AppTask[], userName: string, userId?: 
 }
 
 export function getEmployeeProjects(projects: Project[], employeeName: string, employeeId?: string) {
-  if (employeeId?.trim()) {
-    const id = employeeId.trim();
-    return projects.filter(
-      p => p.teamIds?.includes(id) || p.leadId === id
-    );
-  }
-  if (!employeeName.trim()) return projects;
-  return projects.filter(
-    p =>
-      p.team.some(m => m.trim().toLowerCase() === employeeName.trim().toLowerCase()) ||
-      p.lead.trim().toLowerCase() === employeeName.trim().toLowerCase()
-  );
+  const id = employeeId?.trim();
+  const name = employeeName.trim();
+
+  return projects.filter(p => {
+    if (id && (p.teamIds?.includes(id) || p.leadId === id)) return true;
+    if (id && p.teamMembers?.some(m => m.id === id)) return true;
+    if (!name) return false;
+    if (namesMatch(p.lead, name)) return true;
+    if (p.team.some(m => namesMatch(m, name))) return true;
+    if (p.teamMembers?.some(m => namesMatch(m.name, name))) return true;
+    return false;
+  });
 }
 
 function parseTimesheetEntryDateIso(date: string): string | null {
@@ -4915,8 +5028,12 @@ export async function insertNotification(input: {
   senderId?: string;
   referenceId?: string;
 }) {
+  if (!input.recipientId?.trim()) {
+    throw new Error("Notification recipient is required.");
+  }
+
   const payload = {
-    recipient_id: input.recipientId,
+    recipient_id: input.recipientId.trim(),
     sender_id: input.senderId || null,
     title: input.title,
     message: input.message,
@@ -4925,19 +5042,22 @@ export async function insertNotification(input: {
   };
 
   const { error } = await supabase.from("notifications").insert(payload);
-  
+
   if (error) {
-    // If it's a foreign key constraint error (likely sender_id mismatch), retry without sender_id
-    if (error.code === '23503' && payload.sender_id) {
+    if (error.code === "23503" && payload.sender_id) {
       console.warn("Sender ID foreign key mismatch, retrying without sender_id...");
-      payload.sender_id = null;
-      const { error: retryError } = await supabase.from("notifications").insert(payload);
-      if (retryError && !retryError.message?.includes("does not exist")) {
-        console.error("Retry insert notification error:", retryError);
+      const { error: retryError } = await supabase.from("notifications").insert({
+        ...payload,
+        sender_id: null,
+      });
+      if (retryError) {
+        console.error("Insert notification error:", retryError);
+        throw retryError;
       }
-    } else if (!error.message?.includes("does not exist")) {
-      console.error("Insert notification error:", error);
+      return;
     }
+    console.error("Insert notification error:", error);
+    throw error;
   }
 }
 

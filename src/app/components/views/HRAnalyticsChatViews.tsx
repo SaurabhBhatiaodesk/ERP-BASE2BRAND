@@ -3,7 +3,7 @@ import {
   Plus, Users, Calendar, Award, MoreHorizontal,
   Hash, Phone, Search, Send, Megaphone, X,
   MessageCircle, UserPlus, Paperclip, FileText, Loader2,
-  CheckCheck, AlertCircle, Download, ExternalLink, Smile, Settings2, Edit, ImagePlay, Image as ImageIcon,
+  CheckCheck, AlertCircle, Download, ExternalLink, Smile, Settings2, Edit, Image as ImageIcon,
   ChevronLeft, ChevronRight, Eye
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
@@ -1231,10 +1231,6 @@ export function ChatView({
   const [creating, setCreating] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showEditGroup, setShowEditGroup] = useState(false);
-  const [showGifPicker, setShowGifPicker] = useState(false);
-  const [gifSearch, setGifSearch] = useState("");
-  const [gifResults, setGifResults] = useState<any[]>([]);
-  const [gifLoading, setGifLoading] = useState(false);
   const [latestMsgs, setLatestMsgs] = useState<Record<string, { content: string, isOwn: boolean, time: string }>>({});
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const userPickedChannelRef = useRef(false);
@@ -1289,23 +1285,6 @@ export function ChatView({
     setPendingAttachment({ file, previewUrl });
     setSendError("");
   }
-
-  useEffect(() => {
-    if (!showGifPicker) return;
-    const delayDebounceFn = setTimeout(() => {
-      setGifLoading(true);
-      const query = gifSearch.trim() || "excited";
-      fetch(`https://g.tenor.com/v1/search?q=${encodeURIComponent(query)}&key=LIVDSRZULELA&limit=12`)
-        .then(res => res.json())
-        .then(data => {
-          setGifResults(data.results || []);
-        })
-        .catch(console.error)
-        .finally(() => setGifLoading(false));
-    }, 500);
-
-    return () => clearTimeout(delayDebounceFn);
-  }, [gifSearch, showGifPicker]);
 
   const chatChannels = useMemo(
     () => channels.filter(c => c.channelType === "dm" || c.channelType === "group"),
@@ -1697,46 +1676,6 @@ export function ChatView({
     const file = e.target.files?.[0];
     e.target.value = "";
     if (file) stageChatFile(file);
-  }
-
-  async function handleSendGif(gifUrl: string) {
-    if (!activeChannel || !currentUser) return;
-    
-    setShowGifPicker(false);
-    const caption = msg.trim() || "GIF";
-    const optimistic = buildOptimisticMessage(activeChannel.id, currentUser, {
-      content: caption,
-      messageType: "image",
-      mediaUrl: gifUrl,
-      mediaType: "image/gif",
-      fileName: "tenor.gif",
-      fileSize: 0,
-    });
-    setSending(true);
-    setSendError("");
-    appendMessage(optimistic);
-    bumpChannelPreview(activeChannel.id, "GIF", true, optimistic.createdAt);
-    try {
-      const sent = await sendChatMessage({
-        channelId: activeChannel.id,
-        senderId: currentUser.id,
-        senderName: currentUser.name,
-        content: caption,
-        messageType: "image",
-        mediaUrl: gifUrl,
-        mediaType: "image/gif",
-        fileName: "tenor.gif",
-        isBroadcast: false,
-      });
-      setMsg("");
-      replaceMessage(optimistic.id, sent);
-      refreshUnread({ silent: true });
-    } catch (err) {
-      patchMessage(optimistic.id, { clientStatus: "failed" });
-      setSendError(err instanceof Error ? err.message : "Failed to send GIF");
-    } finally {
-      setSending(false);
-    }
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -2266,46 +2205,6 @@ export function ChatView({
                         {emoji}
                       </button>
                     ))}
-                  </div>
-                )}
-              </div>
-              <div className="relative flex items-center">
-                <button
-                  type="button"
-                  onClick={() => setShowGifPicker(!showGifPicker)}
-                  disabled={!activeChannel || tablesMissing || uploading}
-                  className="p-1.5 hover:bg-white/[0.04] rounded-lg transition-colors text-[#6b7fa8] hover:text-white disabled:opacity-40"
-                  title="Insert GIF"
-                >
-                  <ImagePlay size={15} />
-                </button>
-                {showGifPicker && (
-                  <div className="absolute bottom-full left-0 mb-2 bg-[#131a35] border border-[rgba(99,102,241,0.2)] rounded-lg p-3 shadow-xl shadow-indigo-950/50 w-72 z-50">
-                    <input
-                      type="text"
-                      value={gifSearch}
-                      onChange={e => setGifSearch(e.target.value)}
-                      placeholder="Search GIFs..."
-                      className="w-full bg-[#080c1a] border border-[rgba(99,102,241,0.15)] rounded px-2 py-1.5 text-xs text-white outline-none focus:border-indigo-500/40 mb-3"
-                    />
-                    <div className="h-48 overflow-y-auto grid grid-cols-2 gap-1.5">
-                      {gifLoading && gifResults.length === 0 ? (
-                        <p className="text-xs text-[#6b7fa8] col-span-2 text-center py-4">Loading...</p>
-                      ) : gifResults.length > 0 ? (
-                        gifResults.map(g => (
-                          <button
-                            key={g.id}
-                            type="button"
-                            onClick={() => handleSendGif(g.media[0].gif.url)}
-                            className="rounded overflow-hidden hover:opacity-80 transition-opacity bg-black/20"
-                          >
-                            <img src={g.media[0].nanogif.url} alt="GIF" className="w-full h-20 object-cover" />
-                          </button>
-                        ))
-                      ) : (
-                        <p className="text-xs text-[#6b7fa8] col-span-2 text-center py-4">No results</p>
-                      )}
-                    </div>
                   </div>
                 )}
               </div>

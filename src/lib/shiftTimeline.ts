@@ -1,45 +1,32 @@
-import { IDLE_THRESHOLD_MINUTES } from "./idleConfig";
 import type { ClockSessionRecord, ClockSessionSegment } from "./database";
 import type { ActivityKind, ShiftEmployee, TimelineBlock } from "@/app/components/views/ShiftView";
 import type { AppTask } from "./database";
 import { buildShiftActiveTasks, aggregateStageSeconds, shortStageLabel, type ShiftActiveTask } from "./taskStageTime";
 import {
   SHIFT_DURATION,
-  TIMELINE_AXIS_DURATION,
-  TIMELINE_AXIS_START,
+  DEFAULT_TIMELINE_AXIS,
+  DEFAULT_SHIFT_START,
+  SHIFT_START_OPTIONS,
+  type TimelineAxis,
   clockMinutesToLabel,
   isoToTimelineMinutes,
   currentTimelineNowMin,
-} from "@/app/components/views/ShiftView";
+  parseShiftStartMinutes,
+  formatShiftStartLabel,
+  resolveTimelineAxis,
+  clockMinToAxisMin,
+  computeShiftEndMin,
+  isOvernightEmployeeShift,
+} from "./shiftConfig";
 
-export const DEFAULT_SHIFT_START = "10:00";
-
-export const SHIFT_START_OPTIONS = [
-  { value: "10:00", label: "10:00 AM" },
-  { value: "11:00", label: "11:00 AM" },
-  { value: "12:00", label: "12:00 PM" },
-] as const;
-
-export function parseShiftStartMinutes(value?: string | null) {
-  if (!value?.trim()) return 10 * 60;
-  const t = value.trim().toUpperCase();
-  const m12 = t.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
-  if (m12) {
-    let h = parseInt(m12[1], 10);
-    const min = parseInt(m12[2], 10);
-    const ap = m12[3];
-    if (ap === "PM" && h !== 12) h += 12;
-    if (ap === "AM" && h === 12) h = 0;
-    return h * 60 + min;
-  }
-  const m24 = t.match(/^(\d{1,2}):(\d{2})$/);
-  if (m24) return parseInt(m24[1], 10) * 60 + parseInt(m24[2], 10);
-  return 10 * 60;
-}
-
-export function formatShiftStartLabel(value?: string | null) {
-  return clockMinutesToLabel(parseShiftStartMinutes(value));
-}
+export {
+  DEFAULT_SHIFT_START,
+  SHIFT_START_OPTIONS,
+  parseShiftStartMinutes,
+  formatShiftStartLabel,
+  resolveTimelineAxis,
+};
+export type { TimelineAxis };
 
 export function sessionStatusToActivity(session: ClockSessionRecord | null): ActivityKind {
   if (!session) return "offline";
@@ -63,6 +50,7 @@ export function sessionStatusToActivity(session: ClockSessionRecord | null): Act
 export function segmentsToTimeline(
   segments: ClockSessionSegment[],
   loginMin: number,
+  axis: TimelineAxis = DEFAULT_TIMELINE_AXIS,
 ): TimelineBlock[] {
   const blocks: TimelineBlock[] = [
     { kind: "login", label: "Logged in", start: loginMin, end: loginMin },
@@ -72,12 +60,24 @@ export function segmentsToTimeline(
   );
   for (const seg of sorted) {
     // kind=idle (new) OR kind=break with "idle"/"System Idle" label (legacy data)
-    const isIdle = seg.kind === "idle" || (seg.kind === "break" && (seg.label.toLowerCase().includes("idle") || seg.label === "System Idle"));
+    const isIdle =
+      seg.kind === "idle" ||
+      (seg.kind === "break" &&
+        (seg.label.toLowerCase().includes("idle") || seg.label === "System Idle"));
+    const isBreak =
+      seg.kind === "break" || seg.kind === "lunch_break" || seg.label?.toLowerCase().includes("lunch");
+    const kind: ActivityKind = isIdle
+      ? "idle"
+      : isBreak
+        ? "break"
+        : seg.kind === "meeting"
+          ? "meeting"
+          : "working";
     blocks.push({
-      kind: isIdle ? "idle" : seg.kind,
-      label: isIdle ? "Idle" : seg.label,
-      start: isoToTimelineMinutes(seg.startedAt),
-      end: seg.endedAt ? isoToTimelineMinutes(seg.endedAt) : null,
+      kind,
+      label: isIdle ? "Idle" : seg.label || (kind === "working" ? "Office attendance" : kind),
+      start: isoToTimelineMinutes(seg.startedAt, axis),
+      end: seg.endedAt ? isoToTimelineMinutes(seg.endedAt, axis) : null,
     });
   }
   return blocks;
@@ -89,8 +89,8 @@ function pauseLabelFromNotes(notes?: string | null) {
   return cleaned;
 }
 
-function prependMissingWork(blocks: TimelineBlock[], session: ClockSessionRecord): TimelineBlock[] {
-  const loginMin = isoToTimelineMinutes(session.clockIn);
+function prependMissingWork(blocks: TimelineBlock[], session: ClockSessionRecord, axis: TimelineAxis): TimelineBlock[] {
+  const loginMin = isoToTimelineMinutes(session.clockIn, axis);
   const activity = blocks.filter(b => b.kind !== "login").sort((a, b) => a.start - b.start);
   if (!activity.length) return blocks;
 
@@ -105,7 +105,7 @@ function prependMissingWork(blocks: TimelineBlock[], session: ClockSessionRecord
   ];
 }
 
-/** Only stitch tiny gaps between segments (rounding); never invent breaks. */
+/** Only stitch tiny gaps between segments (rounding); never invent idle/break blocks. */
 function fillSmallGapsOnly(blocks: TimelineBlock[], nowMin: number): TimelineBlock[] {
   const login = blocks.find(b => b.kind === "login");
   const activity = blocks.filter(b => b.kind !== "login").sort((a, b) => a.start - b.start);
@@ -120,8 +120,6 @@ function fillSmallGapsOnly(blocks: TimelineBlock[], nowMin: number): TimelineBlo
       if (prev && prev.kind !== "login") {
         prev.end = block.start;
       }
-    } else if (block.start > cursor + 1) {
-      result.push({ kind: "idle", label: "Idle", start: cursor, end: block.start });
     }
     result.push({ ...block });
     cursor = block.end ?? nowMin;
@@ -129,15 +127,15 @@ function fillSmallGapsOnly(blocks: TimelineBlock[], nowMin: number): TimelineBlo
   return result;
 }
 
-function legacySessionToTimeline(session: ClockSessionRecord, nowMin: number): TimelineBlock[] {
-  const loginMin = isoToTimelineMinutes(session.clockIn);
+function legacySessionToTimeline(session: ClockSessionRecord, nowMin: number, axis: TimelineAxis): TimelineBlock[] {
+  const loginMin = isoToTimelineMinutes(session.clockIn, axis);
   const blocks: TimelineBlock[] = [
     { kind: "login", label: "Logged in", start: loginMin, end: loginMin },
   ];
   const workedMins = Math.round((Number(session.hours) || 0) * 60);
 
   if (session.status === "active") {
-    const start = isoToTimelineMinutes(session.sessionStart || session.clockIn);
+    const start = isoToTimelineMinutes(session.sessionStart || session.clockIn, axis);
     if (workedMins > 0 && start > loginMin + 5) {
       blocks.push({ kind: "working", label: "Office attendance", start: loginMin, end: loginMin + workedMins });
       if (start > loginMin + workedMins + 1) {
@@ -155,7 +153,7 @@ function legacySessionToTimeline(session: ClockSessionRecord, nowMin: number): T
 
   if (session.status === "paused") {
     const breakStart = session.sessionStart
-      ? isoToTimelineMinutes(session.sessionStart)
+      ? isoToTimelineMinutes(session.sessionStart, axis)
       : Math.min(nowMin, loginMin + Math.max(workedMins, 1));
     const workEnd = Math.max(loginMin, Math.min(breakStart, nowMin));
     if (workEnd > loginMin) {
@@ -172,21 +170,21 @@ function legacySessionToTimeline(session: ClockSessionRecord, nowMin: number): T
   }
 
   const end = session.clockOut
-    ? isoToTimelineMinutes(session.clockOut)
+    ? isoToTimelineMinutes(session.clockOut, axis)
     : Math.min(nowMin, loginMin + Math.max(workedMins, 1));
   blocks.push({ kind: "working", label: "Office attendance", start: loginMin, end });
   return blocks;
 }
 
-export function sessionToTimeline(session: ClockSessionRecord, nowMin: number): TimelineBlock[] {
-  const loginMin = isoToTimelineMinutes(session.clockIn);
+export function sessionToTimeline(session: ClockSessionRecord, nowMin: number, axis: TimelineAxis = DEFAULT_TIMELINE_AXIS): TimelineBlock[] {
+  const loginMin = isoToTimelineMinutes(session.clockIn, axis);
   let blocks: TimelineBlock[];
 
   if (session.segments && session.segments.length > 0) {
-    blocks = segmentsToTimeline(session.segments, loginMin);
-    blocks = prependMissingWork(blocks, session);
+    blocks = segmentsToTimeline(session.segments, loginMin, axis);
+    blocks = prependMissingWork(blocks, session, axis);
   } else {
-    blocks = legacySessionToTimeline(session, nowMin);
+    blocks = legacySessionToTimeline(session, nowMin, axis);
   }
 
   return fillSmallGapsOnly(blocks, nowMin);
@@ -216,9 +214,13 @@ export function calcProductivity(
   shiftEndMin: number,
   trackedTasks?: ShiftActiveTask[],
   targetDate?: string,
+  axis: TimelineAxis = DEFAULT_TIMELINE_AXIS,
 ) {
-  const shiftStartAxis = Math.max(0, shiftStartMin - TIMELINE_AXIS_START);
-  const shiftEndAxis = shiftEndMin - TIMELINE_AXIS_START;
+  const shiftStartAxis = clockMinToAxisMin(shiftStartMin, axis);
+  let shiftEndAxis = clockMinToAxisMin(shiftEndMin, axis);
+  if (isOvernightEmployeeShift(shiftStartMin, shiftEndMin) && shiftEndAxis <= shiftStartAxis) {
+    shiftEndAxis = axis.duration;
+  }
   const effectiveNow = Math.min(nowMin, shiftEndAxis);
   if (effectiveNow <= shiftStartAxis) return 0;
 
@@ -283,25 +285,26 @@ export function buildShiftEmployee(input: {
   workTasksInput?: AppTask[];
   trackedTasksInput?: AppTask[];
   targetDate?: string;
+  timelineAxis?: TimelineAxis;
 }): ShiftEmployee & { profileImageUrl?: string } {
   const {
     id, name, avatar, role, dept, session, currentTask = "—", profileImageUrl, shiftStart,
     lastActiveAt, workTasksInput = [], trackedTasksInput = [], targetDate,
+    timelineAxis = DEFAULT_TIMELINE_AXIS,
   } = input;
   const workTasks = buildShiftActiveTasks(workTasksInput);
   const trackedTasks = buildShiftActiveTasks(trackedTasksInput);
   const workTask = workTasks[0] ?? null;
   const taskTitle = workTask?.title || currentTask;
   const shiftStartMin = parseShiftStartMinutes(shiftStart);
-  const shiftEndMin = shiftStartMin + SHIFT_DURATION;
+  const shiftEndMin = computeShiftEndMin(shiftStartMin);
   const shiftStartLabel = formatShiftStartLabel(shiftStart);
   const shiftEndLabel = clockMinutesToLabel(shiftEndMin);
-  const nowMin = targetDate ? 1440 : currentTimelineNowMin();
-  const shiftEndAxis = shiftEndMin - TIMELINE_AXIS_START;
-  const effectiveNow = Math.min(nowMin, TIMELINE_AXIS_DURATION);
-  const timeline = session ? sessionToTimeline(session, effectiveNow) : [];
+  const nowMin = targetDate ? timelineAxis.duration : currentTimelineNowMin(timelineAxis);
+  const effectiveNow = Math.min(nowMin, timelineAxis.duration);
+  const timeline = session ? sessionToTimeline(session, effectiveNow, timelineAxis) : [];
   const status = sessionStatusToActivity(session);
-  const productivity = calcProductivity(timeline, nowMin, shiftStartMin, shiftEndMin, trackedTasks, targetDate);
+  const productivity = calcProductivity(timeline, nowMin, shiftStartMin, shiftEndMin, trackedTasks, targetDate, timelineAxis);
 
 
   const loginIso = session?.clockIn;
@@ -315,22 +318,20 @@ export function buildShiftEmployee(input: {
 
   let currentStatus = status;
   let idleMins = 0;
-  if (status === "working" && lastActiveAt) {
-    idleMins = Math.floor((Date.now() - new Date(lastActiveAt).getTime()) / 60000);
-    if (idleMins >= IDLE_THRESHOLD_MINUTES) {
-      currentStatus = "idle";
-      const lastBlock = timeline[timeline.length - 1];
-      if (lastBlock && lastBlock.kind === "working" && lastBlock.end === null) {
-        const idleStartMin = isoToTimelineMinutes(lastActiveAt);
-        const finalIdleStart = Math.max(idleStartMin, lastBlock.start);
-        lastBlock.end = finalIdleStart;
-        timeline.push({
-          kind: "idle",
-          label: "Idle",
-          start: finalIdleStart,
-          end: null
-        });
-      }
+
+  if (currentStatus === "idle" && session) {
+    const idleSeg = [...(session.segments || [])]
+      .sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime())
+      .filter(
+        seg =>
+          seg.kind === "idle" ||
+          (seg.kind === "break" &&
+            (seg.label.toLowerCase().includes("idle") || seg.label === "System Idle")),
+      )
+      .slice(-1)[0];
+    const idleStart = idleSeg?.startedAt || session.sessionStart;
+    if (idleStart) {
+      idleMins = Math.floor((Date.now() - new Date(idleStart).getTime()) / 60000);
     }
   }
 
@@ -434,13 +435,13 @@ export type StageTimelineBlock = {
   taskTitle: string;
 };
 
-function stageHistoryToBlocks(task: ShiftActiveTask, effectiveNowMin: number): StageTimelineBlock[] {
+function stageHistoryToBlocks(task: ShiftActiveTask, effectiveNowMin: number, axis: TimelineAxis): StageTimelineBlock[] {
   const blocks: StageTimelineBlock[] = [];
   const openStatuses = new Set<string>();
 
   for (const row of task.stageHistory) {
-    const start = isoToTimelineMinutes(row.entered_at);
-    const end = row.exited_at ? isoToTimelineMinutes(row.exited_at) : null;
+    const start = isoToTimelineMinutes(row.entered_at, axis);
+    const end = row.exited_at ? isoToTimelineMinutes(row.exited_at, axis) : null;
     if (!row.exited_at) openStatuses.add(row.to_status);
     blocks.push({
       status: row.to_status,
@@ -455,7 +456,7 @@ function stageHistoryToBlocks(task: ShiftActiveTask, effectiveNowMin: number): S
     blocks.push({
       status: task.status,
       label: shortStageLabel(task.status),
-      start: isoToTimelineMinutes(task.statusEnteredAt),
+      start: isoToTimelineMinutes(task.statusEnteredAt, axis),
       end: effectiveNowMin,
       taskTitle: task.title,
     });
@@ -468,8 +469,9 @@ function stageHistoryToBlocks(task: ShiftActiveTask, effectiveNowMin: number): S
 export function buildEmployeeStageTimeline(
   tasks: ShiftActiveTask[],
   effectiveNowMin: number,
+  axis: TimelineAxis = DEFAULT_TIMELINE_AXIS,
 ): StageTimelineBlock[] {
   return tasks
-    .flatMap(task => stageHistoryToBlocks(task, effectiveNowMin))
+    .flatMap(task => stageHistoryToBlocks(task, effectiveNowMin, axis))
     .sort((a, b) => a.start - b.start || a.end - b.end);
 }

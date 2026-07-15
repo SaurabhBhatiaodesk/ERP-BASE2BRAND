@@ -12,7 +12,7 @@ import {
   type EmployeeProfile,
   type Project,
 } from "@/lib/database";
-import { isAdminRole } from "@/lib/auth";
+import { isAdminRole, isExecutiveProfile } from "@/lib/auth";
 
 const FAVORITES_KEY = "b2b_project_favorites";
 
@@ -228,16 +228,17 @@ export function ProjectsView({
   const [favorites, setFavorites] = useState<Set<string>>(() => readFavorites());
   const [editingProject, setEditingProject] = useState<Project | null>(null);
 
-  const isPersonal = !isAdminRole(userRole);
+  const canViewAllProjects =
+    isAdminRole(userRole) || Boolean(currentProfile && isExecutiveProfile(currentProfile));
+  const isPersonal = !canViewAllProjects;
   const firstName = userName.split(/\s+/)[0] || "there";
   const canEditProject = ["ceo", "teamlead", "manager", "hr"].includes(userRole.toLowerCase());
 
   const visibleProjects = useMemo(() => {
-    if (isAdminRole(userRole)) return projects;
+    if (canViewAllProjects) return projects;
     if (!userName) return projects;
-    const mine = getEmployeeProjects(projects, userName, currentProfile?.id);
-    return mine;
-  }, [projects, userRole, userName, currentProfile?.id]);
+    return getEmployeeProjects(projects, userName, currentProfile?.id);
+  }, [projects, canViewAllProjects, userName, currentProfile?.id]);
 
   const openTasksByProject = useMemo(() => {
     const scoped = isPersonal && userName
@@ -330,9 +331,11 @@ export function ProjectsView({
         <div className="bg-[#0d1326]/50 border border-[rgba(99,102,241,0.1)] rounded-2xl p-16 text-center">
           <DataEmpty
             message={
-              isPersonal
-                ? "No projects assigned yet."
-                : "No projects yet."
+              canViewAllProjects
+                ? "No projects loaded. If Supabase Table Editor shows projects, run supabase/rls_all_tables.sql (database import blocks app read access). Then hard-refresh (Ctrl+Shift+R)."
+                : isPersonal
+                  ? "No projects assigned yet."
+                  : "No projects yet."
             }
           />
         </div>

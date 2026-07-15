@@ -91,7 +91,11 @@ function useChatRealtimeRefresh(
       );
     }
 
-    room.subscribe();
+    room.subscribe((status, err) => {
+      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+        console.error(`Chat realtime error (${channelKey}):`, status, err);
+      }
+    });
 
     return () => {
       supabase.removeChannel(room);
@@ -140,6 +144,21 @@ export function useChatUnreadCounts(userId: string) {
   return { data, loading, error, refresh };
 }
 
+const CHAT_POLL_INTERVAL_MS = 5_000;
+
+function mergeChatMessages(prev: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
+  if (!prev.length) return sortChatMessages(incoming);
+  const byId = new Map(prev.map(m => [m.id, m]));
+  let changed = prev.length !== incoming.length;
+  for (const message of incoming) {
+    if (!byId.has(message.id)) {
+      byId.set(message.id, message);
+      changed = true;
+    }
+  }
+  return changed ? sortChatMessages(Array.from(byId.values())) : prev;
+}
+
 export function useChatMessages(channelId: string | null) {
   const [data, setData] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(Boolean(channelId));
@@ -152,7 +171,8 @@ export function useChatMessages(channelId: string | null) {
     setError(null);
     try {
       const messages = await fetchChatMessages(id);
-      if (channelIdRef.current === id) setData(sortChatMessages(messages));
+      if (channelIdRef.current !== id) return;
+      setData(prev => (silent ? mergeChatMessages(prev, messages) : sortChatMessages(messages)));
     } catch (err) {
       if (channelIdRef.current === id) {
         setError(err instanceof Error ? err.message : "Failed to load messages");
@@ -204,11 +224,26 @@ export function useChatMessages(channelId: string | null) {
 
     load(channelId);
 
+    const pollId = setInterval(() => {
+      if (channelIdRef.current === channelId) void load(channelId, true);
+    }, CHAT_POLL_INTERVAL_MS);
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && channelIdRef.current === channelId) {
+        void load(channelId, true);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
     const room = supabase
       .channel(`chat-messages:${channelId}:${instanceId}`)
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "chat_messages" },
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "chat_messages",
+        },
         payload => {
           const row = payload.new as DbChatMessage;
           if (row.channel_id !== channelIdRef.current) return;
@@ -220,7 +255,11 @@ export function useChatMessages(channelId: string | null) {
       )
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "chat_message_reactions" },
+        {
+          event: "*",
+          schema: "public",
+          table: "chat_message_reactions",
+        },
         payload => {
           const messageId =
             (payload.new as { message_id?: string } | null)?.message_id ||
@@ -236,9 +275,15 @@ export function useChatMessages(channelId: string | null) {
             .catch(() => {});
         }
       )
-      .subscribe();
+      .subscribe((status, err) => {
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          console.error("Chat messages realtime subscription error:", status, err);
+        }
+      });
 
     return () => {
+      clearInterval(pollId);
+      document.removeEventListener("visibilitychange", onVisible);
       supabase.removeChannel(room);
     };
   }, [channelId, instanceId, load]);

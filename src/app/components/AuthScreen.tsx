@@ -8,12 +8,16 @@ import {
   resolveLoginUser,
   saveAppSession,
   signUpWithRole,
+  sendPasswordResetOtp,
+  verifyPasswordResetOtp,
+  resetPasswordAfterOtp,
+  DEV_PASSWORD_RESET_OTP,
   ROLE_SIGNUP_DEFAULTS,
   type AppRoleId,
 } from "@/lib/auth";
 import {
-  Building2, Users, UserCheck, GitBranch, Star, TrendingUp, Award,
-  ChevronLeft, Eye, EyeOff,
+  Building2, Users, UserCheck, Award,
+  ChevronLeft, Eye, EyeOff, ShieldCheck,
 } from "lucide-react";
 
 const passwordInputCls =
@@ -64,12 +68,16 @@ const authRoles = [
 ];
 
 export function AuthScreen({ onLogin }: { onLogin: (role: string, name: string) => void }) {
-  const [step, setStep] = useState<"role" | "login" | "register">("role");
+  const [step, setStep] = useState<"role" | "login" | "register" | "forgot" | "forgot-otp" | "reset-password">("role");
   const [selectedRole, setSelectedRole] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [otp, setOtp] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [forgotSuccess, setForgotSuccess] = useState("");
   const [registerForm, setRegisterForm] = useState({
     fullName: "",
     email: "",
@@ -164,16 +172,6 @@ export function AuthScreen({ onLogin }: { onLogin: (role: string, name: string) 
     const appRole = (selectedRole || "employee") as AppRoleId;
 
     try {
-      await ensureEmployeeProfile({
-        fullName,
-        regEmail,
-        phone,
-        department,
-        designation,
-        employeeId,
-        appRole,
-      });
-
       let alreadyRegistered = false;
       try {
         await signUpWithRole(regEmail, password, appRole, {
@@ -190,6 +188,16 @@ export function AuthScreen({ onLogin }: { onLogin: (role: string, name: string) 
         }
         alreadyRegistered = true;
       }
+
+      await ensureEmployeeProfile({
+        fullName,
+        regEmail,
+        phone,
+        department,
+        designation,
+        employeeId,
+        appRole,
+      });
 
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user) {
@@ -226,6 +234,85 @@ export function AuthScreen({ onLogin }: { onLogin: (role: string, name: string) 
     }
   }
 
+  async function handleSendOtp() {
+    if (!email.trim()) {
+      setError("Please enter your work email.");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    setForgotSuccess("");
+    setOtp("");
+    try {
+      await sendPasswordResetOtp(email);
+      setStep("forgot-otp");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not send OTP");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleVerifyOtp() {
+    if (!otp.trim()) {
+      setError("Please enter the OTP.");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      if (!verifyPasswordResetOtp(otp)) {
+        throw new Error("Invalid OTP. For testing use 1234.");
+      }
+      setStep("reset-password");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Invalid OTP");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function openForgotPassword(prefillEmail = "") {
+    if (prefillEmail) setEmail(prefillEmail);
+    setOtp("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setError("");
+    setForgotSuccess("");
+    setStep("forgot");
+  }
+
+  async function handleSetNewPassword() {
+    if (!newPassword || !confirmPassword) {
+      setError("Please enter and confirm your new password.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+    if (!verifyPasswordResetOtp(otp)) {
+      setError("OTP expired or invalid. Please start again.");
+      setStep("forgot");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    setForgotSuccess("");
+    try {
+      await resetPasswordAfterOtp(email, otp, newPassword);
+      setForgotSuccess("Password updated! You can sign in with your new password.");
+      setNewPassword("");
+      setConfirmPassword("");
+      setOtp("");
+      setTimeout(() => setStep(selectedRole ? "login" : "role"), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update password");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[#06091a] flex items-center justify-center p-6 relative overflow-hidden">
       {/* Background glow */}
@@ -257,6 +344,16 @@ export function AuthScreen({ onLogin }: { onLogin: (role: string, name: string) 
                 </button>
               ))}
             </div>
+            <p className="text-center text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mt-6">
+              Forgot your password?{" "}
+              <button
+                type="button"
+                onClick={() => openForgotPassword()}
+                className="text-indigo-400 hover:text-indigo-300 transition-colors font-semibold"
+              >
+                Reset password
+              </button>
+            </p>
           </div>
         )}
 
@@ -284,7 +381,16 @@ export function AuthScreen({ onLogin }: { onLogin: (role: string, name: string) 
                     className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-4 py-3 text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-indigo-500/50 transition-colors font-['Plus_Jakarta_Sans']" />
                 </div>
                 <div>
-                  <label className="block text-xs font-['Plus_Jakarta_Sans'] text-[#6b7fa8] mb-1.5">Password</label>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-['Plus_Jakarta_Sans'] text-[#6b7fa8]">Password</label>
+                    <button
+                      type="button"
+                      onClick={() => openForgotPassword(email)}
+                      className="text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors font-['Plus_Jakarta_Sans']"
+                    >
+                      Forgot password?
+                    </button>
+                  </div>
                   <PasswordField
                     value={password}
                     onChange={setPassword}
@@ -300,6 +406,174 @@ export function AuthScreen({ onLogin }: { onLogin: (role: string, name: string) 
                   <button onClick={() => setStep("register")} className="text-indigo-400 hover:text-indigo-300 transition-colors">Request account access</button>
                 </p>
               </div>
+            </div>
+          </div>
+        )}
+
+        {step === "forgot" && (
+          <div className="max-w-md mx-auto">
+            <button
+              onClick={() => {
+                setError("");
+                setForgotSuccess("");
+                setStep(selectedRole ? "login" : "role");
+              }}
+              className="flex items-center gap-1.5 text-[#6b7fa8] hover:text-white text-xs mb-6 transition-colors font-['Plus_Jakarta_Sans']"
+            >
+              <ChevronLeft size={14} /> {selectedRole ? "Back to sign in" : "Back to roles"}
+            </button>
+            <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.15)] rounded-2xl p-8">
+              <div className="w-12 h-12 bg-gradient-to-br from-indigo-600 to-violet-600 rounded-xl flex items-center justify-center mb-4">
+                <ShieldCheck size={22} className="text-white" />
+              </div>
+              <h2 className="text-xl font-bold text-white mb-1 font-['Plus_Jakarta_Sans']">Forgot Password</h2>
+              <p className="text-xs text-[#6b7fa8] mb-6 font-['Plus_Jakarta_Sans'] leading-relaxed">
+                Enter your work email. We&apos;ll send a one-time OTP to verify you.
+              </p>
+              {error && (
+                <p className="mb-4 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-xl px-4 py-2.5 font-['Plus_Jakarta_Sans']">
+                  {error}
+                </p>
+              )}
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-['Plus_Jakarta_Sans'] text-[#6b7fa8] mb-1.5">Work Email</label>
+                  <input
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    placeholder="you@base2brand.com"
+                    type="email"
+                    className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-4 py-3 text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-indigo-500/50 transition-colors font-['Plus_Jakarta_Sans']"
+                    onKeyDown={e => e.key === "Enter" && handleSendOtp()}
+                  />
+                </div>
+                <button
+                  onClick={handleSendOtp}
+                  disabled={loading}
+                  className="w-full py-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 disabled:opacity-60 text-white text-sm font-semibold rounded-xl transition-all font-['Plus_Jakarta_Sans'] shadow-lg shadow-indigo-600/20"
+                >
+                  {loading ? "Sending OTP..." : "Send OTP →"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {step === "forgot-otp" && (
+          <div className="max-w-md mx-auto">
+            <button
+              onClick={() => {
+                setError("");
+                setStep("forgot");
+              }}
+              className="flex items-center gap-1.5 text-[#6b7fa8] hover:text-white text-xs mb-6 transition-colors font-['Plus_Jakarta_Sans']"
+            >
+              <ChevronLeft size={14} /> Back
+            </button>
+            <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.15)] rounded-2xl p-8">
+              <div className="w-12 h-12 bg-gradient-to-br from-cyan-600 to-indigo-600 rounded-xl flex items-center justify-center mb-4">
+                <ShieldCheck size={22} className="text-white" />
+              </div>
+              <h2 className="text-xl font-bold text-white mb-1 font-['Plus_Jakarta_Sans']">Enter OTP</h2>
+              <p className="text-xs text-[#6b7fa8] mb-2 font-['Plus_Jakarta_Sans'] leading-relaxed">
+                OTP sent to <span className="text-indigo-300">{email}</span>
+              </p>
+              <p className="text-[11px] text-amber-400/90 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 mb-6 font-['Geist_Mono']">
+                Dev mode OTP: {DEV_PASSWORD_RESET_OTP}
+              </p>
+              {error && (
+                <p className="mb-4 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-xl px-4 py-2.5 font-['Plus_Jakarta_Sans']">
+                  {error}
+                </p>
+              )}
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-['Plus_Jakarta_Sans'] text-[#6b7fa8] mb-1.5">4-digit OTP</label>
+                  <input
+                    value={otp}
+                    onChange={e => setOtp(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                    placeholder="1234"
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={4}
+                    className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-4 py-3 text-center text-2xl tracking-[0.5em] text-[#e2e8f7] placeholder:text-[#6b7fa8] placeholder:tracking-normal placeholder:text-base outline-none focus:border-indigo-500/50 transition-colors font-['Geist_Mono']"
+                    onKeyDown={e => e.key === "Enter" && handleVerifyOtp()}
+                  />
+                </div>
+                <button
+                  onClick={handleVerifyOtp}
+                  disabled={loading || otp.length < 4}
+                  className="w-full py-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 disabled:opacity-60 text-white text-sm font-semibold rounded-xl transition-all font-['Plus_Jakarta_Sans'] shadow-lg shadow-indigo-600/20"
+                >
+                  {loading ? "Verifying..." : "Verify OTP →"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSendOtp}
+                  disabled={loading}
+                  className="w-full py-2.5 text-xs text-[#6b7fa8] hover:text-indigo-300 transition-colors font-['Plus_Jakarta_Sans']"
+                >
+                  Resend OTP
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {step === "reset-password" && (
+          <div className="max-w-md mx-auto">
+            <button
+              onClick={() => {
+                setError("");
+                setForgotSuccess("");
+                setStep("forgot-otp");
+              }}
+              className="flex items-center gap-1.5 text-[#6b7fa8] hover:text-white text-xs mb-6 transition-colors font-['Plus_Jakarta_Sans']"
+            >
+              <ChevronLeft size={14} /> Back to OTP
+            </button>
+            <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.15)] rounded-2xl p-8">
+              <div className="w-12 h-12 bg-gradient-to-br from-emerald-600 to-teal-600 rounded-xl flex items-center justify-center mb-4">
+                <Award size={22} className="text-white" />
+              </div>
+              <h2 className="text-xl font-bold text-white mb-1 font-['Plus_Jakarta_Sans']">Set New Password</h2>
+              <p className="text-xs text-[#6b7fa8] mb-6 font-['Plus_Jakarta_Sans']">
+                Choose a strong password for your account.
+              </p>
+              {error && (
+                <p className="mb-4 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-xl px-4 py-2.5 font-['Plus_Jakarta_Sans']">
+                  {error}
+                </p>
+              )}
+              {forgotSuccess && (
+                <p className="mb-4 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-2.5 font-['Plus_Jakarta_Sans']">
+                  {forgotSuccess}
+                </p>
+              )}
+              {!forgotSuccess && (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-['Plus_Jakarta_Sans'] text-[#6b7fa8] mb-1.5">New Password</label>
+                    <PasswordField value={newPassword} onChange={setNewPassword} placeholder="Enter new password" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-['Plus_Jakarta_Sans'] text-[#6b7fa8] mb-1.5">Confirm Password</label>
+                    <PasswordField
+                      value={confirmPassword}
+                      onChange={setConfirmPassword}
+                      placeholder="Confirm new password"
+                      onEnter={handleSetNewPassword}
+                    />
+                  </div>
+                  <button
+                    onClick={handleSetNewPassword}
+                    disabled={loading}
+                    className="w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:opacity-90 disabled:opacity-60 text-white text-sm font-semibold rounded-xl transition-all font-['Plus_Jakarta_Sans'] shadow-lg shadow-emerald-600/20"
+                  >
+                    {loading ? "Updating..." : "Update password →"}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -372,7 +646,6 @@ export function AuthScreen({ onLogin }: { onLogin: (role: string, name: string) 
           </div>
         )}
 
-        {/* OTP step disabled — direct signup/login after register */}
       </div>
     </div>
   );

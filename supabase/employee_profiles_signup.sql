@@ -16,6 +16,9 @@ where app_role = 'employee'
 -- Allow app signup/login to read & write profiles
 alter table public.employee_profiles enable row level security;
 
+grant usage on schema public to anon, authenticated;
+grant select, insert, update, delete on public.employee_profiles to anon, authenticated;
+
 drop policy if exists "employee_profiles_select_all" on public.employee_profiles;
 create policy "employee_profiles_select_all"
   on public.employee_profiles for select

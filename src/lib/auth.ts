@@ -38,11 +38,12 @@ function isAppRoleId(value: string): value is AppRoleId {
   return VALID_APP_ROLES.has(value);
 }
 
-/** Role from employee_profiles.app_role (DB source of truth). */
+/** Role from employee_profiles — Executive/CEO profile always wins over app_role. */
 export function resolveRoleFromProfile(
   profile: EmployeeProfile,
   metadataRole?: string | null,
 ): AppRoleId {
+  if (isExecutiveProfile(profile)) return "ceo";
   if (profile.appRole && isAppRoleId(profile.appRole)) {
     return profile.appRole;
   }
@@ -238,56 +239,141 @@ export async function loginWithRole(
   return finalizeAuthUser(user, resolvedRole, { syncMetadata: true, profile });
 }
 
-/** Signup with role in request payload (visible in Network → signup call). */
+/** Dummy OTP for password reset (development — replace with SMS/email OTP later). */
+export const DEV_PASSWORD_RESET_OTP = "1234";
+
+/** Validate email exists, then pretend OTP was sent. */
+export async function sendPasswordResetOtp(email: string) {
+  const trimmed = email.trim().toLowerCase();
+  if (!trimmed) throw new Error("Email is required");
+
+  const profile = await fetchEmployeeProfileByEmail(trimmed);
+  if (!profile) throw new Error("No account found with this email.");
+
+  await new Promise(resolve => setTimeout(resolve, 500));
+  return true;
+}
+
+export function verifyPasswordResetOtp(otp: string): boolean {
+  return otp.replace(/\s/g, "") === DEV_PASSWORD_RESET_OTP;
+}
+
+/** Reset password after OTP verification (dummy OTP for now). */
+export async function resetPasswordAfterOtp(email: string, otp: string, newPassword: string) {
+  if (!verifyPasswordResetOtp(otp)) {
+    throw new Error("Invalid OTP. For testing use 1234.");
+  }
+
+  const trimmedEmail = email.trim().toLowerCase();
+  const trimmedPassword = newPassword.trim();
+  if (trimmedPassword.length < 6) throw new Error("Password must be at least 6 characters");
+
+  const profile = await fetchEmployeeProfileByEmail(trimmedEmail);
+  if (!profile) throw new Error("No account found with this email.");
+
+  const { data, error } = await supabase.functions.invoke("reset-password-otp", {
+    body: { email: trimmedEmail, otp, password: trimmedPassword },
+  });
+
+  if (error) {
+    throw new Error(
+      "Could not reset password. Deploy the reset-password-otp edge function in Supabase, or try again later."
+    );
+  }
+
+  if (data && typeof data === "object" && "error" in data && data.error) {
+    throw new Error(String(data.error));
+  }
+}
+
+/** Send password reset link to the user's email (Supabase Auth). */
+export async function requestPasswordReset(email: string) {
+  const trimmed = email.trim();
+  if (!trimmed) throw new Error("Email is required");
+
+  const redirectTo =
+    typeof window !== "undefined" ? `${window.location.origin}/` : undefined;
+
+  const { error } = await supabase.auth.resetPasswordForEmail(trimmed, {
+    redirectTo,
+  });
+  if (error) throw error;
+}
+
+/** Set new password after user opens the reset link from email. */
+export async function updatePassword(newPassword: string) {
+  const trimmed = newPassword.trim();
+  if (trimmed.length < 6) throw new Error("Password must be at least 6 characters");
+
+  const { error } = await supabase.auth.updateUser({ password: trimmed });
+  if (error) throw error;
+}
+
+function formatAuthError(
+  error: { message?: string; code?: string; status?: number } | null,
+  fallback = "Signup failed",
+) {
+  if (!error) return fallback;
+  const msg = error.message?.trim();
+  if (msg) return msg;
+  if (error.code) return `${fallback} (${error.code})`;
+  return fallback;
+}
+
+/** Signup with role stored in user metadata. */
 export async function signUpWithRole(
   email: string,
   password: string,
   role: AppRoleId,
   metadata: Record<string, unknown> = {}
 ) {
-  const response = await fetch(`${supabaseUrl}/auth/v1/signup`, {
-    method: "POST",
-    headers: {
-      apikey: supabaseAnonKey,
-      "Content-Type": "application/json",
+  const trimmedEmail = email.trim().toLowerCase();
+  const { data, error } = await supabase.auth.signUp({
+    email: trimmedEmail,
+    password,
+    options: {
+      data: { role, app_role: role, ...metadata },
     },
-    body: JSON.stringify({
-      email,
-      password,
-      role,
-      data: { role, ...metadata },
-    }),
   });
 
-  const json = (await response.json()) as AuthTokenResponse & { user?: User };
-  if (!response.ok) {
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: { role, ...metadata },
-      },
-    });
-    if (error) {
-      throw new Error(json.error_description || json.msg || json.message || error.message || "Signup failed");
-    }
-    if (data.session?.access_token && data.session.refresh_token) {
-      await supabase.auth.setSession({
-        access_token: data.session.access_token,
-        refresh_token: data.session.refresh_token,
-      });
-    }
-    return { ...json, user: data.user ?? json.user };
+  if (error) {
+    throw new Error(formatAuthError(error));
   }
 
-  if (json.access_token && json.refresh_token) {
+  if (!data.user) {
+    throw new Error("Signup failed — no user returned. Check Supabase Auth → signups are enabled.");
+  }
+
+  if (data.session?.access_token && data.session.refresh_token) {
     await supabase.auth.setSession({
-      access_token: json.access_token,
-      refresh_token: json.refresh_token,
+      access_token: data.session.access_token,
+      refresh_token: data.session.refresh_token,
     });
+    return { user: data.user, session: data.session };
   }
 
-  return json;
+  // Email confirmation ON in Supabase → signup succeeds but no session yet
+  const { data: loginData, error: loginError } = await supabase.auth.signInWithPassword({
+    email: trimmedEmail,
+    password,
+  });
+
+  if (!loginError && loginData.session) {
+    await supabase.auth.setSession({
+      access_token: loginData.session.access_token,
+      refresh_token: loginData.session.refresh_token,
+    });
+    return { user: loginData.user ?? data.user, session: loginData.session };
+  }
+
+  const loginMsg = loginError?.message?.toLowerCase() ?? "";
+  if (loginMsg.includes("confirm") || loginMsg.includes("verified")) {
+    throw new Error(
+      "Account created but email confirmation is required. In Supabase Dashboard → Authentication → Providers → Email, turn OFF “Confirm email”, then try signup again.",
+    );
+  }
+
+  return { user: data.user, session: null };
 }
 
 async function finalizeAuthUser(

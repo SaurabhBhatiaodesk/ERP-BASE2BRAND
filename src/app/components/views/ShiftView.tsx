@@ -31,6 +31,22 @@ import {
   timelineDuration,
 } from "@/lib/shiftTimeline";
 import {
+  SHIFT_HOURS,
+  SHIFT_DURATION,
+  DEFAULT_TIMELINE_AXIS,
+  type TimelineAxis,
+  clockMinutesToLabel,
+  isoToTimelineMinutes,
+  currentTimelineNowMin,
+  minToLabel,
+  timelineHourLabels,
+  timelineAxisRangeLabel,
+  shiftWindowOnAxis,
+  clockMinToAxisMin,
+  timelineBlockDurationOnAxis,
+  hhmm,
+} from "@/lib/shiftConfig";
+import {
   aggregateStageSeconds,
   buildProportionalStageSegments,
   computeTaskStageTotals,
@@ -48,6 +64,33 @@ import {
 import { playBeep } from "@/lib/audio";
 import { useEmployeeVisualHistory } from "./useEmployeeVisualHistory";
 import { ScreenshotsView } from "./ScreenshotsView";
+
+const TimelineAxisContext = React.createContext<TimelineAxis>(DEFAULT_TIMELINE_AXIS);
+function useTimelineAxis() {
+  return React.useContext(TimelineAxisContext);
+}
+
+// Re-export for legacy imports
+export {
+  SHIFT_HOURS,
+  SHIFT_DURATION,
+  DEFAULT_TIMELINE_AXIS as TIMELINE_AXIS_START_WRAPPER,
+  clockMinutesToLabel,
+  isoToTimelineMinutes,
+  currentTimelineNowMin,
+  minToLabel,
+  timelineHourLabels,
+  hhmm,
+};
+export const TIMELINE_AXIS_START = DEFAULT_TIMELINE_AXIS.start;
+export const TIMELINE_AXIS_END = DEFAULT_TIMELINE_AXIS.end;
+export const TIMELINE_AXIS_DURATION = DEFAULT_TIMELINE_AXIS.duration;
+/** @deprecated use TIMELINE_AXIS_START */
+export const SHIFT_START = DEFAULT_TIMELINE_AXIS.start;
+
+export function shiftWindowOnAxisForEmployee(emp: ShiftEmployee, axis?: TimelineAxis) {
+  return shiftWindowOnAxis(emp.shiftStartMin, emp.shiftEndMin, axis ?? DEFAULT_TIMELINE_AXIS);
+}
 
 export type ActivityKind = "working" | "break" | "idle" | "meeting" | "login" | "offline";
 
@@ -89,68 +132,6 @@ export type ShiftEmployee = {
   /** All open tasks — each with own Kanban stage time */
   trackedTasks: ShiftActiveTask[];
 };
-
-/** Team view axis — earliest shift 10 AM, latest end 12 PM + 9h = 9 PM */
-export const TIMELINE_AXIS_START = 10 * 60;
-export const SHIFT_HOURS = 9;
-export const SHIFT_DURATION = SHIFT_HOURS * 60;
-export const TIMELINE_AXIS_END = 12 * 60 + SHIFT_DURATION;
-export const TIMELINE_AXIS_DURATION = TIMELINE_AXIS_END - TIMELINE_AXIS_START;
-
-/** @deprecated use TIMELINE_AXIS_START */
-export const SHIFT_START = TIMELINE_AXIS_START;
-
-export function hhmm(h: number, m: number) {
-  const period = h >= 12 ? "PM" : "AM";
-  const displayH = h > 12 ? h - 12 : h === 0 ? 12 : h;
-  return `${displayH}:${m.toString().padStart(2, "0")} ${period}`;
-}
-
-export function clockMinutesToLabel(clockMin: number) {
-  return hhmm(Math.floor(clockMin / 60), Math.floor(clockMin % 60));
-}
-
-export function isoToTimelineMinutes(iso: string) {
-  const d = new Date(iso);
-  // Use fractional minutes (include seconds) for accuracy in duration display
-  const clockMinFractional = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
-  return Math.max(0, Math.min(TIMELINE_AXIS_DURATION, clockMinFractional - TIMELINE_AXIS_START));
-}
-
-export function currentTimelineNowMin() {
-  const now = new Date();
-  const clockMinFractional = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
-  return Math.max(0, Math.min(TIMELINE_AXIS_DURATION, clockMinFractional - TIMELINE_AXIS_START));
-}
-
-export function minToLabel(min: number) {
-  return clockMinutesToLabel(TIMELINE_AXIS_START + min);
-}
-
-export function shiftWindowOnAxis(emp: ShiftEmployee) {
-  const left = ((emp.shiftStartMin - TIMELINE_AXIS_START) / TIMELINE_AXIS_DURATION) * 100;
-  const width = ((emp.shiftEndMin - emp.shiftStartMin) / TIMELINE_AXIS_DURATION) * 100;
-  return {
-    left: Math.max(0, Math.min(100, left)),
-    width: Math.max(0, Math.min(100 - left, width)),
-  };
-}
-
-/** Hour labels for the team timeline header (10 AM … 9 PM). */
-export function timelineHourLabels(compact = true) {
-  const labels: string[] = [];
-  for (let clock = TIMELINE_AXIS_START; clock <= TIMELINE_AXIS_END; clock += 60) {
-    const h = Math.floor(clock / 60);
-    if (!compact) {
-      labels.push(clockMinutesToLabel(clock));
-      continue;
-    }
-    if (h === 12) labels.push("12PM");
-    else if (h < 12) labels.push(`${h}AM`);
-    else labels.push(`${h - 12}PM`);
-  }
-  return labels;
-}
 
 export type ShiftDeptFilter =
   | "all"
@@ -628,11 +609,12 @@ export function StageTimelineBar({
   attendanceSessions?: AttendanceTimeWindow[];
   allTasks?: AppTask[];
 }) {
+  const axis = useTimelineAxis();
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 5;
 
-  const shiftWindow = shiftWindowOnAxis(emp);
-  const hourMarks = Array.from({ length: TIMELINE_AXIS_DURATION / 60 + 1 }, (_, i) => i * 60).slice(1, -1);
+  const shiftWindow = shiftWindowOnAxis(emp.shiftStartMin, emp.shiftEndMin, axis);
+  const hourMarks = Array.from({ length: axis.duration / 60 + 1 }, (_, i) => i * 60).slice(1, -1);
   
   const kanbanTaskIds = useMemo(() => {
     if (!targetDate || !allTasks?.length) return null;
@@ -691,7 +673,7 @@ export function StageTimelineBar({
             <div
               key={m}
               className="absolute top-0 bottom-0 w-px bg-white/[0.04]"
-              style={{ left: `${(m / TIMELINE_AXIS_DURATION) * 100}%` }}
+              style={{ left: `${(m / axis.duration) * 100}%` }}
             />
           ))}
           <div
@@ -700,7 +682,7 @@ export function StageTimelineBar({
           />
           <div
             className="absolute top-0 bottom-0 w-0.5 bg-white/50 z-10"
-            style={{ left: `${Math.min((nowMin / TIMELINE_AXIS_DURATION) * 100, 100)}%` }}
+            style={{ left: `${Math.min((nowMin / axis.duration) * 100, 100)}%` }}
           />
         </div>
         {visibleTasks.length > 0 ? (
@@ -751,10 +733,10 @@ export function StageTimelineBar({
 }
 
 export function TimelineBar({ emp, nowMin }: { emp: ShiftEmployee; nowMin: number }) {
-  const shiftWindow = shiftWindowOnAxis(emp);
-  const shiftEndAxis = emp.shiftEndMin - TIMELINE_AXIS_START;
-  const effectiveNow = Math.min(nowMin, TIMELINE_AXIS_DURATION);
-  const hourMarks = Array.from({ length: TIMELINE_AXIS_DURATION / 60 + 1 }, (_, i) => i * 60).slice(1, -1);
+  const axis = useTimelineAxis();
+  const shiftWindow = shiftWindowOnAxis(emp.shiftStartMin, emp.shiftEndMin, axis);
+  const effectiveNow = Math.min(nowMin, axis.duration);
+  const hourMarks = Array.from({ length: axis.duration / 60 + 1 }, (_, i) => i * 60).slice(1, -1);
   const pauseBlocks = listPauseBlocks(emp.timeline, effectiveNow);
 
   return (
@@ -767,27 +749,26 @@ export function TimelineBar({ emp, nowMin }: { emp: ShiftEmployee; nowMin: numbe
       />
       {hourMarks.map(m => (
         <div key={m} className="absolute top-0 bottom-0 w-px bg-white/5"
-          style={{ left: `${(m / TIMELINE_AXIS_DURATION) * 100}%` }} />
+          style={{ left: `${(m / axis.duration) * 100}%` }} />
       ))}
       {emp.timeline.filter(b => b.kind !== "login").map((block, i) => {
-        const s = (block.start / TIMELINE_AXIS_DURATION) * 100;
-        const endMin = block.end ?? effectiveNow;
-        const w = ((endMin - block.start) / TIMELINE_AXIS_DURATION) * 100;
+        const s = (block.start / axis.duration) * 100;
+        const w = (timelineBlockDurationOnAxis(block.start, block.end, effectiveNow, axis) / axis.duration) * 100;
         const meta = kindMeta[block.kind];
         const isOngoing = block.end === null;
-        const dur = Math.max(0, endMin - block.start);
+        const dur = timelineBlockDurationOnAxis(block.start, block.end, effectiveNow, axis);
         const durLabel = formatDurationMinutes(dur);
         return (
           <div
             key={i}
             className={`absolute top-1 bottom-1 rounded-sm ${meta.bg} ${isOngoing ? "opacity-95 ring-1 ring-white/20" : "opacity-75"} flex items-center justify-center ${block.kind === "idle" ? "" : "overflow-hidden"}`}
             style={{ left: `${s}%`, width: `${w}%`, minWidth: "1px" }}
-            title={`${block.label}: ${minToLabel(block.start)} - ${block.end ? minToLabel(block.end) : "Now"} (${durLabel})`}
+            title={`${block.label}: ${minToLabel(block.start, axis)} - ${block.end ? minToLabel(block.end, axis) : "Now"} (${durLabel})`}
           />
         );
       })}
       <div className="absolute top-0 bottom-0 w-0.5 bg-white/60 z-10"
-        style={{ left: `${Math.min((nowMin / TIMELINE_AXIS_DURATION) * 100, 100)}%` }} />
+        style={{ left: `${Math.min((nowMin / axis.duration) * 100, 100)}%` }} />
     </div>
     </div>
   );
@@ -808,6 +789,7 @@ export function EmployeeDetailPanel({
   targetDate: string;
   attendanceSessions?: AttendanceTimeWindow[];
 }) {
+  const axis = useTimelineAxis();
   const [tab, setTab] = useState<"live" | "history" | "screenshots">("live");
   const [historyRange, setHistoryRange] = useState<number>(7);
   const [page, setPage] = useState(1);
@@ -870,9 +852,9 @@ export function EmployeeDetailPanel({
     });
   }, [taskStageDate]);
 
-  const shiftStartAxis = Math.max(0, emp.shiftStartMin - TIMELINE_AXIS_START);
-  const shiftEndAxis = emp.shiftEndMin - TIMELINE_AXIS_START;
-  const effectiveNow = Math.min(nowMin, TIMELINE_AXIS_DURATION);
+  const shiftStartAxis = clockMinToAxisMin(emp.shiftStartMin, axis);
+  const effectiveNow = Math.min(nowMin, axis.duration);
+  const shiftWindow = shiftWindowOnAxis(emp.shiftStartMin, emp.shiftEndMin, axis);
   const window = { start: shiftStartAxis, end: effectiveNow };
 
   const worked = timelineDuration(emp.timeline, "working", effectiveNow, window);
@@ -1060,7 +1042,7 @@ export function EmployeeDetailPanel({
           </div>
 
           <div className="flex justify-between text-xs font-['Geist_Mono'] text-[#8fa0c4] mb-2 px-0">
-            {timelineHourLabels(false).map(t => (
+            {timelineHourLabels(axis, false).map(t => (
               <span key={t}>{t}</span>
             ))}
           </div>
@@ -1069,29 +1051,28 @@ export function EmployeeDetailPanel({
             <div
               className="absolute top-0 bottom-0 bg-indigo-500/5 border-x border-indigo-400/10"
               style={{
-                left: `${shiftWindowOnAxis(emp).left}%`,
-                width: `${shiftWindowOnAxis(emp).width}%`,
+                left: `${shiftWindow.left}%`,
+                width: `${shiftWindow.width}%`,
               }}
             />
-            {Array.from({ length: TIMELINE_AXIS_DURATION / 60 }, (_, i) => (i + 1) * 60).map(m => (
+            {Array.from({ length: axis.duration / 60 }, (_, i) => (i + 1) * 60).map(m => (
               <div key={m} className="absolute top-0 bottom-0 w-px bg-white/5"
-                style={{ left: `${(m / TIMELINE_AXIS_DURATION) * 100}%` }} />
+                style={{ left: `${(m / axis.duration) * 100}%` }} />
             ))}
             {emp.timeline.filter(b => b.kind !== "login").map((block, i) => {
-              const s = (block.start / TIMELINE_AXIS_DURATION) * 100;
-              const endMin = block.end ?? effectiveNow;
-              const w = ((endMin - block.start) / TIMELINE_AXIS_DURATION) * 100;
+              const s = (block.start / axis.duration) * 100;
+              const w = (timelineBlockDurationOnAxis(block.start, block.end, effectiveNow, axis) / axis.duration) * 100;
               const meta = kindMeta[block.kind];
               return (
                 <div key={i} className={`absolute top-2 bottom-2 rounded-lg ${meta.bg} ${block.end === null ? "opacity-90" : "opacity-65"} flex items-center justify-center overflow-hidden`}
                   style={{ left: `${s}%`, width: `${w}%`, minWidth: "1px" }}
-                  title={`${block.label}\n${minToLabel(block.start)} → ${block.end ? minToLabel(block.end) : "Now"}`}>
+                  title={`${block.label}\n${minToLabel(block.start, axis)} → ${block.end ? minToLabel(block.end, axis) : "Now"}`}>
                   {w > 8 && <span className="text-[10px] text-white/85 font-['Geist_Mono'] truncate px-1.5">{block.label}</span>}
                 </div>
               );
             })}
             <div className="absolute top-0 bottom-0 w-0.5 bg-white z-10 shadow-[0_0_6px_rgba(255,255,255,0.5)]"
-              style={{ left: `${Math.min((effectiveNow / TIMELINE_AXIS_DURATION) * 100, 100)}%` }} />
+              style={{ left: `${Math.min((effectiveNow / axis.duration) * 100, 100)}%` }} />
           </div>
 
         </div>
@@ -1151,7 +1132,7 @@ export function EmployeeDetailPanel({
             <div className="space-y-2">
               {pauseBlocks.map((block, i) => {
                 const meta = kindMeta[block.kind];
-                const endLabel = block.end ? minToLabel(block.end) : "Now";
+                const endLabel = block.end ? minToLabel(block.end, axis) : "Now";
                 return (
                   <div
                     key={i}
@@ -1162,7 +1143,7 @@ export function EmployeeDetailPanel({
                       {block.label}
                     </span>
                     <span className="text-xs font-['Geist_Mono'] text-[#8fa0c4]">
-                      {minToLabel(block.start)} → {endLabel}
+                      {minToLabel(block.start, axis)} → {endLabel}
                     </span>
                     <span className="ml-auto text-sm font-bold font-['Geist_Mono'] text-amber-300">
                       {formatDurationMinutes(block.durationMin)} gap
@@ -1297,28 +1278,30 @@ export function ShiftView({
     }
   }, [targetDate, refreshProfiles]);
 
-  useEffect(() => {
-    void refresh(false);
-    
-    const isToday = targetDate === new Date().toLocaleDateString("en-CA");
-    if (!isToday) {
-      setNowMin(TIMELINE_AXIS_DURATION); // lock timeline to end of day for past dates
-      return;
-    }
-    
-    setNowMin(currentShiftNowMin());
-    const refreshId = setInterval(() => void refresh(true), 30_000);
-    const clockId = setInterval(() => setNowMin(currentShiftNowMin()), 15_000);
-    return () => {
-      clearInterval(refreshId);
-      clearInterval(clockId);
-    };
-  }, [refresh, targetDate]);
-
   const visibleProfiles = useMemo(() => {
     let list = profiles.filter(p => p.dept !== "Executive" && p.name !== "CEO Admin");
     return list;
   }, [profiles, userRole, viewerProfile?.dept]);
+
+  const timelineAxis = DEFAULT_TIMELINE_AXIS;
+
+  useEffect(() => {
+    void refresh(false);
+
+    const isToday = targetDate === new Date().toLocaleDateString("en-CA");
+    if (!isToday) {
+      setNowMin(timelineAxis.duration);
+      return;
+    }
+
+    setNowMin(currentTimelineNowMin(timelineAxis));
+    const refreshId = setInterval(() => void refresh(true), 30_000);
+    const clockId = setInterval(() => setNowMin(currentTimelineNowMin(timelineAxis)), 15_000);
+    return () => {
+      clearInterval(refreshId);
+      clearInterval(clockId);
+    };
+  }, [refresh, targetDate, timelineAxis]);
 
   const profileCountByName = useMemo(() => {
     const counts = new Map<string, number>();
@@ -1379,6 +1362,7 @@ export function ShiftView({
         currentTask: workTasks[0]?.title || "No task in progress",
         workTasksInput: workTasks,
         trackedTasksInput: trackedTasks,
+        timelineAxis,
       });
     });
     list.sort((a, b) => a.name.localeCompare(b.name));
@@ -1389,7 +1373,7 @@ export function ShiftView({
     }
 
     return list;
-  }, [visibleProfiles, sessionByEmployeeId, legacySessionByUniqueName, tasks, nowMin, searchQuery, deptFilter]);
+  }, [visibleProfiles, sessionByEmployeeId, legacySessionByUniqueName, tasks, nowMin, searchQuery, deptFilter, timelineAxis]);
 
   useEffect(() => {
     if (!selected) return;
@@ -1464,12 +1448,13 @@ export function ShiftView({
   }
 
   return (
+    <TimelineAxisContext.Provider value={timelineAxis}>
     <div className="space-y-6 relative">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white font-['Plus_Jakarta_Sans']">Shift Tracker</h1>
           <p className="text-[#6b7fa8] text-sm font-['Geist_Mono'] mt-0.5">
-            {isToday ? "Today" : displayDateLabel} · {clockMinutesToLabel(TIMELINE_AXIS_START)} → {clockMinutesToLabel(TIMELINE_AXIS_END)} ·{" "}
+            {isToday ? "Today" : displayDateLabel} · {timelineAxisRangeLabel(timelineAxis)} ·{" "}
             <span className="text-[#6b7fa8]">{SHIFT_HOURS}h shift per employee ·</span>{" "}
             {isToday ? <span className="text-emerald-400">Current: {currentTimeLabel}</span> : <span className="text-indigo-400">Historical View</span>}
             {userRole === "teamlead" && viewerProfile?.dept ? (
@@ -1655,7 +1640,7 @@ export function ShiftView({
             <div className="w-52 shrink-0 px-5 py-2 text-[10px] font-['Geist_Mono'] text-[#6b7fa8]">Employee</div>
             <div className="flex-1 relative px-3 py-2">
               <div className="flex justify-between text-[10px] font-['Geist_Mono'] text-[#6b7fa8]">
-                {timelineHourLabels().map(t => <span key={t}>{t}</span>)}
+                {timelineHourLabels(timelineAxis).map(t => <span key={t}>{t}</span>)}
               </div>
             </div>
             <div className="w-36 shrink-0 px-4 py-2 text-[10px] font-['Geist_Mono'] text-[#6b7fa8]">Productivity</div>
@@ -1671,8 +1656,7 @@ export function ShiftView({
           {shiftEmployees.map((emp, i) => {
           const meta = kindMeta[emp.status];
           const photo = (emp as ShiftEmployee & { profileImageUrl?: string }).profileImageUrl;
-          const shiftEndAxis = emp.shiftEndMin - TIMELINE_AXIS_START;
-          const effectiveNow = Math.min(nowMin, TIMELINE_AXIS_DURATION);
+          const effectiveNow = Math.min(nowMin, timelineAxis.duration);
           const currentPause = emp.timeline.find(
             b => (b.kind === "break" || b.kind === "meeting") && b.end === null
           );
@@ -1765,7 +1749,7 @@ export function ShiftView({
               <div className="flex-1 px-4 pt-3 pb-2 flex flex-col gap-2">
                 <span className="text-[10px] font-['Geist_Mono'] text-[#8fa0c4] uppercase tracking-wider">Daily Timeline</span>
                 <div className="flex justify-between text-[9px] font-['Geist_Mono'] text-[#4f679b]">
-                  {timelineHourLabels(true).map(t => <span key={t}>{t}</span>)}
+                  {timelineHourLabels(timelineAxis, true).map(t => <span key={t}>{t}</span>)}
                 </div>
               </div>
             </div>
@@ -1852,5 +1836,6 @@ export function ShiftView({
         />
       )}
     </div>
+    </TimelineAxisContext.Provider>
   );
 }
