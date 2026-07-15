@@ -275,14 +275,18 @@ export async function resetPasswordAfterOtp(email: string, otp: string, newPassw
     body: { email: trimmedEmail, otp, password: trimmedPassword },
   });
 
-  if (error) {
-    throw new Error(
-      "Could not reset password. Deploy the reset-password-otp edge function in Supabase, or try again later."
-    );
-  }
-
   if (data && typeof data === "object" && "error" in data && data.error) {
     throw new Error(String(data.error));
+  }
+
+  if (error) {
+    const msg = error.message || "";
+    if (/not found|404|failed to fetch/i.test(msg)) {
+      throw new Error(
+        "Could not reset password. Deploy the reset-password-otp edge function in Supabase, or try again later."
+      );
+    }
+    throw new Error(msg || "Password reset failed. Please try again.");
   }
 }
 
