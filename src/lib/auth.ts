@@ -254,6 +254,7 @@ export async function sendPasswordResetOtp(email: string) {
   return true;
 }
 
+
 export function verifyPasswordResetOtp(otp: string): boolean {
   return otp.replace(/\s/g, "") === DEV_PASSWORD_RESET_OTP;
 }
