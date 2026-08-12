@@ -377,6 +377,8 @@ export default function App() {
       setActiveView("chat");
     } else if (n.type === "project_assigned") {
       setActiveView("projects");
+    } else if (n.type === "clock_in") {
+      setActiveView("shifts");
     }
   };
 
@@ -641,7 +643,7 @@ export default function App() {
 
   const renderView = () => {
     switch (activeView) {
-      case "dashboard": return <CEODashboard />;
+      case "dashboard": return <CEODashboard userName={userName} userEmail={userEmail} />;
       case "shifts":
         if (!isShiftTrackerRole(userRole)) {
           return (
@@ -882,7 +884,7 @@ export default function App() {
       );
       case "invoices": return <InvoiceView />;
       case "copilot": return <AICopilotView />;
-      default: return <CEODashboard />;
+      default: return <CEODashboard userName={userName} userEmail={userEmail} />;
     }
   };
 
@@ -1135,7 +1137,11 @@ export default function App() {
       </div>
 
       {/* Floating Quick Actions */}
-      <FloatingQuickActions roleLabel={roleLabel} />
+      <FloatingQuickActions
+        roleLabel={roleLabel}
+        senderName={currentProfile?.name || userName}
+        senderId={currentProfile?.id}
+      />
       
       {/* Toast Notifications */}
       <Toaster position="bottom-right" richColors theme="dark" />

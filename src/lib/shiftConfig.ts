@@ -33,8 +33,74 @@ export const TIMELINE_AXIS_END = SHIFT_AXIS_END_CLOCK_MIN;
 /** @deprecated use DEFAULT_TIMELINE_AXIS.duration */
 export const TIMELINE_AXIS_DURATION = DEFAULT_TIMELINE_AXIS.duration;
 
+/** Compare clock minutes on the same business day (4 AM → 4 AM). */
+function earlierClockMin(a: number, b: number) {
+  const na = normalizeClockMin(a);
+  const nb = normalizeClockMin(b);
+  return na <= nb ? na : nb;
+}
+
+function laterClockMin(a: number, b: number) {
+  const na = normalizeClockMin(a);
+  const nb = normalizeClockMin(b);
+  return na >= nb ? na : nb;
+}
+
+export function clockIsoToClockMin(iso: string) {
+  const d = new Date(iso);
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+/** Full business-day axis for team + employee timelines (4 AM → 4 AM). */
 export function resolveTimelineAxis(_employeeShiftStartsMin: number[] = []): TimelineAxis {
   return DEFAULT_TIMELINE_AXIS;
+}
+
+/** Per-employee axis: shift window expanded to include actual clock-in/out when present. */
+export function resolveEmployeeTimelineAxisForShift(
+  shiftStartMin: number,
+  shiftEndMin?: number,
+  session?: { clockIn?: string | null; clockOut?: string | null } | null,
+  paddingMin = 30,
+): TimelineAxis {
+  let spanStart = shiftStartMin;
+  let spanEnd = shiftEndMin ?? computeShiftEndMin(shiftStartMin);
+
+  if (session?.clockIn) {
+    const loginMin = clockIsoToClockMin(session.clockIn);
+    spanStart = earlierClockMin(spanStart, loginMin);
+    spanEnd = laterClockMin(spanEnd, loginMin);
+  }
+  if (session?.clockOut) {
+    spanEnd = laterClockMin(spanEnd, clockIsoToClockMin(session.clockOut));
+  }
+
+  return resolveEmployeeTimelineAxis(spanStart, spanEnd, paddingMin);
+}
+
+/** Timeline axis scoped to one employee shift (not the full 4 AM → 4 AM day). */
+export function resolveEmployeeTimelineAxis(
+  shiftStartMin: number,
+  shiftEndMin?: number,
+  paddingMin = 30,
+): TimelineAxis {
+  const endClock = normalizeClockMin(shiftEndMin ?? computeShiftEndMin(shiftStartMin));
+  const startClock = normalizeClockMin(shiftStartMin - paddingMin);
+  const endPadded = normalizeClockMin(endClock + paddingMin);
+
+  const axisStart = startClock;
+  let duration: number;
+  if (endPadded >= axisStart) {
+    duration = endPadded - axisStart;
+  } else {
+    duration = 24 * 60 - axisStart + endPadded;
+  }
+
+  return {
+    start: axisStart,
+    end: axisStart + Math.max(60, duration),
+    duration: Math.max(60, duration),
+  };
 }
 
 export function normalizeClockMin(clockMin: number) {
@@ -75,7 +141,8 @@ export function clockMinutesToLabel(clockMin: number) {
 }
 
 export function timelineAxisRangeLabel(axis: TimelineAxis = DEFAULT_TIMELINE_AXIS) {
-  return `${clockMinutesToLabel(axis.start)} → ${clockMinutesToLabel(SHIFT_AXIS_END_CLOCK_MIN)}`;
+  const endClock = axisMinToClockMin(axis.duration, axis);
+  return `${clockMinutesToLabel(axis.start)} → ${clockMinutesToLabel(endClock)}`;
 }
 
 export function isoToTimelineMinutes(iso: string, axis: TimelineAxis = DEFAULT_TIMELINE_AXIS) {
@@ -103,16 +170,16 @@ function compactHourLabel(hour24: number) {
   return `${h - 12}PM`;
 }
 
-/** Hour labels: 4AM … 1AM · 3AM (full day cycle). */
+/** Hour labels for the visible axis window. */
 export function timelineHourLabels(axis: TimelineAxis = DEFAULT_TIMELINE_AXIS, compact = true) {
   if (compact && axis.duration >= 24 * 60) {
-    // 4 AM → 4 AM cycle: every 3h + 3 AM before cycle end
     const hours = [4, 7, 10, 13, 16, 19, 22, 1, 3];
     return hours.map(h => compactHourLabel(h));
   }
 
   const labels: string[] = [];
-  for (let axisMin = 0; axisMin < axis.duration; axisMin += 60) {
+  const stepMin = axis.duration <= 8 * 60 ? 60 : axis.duration <= 14 * 60 ? 120 : 180;
+  for (let axisMin = 0; axisMin <= axis.duration; axisMin += stepMin) {
     const clock = axisMinToClockMin(axisMin, axis);
     labels.push(compact ? compactHourLabel(Math.floor(clock / 60)) : clockMinutesToLabel(clock));
   }

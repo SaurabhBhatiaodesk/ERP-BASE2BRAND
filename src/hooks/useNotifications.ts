@@ -18,6 +18,11 @@ function notifyIncoming(
       description: newNotif.message,
       duration: 8000,
     });
+  } else if (newNotif.type === "clock_in") {
+    toast.success(newNotif.title, {
+      description: newNotif.message,
+      duration: 6000,
+    });
   } else {
     toast.info(newNotif.title, {
       description: newNotif.message,

@@ -1,8 +1,11 @@
 import type { PostgrestSingleResponse, RealtimeChannel } from "@supabase/supabase-js";
-import { CACHE_KEYS, getCached, invalidateDataCache, invalidateDataCachePrefix } from "./dataCache";
+import { CACHE_KEYS, getCached, invalidateDataCache, invalidateDataCachePrefix, setCachedData } from "./dataCache";
 import { normalizeCloudinaryDeliveryUrl } from "./cloudinary";
 import { supabase } from "./supabase";
 import type { TaskStageHistoryRow } from "./taskStageTime";
+import {
+  formatStageDuration,
+} from "./taskStageTime";
 
 const PROFILE_CACHE_TTL = 60_000;
 const DATA_CACHE_TTL = 30_000;
@@ -31,6 +34,7 @@ function invalidateProfileCaches() {
 
 function invalidateTaskCaches() {
   invalidateDataCache(CACHE_KEYS.projectTasks);
+  invalidateDataCachePrefix(`${CACHE_KEYS.projectTasks}:assignee:`);
   invalidateDataCachePrefix(`${CACHE_KEYS.todayTasks}:`);
 }
 
@@ -1387,35 +1391,92 @@ export async function fetchTodayTasksForEmployee(input: {
   }, 15_000);
 }
 
-async function loadProjectTasks(): Promise<AppTask[]> {
-  if (await probeProjectRelations()) {
-    const [taskRows, projects] = await Promise.all([
-      fetchAllPaginated<DbProjectTaskRow>((from, pageSize) =>
-        supabase.from("project_tasks").select("*").range(from, from + pageSize - 1)
-      ),
-      fetchAllPaginated<{ id: string; name: string }>((from, pageSize) =>
-        supabase.from("projects").select("id, name").range(from, from + pageSize - 1)
-      ),
-    ]);
+const PROJECT_TASKS_CACHE_TTL = 60_000;
+const stageHistoryWarmups = new Map<string, Promise<AppTask[]>>();
 
-    const profiles = await fetchEmployeeProfiles();
+export function projectTasksCacheKey(assigneeId?: string) {
+  return assigneeId ? `${CACHE_KEYS.projectTasks}:assignee:${assigneeId}` : CACHE_KEYS.projectTasks;
+}
+
+async function loadProjectTasksCore(options?: { assigneeId?: string }): Promise<AppTask[]> {
+  const assigneeId = options?.assigneeId?.trim();
+
+  if (await probeProjectRelations()) {
+    const taskRows = await fetchAllPaginated<DbProjectTaskRow>((from, pageSize) => {
+      let query = supabase.from("project_tasks").select("*");
+      if (assigneeId) query = query.eq("assignee_id", assigneeId);
+      return query.order("created_at", { ascending: false }).range(from, from + pageSize - 1);
+    });
+
+    if (!taskRows.length) return [];
+
+    const projectIds = [...new Set(taskRows.map(t => t.project_id))];
+    const [projects, profiles] = await Promise.all([
+      fetchAllPaginatedInChunks<{ id: string; name: string }>(projectIds, (chunk, from, pageSize) =>
+        supabase.from("projects").select("id, name").in("id", chunk).range(from, from + pageSize - 1)
+      ),
+      fetchEmployeeProfiles(),
+    ]);
     const projectNames = new Map(projects.map(p => [p.id, p.name]));
 
-    return enrichTasksWithStageHistory(
-      taskRows.map(row =>
-        mapProjectTaskRowToAppTask(row, projectNames.get(row.project_id) || "—", profiles)
-      )
+    return taskRows.map(row =>
+      mapProjectTaskRowToAppTask(row, projectNames.get(row.project_id) || "—", profiles)
     );
   }
 
   const rows = await fetchAllPaginated<DbProject>((from, pageSize) =>
     supabase.from("projects").select("*").range(from, from + pageSize - 1)
   );
-  return flattenDbProjectTasks(rows);
+  const all = flattenDbProjectTasks(rows);
+  if (!assigneeId) return all;
+  return all.filter(t => t.assigneeId === assigneeId);
+}
+
+async function loadProjectTasks(): Promise<AppTask[]> {
+  return loadProjectTasksCore();
+}
+
+async function loadProjectTasksForAssignee(employeeId: string): Promise<AppTask[]> {
+  if (!employeeId.trim()) return loadProjectTasks();
+  return loadProjectTasksCore({ assigneeId: employeeId.trim() });
+}
+
+export async function warmProjectTasksStageHistory(
+  cacheKey: string,
+  tasks: AppTask[]
+): Promise<AppTask[]> {
+  if (!tasks.length) return tasks;
+
+  const existing = stageHistoryWarmups.get(cacheKey);
+  if (existing) return existing;
+
+  const promise = enrichTasksWithStageHistory(tasks)
+    .then(enriched => {
+      setCachedData(cacheKey, enriched);
+      stageHistoryWarmups.delete(cacheKey);
+      return enriched;
+    })
+    .catch(err => {
+      stageHistoryWarmups.delete(cacheKey);
+      throw err;
+    });
+
+  stageHistoryWarmups.set(cacheKey, promise);
+  return promise;
 }
 
 export async function fetchProjectTasks(): Promise<AppTask[]> {
-  return getCached(CACHE_KEYS.projectTasks, loadProjectTasks, DATA_CACHE_TTL);
+  return getCached(CACHE_KEYS.projectTasks, loadProjectTasks, PROJECT_TASKS_CACHE_TTL);
+}
+
+export async function fetchProjectTasksForAssignee(employeeId: string): Promise<AppTask[]> {
+  const id = employeeId.trim();
+  if (!id) return fetchProjectTasks();
+  return getCached(
+    projectTasksCacheKey(id),
+    () => loadProjectTasksForAssignee(id),
+    PROJECT_TASKS_CACHE_TTL
+  );
 }
 
 export function extractTimesheetEntries(projects: DbProject[]): TimesheetEntry[] {
@@ -2898,115 +2959,126 @@ export function isIdlePausedSession(session: ClockSessionRecord | null | undefin
   return notes.includes("idle") || notes.includes("system idle");
 }
 
+type ClockSessionQuery = {
+  eq: (col: string, val: string) => ClockSessionQuery;
+  ilike: (col: string, val: string) => ClockSessionQuery;
+  order: (col: string, opts: { ascending: boolean }) => ClockSessionQuery;
+  limit: (n: number) => ClockSessionQuery;
+  maybeSingle: () => PromiseLike<{ data: Record<string, unknown> | null; error: unknown }>;
+  select: (cols: string) => ClockSessionQuery;
+};
+
+async function fetchLatestClockSessionRow(
+  employeeName: string,
+  employeeId?: string,
+  opts?: { activeOnly?: boolean }
+): Promise<Record<string, unknown> | null> {
+  const trimmedName = employeeName.trim();
+  const scopedId = employeeId?.trim() || "";
+
+  const runQuery = async (
+    applyFilter: (query: ClockSessionQuery) => ClockSessionQuery
+  ) => {
+    let query = supabase.from("clock_sessions").select("*") as unknown as ClockSessionQuery;
+    if (opts?.activeOnly) query = query.eq("status", "active");
+    query = applyFilter(query);
+    const { data, error } = await query
+      .order("clock_in", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) {
+      if (isMissingClockSessionsTable(error)) {
+        clockSessionsTableReady = false;
+        return null;
+      }
+      throw error;
+    }
+    clockSessionsTableReady = true;
+    return data;
+  };
+
+  if (scopedId) {
+    const byId = await runQuery((query) => query.eq("employee_id", scopedId));
+    if (byId) return byId;
+  }
+
+  if (trimmedName) {
+    const byName = await runQuery((query) => query.ilike("employee_name", trimmedName));
+    if (byName) return byName;
+  }
+
+  if (!scopedId && trimmedName) {
+    const profiles = await fetchEmployeeProfiles();
+    const resolvedId = resolveProfileIdFromName(profiles, trimmedName);
+    if (resolvedId) {
+      const byResolvedId = await runQuery((query) => query.eq("employee_id", resolvedId));
+      if (byResolvedId) return byResolvedId;
+    }
+  }
+
+  return null;
+}
+
+function isClockSessionFromToday(clockInIso: string): boolean {
+  const clockInDate = new Date(clockInIso);
+  const now = new Date();
+  return (
+    clockInDate.getFullYear() === now.getFullYear() &&
+    clockInDate.getMonth() === now.getMonth() &&
+    clockInDate.getDate() === now.getDate()
+  );
+}
+
+async function autoCloseStaleClockSession(data: Record<string, unknown>): Promise<void> {
+  if (data.status !== "active") return;
+  const clockInDate = new Date(String(data.clock_in));
+  const endOfDay = new Date(clockInDate);
+  endOfDay.setHours(23, 59, 59, 999);
+  await clockOutEmployee({
+    sessionId: String(data.id),
+    employeeName: String(data.employee_name || ""),
+    employeeId: data.employee_id ? String(data.employee_id) : undefined,
+    reason: "end_day",
+    notes: "Auto-closed at midnight",
+    forceTimeMs: endOfDay.getTime(),
+  });
+}
+
+async function hydrateClockSession(data: Record<string, unknown>): Promise<ClockSessionRecord> {
+  const session = mapClockSession(data as Parameters<typeof mapClockSession>[0]);
+  const segmentsMap = await fetchSegmentsForSessions([session.id]);
+  session.segments = segmentsMap.get(session.id) || [];
+  return enforceAutoLunchBreak(session);
+}
+
 export async function fetchTodayOfficeSession(
   employeeName: string,
   employeeId?: string
 ): Promise<ClockSessionRecord | null> {
-  let scopedEmployeeId = employeeId?.trim() || "";
-  if (!scopedEmployeeId) {
-    const profiles = await fetchEmployeeProfiles();
-    scopedEmployeeId = resolveProfileIdFromName(profiles, employeeName) || "";
-    if (!scopedEmployeeId) return null;
-  }
-
-  let query = supabase
-    .from("clock_sessions")
-    .select("*")
-    .eq("employee_id", scopedEmployeeId)
-    .order("clock_in", { ascending: false })
-    .limit(1);
-
-  const { data, error } = await query.maybeSingle();
-  if (error) {
-    if (isMissingClockSessionsTable(error)) return null;
-    throw error;
-  }
-  if (data) {
-    const clockInDate = new Date(data.clock_in);
-    const now = new Date();
-    // Check if the session is from a previous calendar day (auto-close at midnight)
-    if (
-      clockInDate.getFullYear() !== now.getFullYear() ||
-      clockInDate.getMonth() !== now.getMonth() ||
-      clockInDate.getDate() !== now.getDate()
-    ) {
-      if (data.status === "active") {
-        // It's from a previous day! Auto-close it at 23:59:59 of that day.
-        const endOfDay = new Date(clockInDate);
-        endOfDay.setHours(23, 59, 59, 999);
-        await clockOutEmployee({
-          sessionId: data.id,
-          employeeName: data.employee_name,
-          employeeId: data.employee_id,
-          reason: "end_day",
-          notes: "Auto-closed at midnight",
-          forceTimeMs: endOfDay.getTime(),
-        });
-      }
-      return null;
-    }
-  }
+  const data = await fetchLatestClockSessionRow(employeeName, employeeId);
   if (!data) return null;
-  const session = mapClockSession(data);
-  const segmentsMap = await fetchSegmentsForSessions([session.id]);
-  session.segments = segmentsMap.get(session.id) || [];
-  return await enforceAutoLunchBreak(session);
+
+  if (!isClockSessionFromToday(String(data.clock_in))) {
+    await autoCloseStaleClockSession(data);
+    return null;
+  }
+
+  return hydrateClockSession(data);
 }
 
 export async function fetchActiveClockSession(
   employeeName: string,
   employeeId?: string
 ): Promise<ClockSessionRecord | null> {
-  let scopedEmployeeId = employeeId?.trim() || "";
-  if (!scopedEmployeeId) {
-    const profiles = await fetchEmployeeProfiles();
-    scopedEmployeeId = resolveProfileIdFromName(profiles, employeeName) || "";
-    if (!scopedEmployeeId) return null;
-  }
-
-  let query = supabase
-    .from("clock_sessions")
-    .select("*")
-    .eq("status", "active")
-    .eq("employee_id", scopedEmployeeId)
-    .order("clock_in", { ascending: false })
-    .limit(1);
-
-  const { data, error } = await query.maybeSingle();
-  if (error) {
-    if (isMissingClockSessionsTable(error)) {
-      clockSessionsTableReady = false;
-      return null;
-    }
-    throw error;
-  }
-  clockSessionsTableReady = true;
+  const data = await fetchLatestClockSessionRow(employeeName, employeeId, { activeOnly: true });
   if (!data) return null;
 
-  const clockInDate = new Date(data.clock_in);
-  const now = new Date();
-  if (
-    clockInDate.getFullYear() !== now.getFullYear() ||
-    clockInDate.getMonth() !== now.getMonth() ||
-    clockInDate.getDate() !== now.getDate()
-  ) {
-    const endOfDay = new Date(clockInDate);
-    endOfDay.setHours(23, 59, 59, 999);
-    await clockOutEmployee({
-      sessionId: data.id,
-      employeeName: data.employee_name,
-      employeeId: data.employee_id,
-      reason: "end_day",
-      notes: "Auto-closed at midnight",
-      forceTimeMs: endOfDay.getTime(),
-    });
+  if (!isClockSessionFromToday(String(data.clock_in))) {
+    await autoCloseStaleClockSession(data);
     return null;
   }
 
-  const session = mapClockSession(data);
-  const segmentsMap = await fetchSegmentsForSessions([session.id]);
-  session.segments = segmentsMap.get(session.id) || [];
-  return await enforceAutoLunchBreak(session);
+  return hydrateClockSession(data);
 }
 
 async function enforceAutoLunchBreak(session: ClockSessionRecord): Promise<ClockSessionRecord> {
@@ -3096,7 +3168,8 @@ export async function pauseEmployeeTaskTimers(employeeName: string, employeeId?:
 
   for (const task of tasks) {
     await closeOpenTaskStatusHistoryRows(task.id, now);
-    await supabase.from("project_tasks").update({ status_entered_at: "paused" }).eq("id", task.id);
+    const { error } = await supabase.from("project_tasks").update({ status_entered_at: null }).eq("id", task.id);
+    if (error) console.warn("[Clock] Failed to pause task timer:", task.id, error.message);
   }
 }
 
@@ -3128,7 +3201,8 @@ export async function resumeEmployeeTaskTimers(employeeName: string, employeeId?
       projectId: task.project_id,
       status: task.status ?? "todo",
     });
-    await supabase.from("project_tasks").update({ status_entered_at: enteredAt }).eq("id", task.id);
+    const { error } = await supabase.from("project_tasks").update({ status_entered_at: enteredAt }).eq("id", task.id);
+    if (error) console.warn("[Clock] Failed to resume task timer:", task.id, error.message);
   }
 }
 
@@ -3195,6 +3269,7 @@ export async function clockInEmployee(input: {
         .eq("id", employeeId);
       await resumeEmployeeTaskTimers(input.employeeName, employeeId);
       invalidateAttendanceCache();
+      dispatchClockInScreenshotEvent();
       return mapClockSession(data);
     }
     // If data is null, it means the row was deleted or RLS blocked it. Fall through to insert a new one.
@@ -3229,7 +3304,68 @@ export async function clockInEmployee(input: {
     .eq("id", employeeId);
   await resumeEmployeeTaskTimers(input.employeeName, employeeId);
   invalidateAttendanceCache();
+  dispatchClockInScreenshotEvent();
+  void notifyLeadersOfClockIn({
+    employeeName: input.employeeName,
+    employeeId,
+    sessionId: data.id,
+    clockInIso: data.clock_in,
+  });
   return mapClockSession(data);
+}
+
+function dispatchClockInScreenshotEvent() {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("b2b:clock-in"));
+  }
+}
+
+/** CEO / Team Lead roles that receive clock-in alerts. */
+function isClockInNotifyLeader(profile: Pick<EmployeeProfile, "appRole" | "role">): boolean {
+  const appRole = (profile.appRole || "").trim().toLowerCase();
+  const role = (profile.role || "").trim().toLowerCase();
+  if (appRole === "ceo" || appRole === "teamlead" || appRole === "team_lead") return true;
+  if (role.includes("ceo") || role.includes("chief executive") || role.includes("administrator")) return true;
+  if (role.includes("team lead") || role.includes("teamlead") || role.includes("team leader")) return true;
+  return false;
+}
+
+/** Notify CEO + Team Leads when an employee starts their work day (first clock-in only). */
+async function notifyLeadersOfClockIn(input: {
+  employeeName: string;
+  employeeId: string;
+  sessionId?: string;
+  clockInIso?: string;
+}) {
+  try {
+    const profiles = await fetchEmployeeProfiles();
+    const leaders = profiles.filter(
+      (p) => p.id !== input.employeeId && isClockInNotifyLeader(p)
+    );
+    if (!leaders.length) return;
+
+    const clockAt = input.clockInIso ? new Date(input.clockInIso) : new Date();
+    const timeLabel = clockAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const name = input.employeeName.trim() || "An employee";
+    const title = "Clock-in";
+    const message = `${name} clocked in at ${timeLabel}.`;
+
+    await Promise.all(
+      leaders.map((leader) =>
+        insertNotification({
+          recipientId: leader.id,
+          senderId: input.employeeId,
+          title,
+          message,
+          type: "clock_in",
+          referenceId: input.sessionId,
+          sendPush: true,
+        })
+      )
+    );
+  } catch (err) {
+    console.error("Failed to notify leaders of clock-in:", err);
+  }
 }
 
 function clockOutNote(reason: ClockOutReason | string) {
@@ -3312,6 +3448,93 @@ export type EmployeeScreenshot = {
   captured_at: string;
 };
 
+/** Local calendar day as YYYY-MM-DD (not UTC). */
+export function localDateYmd(d = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function localDayIsoBounds(ymd: string): { start: string; end: string } {
+  const [year, month, day] = ymd.split("-").map(Number);
+  if (!year || !month || !day) {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date();
+    end.setHours(23, 59, 59, 999);
+    return { start: start.toISOString(), end: end.toISOString() };
+  }
+  const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+  const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+  return { start: start.toISOString(), end: end.toISOString() };
+}
+
+type ScreenshotQuery = {
+  eq: (col: string, val: string) => ScreenshotQuery;
+  ilike: (col: string, val: string) => ScreenshotQuery;
+  gte: (col: string, val: string) => ScreenshotQuery;
+  lte: (col: string, val: string) => ScreenshotQuery;
+  order: (col: string, opts: { ascending: boolean }) => ScreenshotQuery;
+  range: (from: number, to: number) => PromiseLike<SupabasePageResult<EmployeeScreenshot>>;
+  select: (cols: string, opts?: { count?: "exact"; head?: boolean }) => ScreenshotQuery;
+  then?: PromiseLike<{ count: number | null; error: unknown }>["then"];
+};
+
+async function queryEmployeeScreenshotPages(
+  applyEmployeeFilter: (query: ScreenshotQuery) => ScreenshotQuery,
+  dateYmd?: string,
+  daysBack?: number
+): Promise<EmployeeScreenshot[]> {
+  return fetchAllPaginated<EmployeeScreenshot>((from, pageSize) => {
+    let query = supabase.from("employee_screenshots").select("*") as unknown as ScreenshotQuery;
+    query = applyEmployeeFilter(query);
+
+    if (dateYmd) {
+      const { start, end } = localDayIsoBounds(dateYmd);
+      query = query.gte("captured_at", start).lte("captured_at", end);
+    } else if (daysBack && daysBack > 0) {
+      const start = new Date();
+      start.setHours(0, 0, 0, 0);
+      start.setDate(start.getDate() - (daysBack - 1));
+      query = query.gte("captured_at", start.toISOString());
+    }
+
+    return query
+      .order("captured_at", { ascending: false })
+      .range(from, from + pageSize - 1);
+  });
+}
+
+async function fetchScreenshotsForEmployee(
+  employeeName: string,
+  employeeId?: string,
+  dateYmd?: string,
+  daysBack?: number
+): Promise<EmployeeScreenshot[]> {
+  const trimmedName = employeeName.trim();
+  let rows: EmployeeScreenshot[] = [];
+
+  if (employeeId) {
+    rows = await queryEmployeeScreenshotPages(
+      (q) => q.eq("employee_id", employeeId),
+      dateYmd,
+      daysBack
+    );
+  }
+  if (!rows.length && trimmedName) {
+    rows = await queryEmployeeScreenshotPages(
+      (q) => q.ilike("employee_name", trimmedName),
+      dateYmd,
+      daysBack
+    );
+  }
+
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    if (seen.has(row.id)) return false;
+    seen.add(row.id);
+    return true;
+  });
+}
+
 export async function insertEmployeeScreenshot(input: {
   employeeName: string;
   employeeId?: string;
@@ -3322,38 +3545,55 @@ export async function insertEmployeeScreenshot(input: {
     employee_id: input.employeeId || null,
     image_url: input.imageUrl,
   });
-  if (error) console.error("Failed to insert screenshot:", error);
+  if (error) {
+    console.error("Failed to insert screenshot:", error);
+    throw error;
+  }
 }
 
 export async function fetchEmployeeScreenshots(
   employeeName: string,
   employeeId?: string,
-  date?: Date
+  dateYmd?: string,
+  daysBack?: number
 ): Promise<EmployeeScreenshot[]> {
   try {
-    return await fetchAllPaginated<EmployeeScreenshot>((from, pageSize) => {
-      let query = supabase.from("employee_screenshots").select("*");
-      if (employeeId) {
-        query = query.eq("employee_id", employeeId);
-      } else {
-        query = query.ilike("employee_name", employeeName);
-      }
-
-      if (date) {
-        const start = new Date(date);
-        start.setHours(0, 0, 0, 0);
-        const end = new Date(date);
-        end.setHours(23, 59, 59, 999);
-        query = query.gte("captured_at", start.toISOString()).lte("captured_at", end.toISOString());
-      }
-
-      return query
-        .order("captured_at", { ascending: false })
-        .range(from, from + pageSize - 1);
-    });
+    return await fetchScreenshotsForEmployee(employeeName, employeeId, dateYmd, daysBack);
   } catch (error) {
     console.error("Failed to fetch screenshots:", error);
-    return [];
+    throw error;
+  }
+}
+
+/** Count screenshots for an employee (any date) — used for empty-state hints. */
+export async function countEmployeeScreenshots(
+  employeeName: string,
+  employeeId?: string
+): Promise<number> {
+  try {
+    const trimmedName = employeeName.trim();
+    const countFor = async (
+      applyFilter: (query: ScreenshotQuery) => ScreenshotQuery
+    ) => {
+      const query = applyFilter(
+        supabase.from("employee_screenshots").select("id", { count: "exact", head: true }) as unknown as ScreenshotQuery
+      );
+      const { count, error } = await (query as unknown as PromiseLike<{ count: number | null; error: { message?: string } | null }>);
+      if (error) throw error;
+      return count ?? 0;
+    };
+
+    if (employeeId) {
+      const byId = await countFor((q) => q.eq("employee_id", employeeId));
+      if (byId > 0) return byId;
+    }
+    if (trimmedName) {
+      return countFor((q) => q.ilike("employee_name", trimmedName));
+    }
+    return 0;
+  } catch (error) {
+    console.error("Failed to count screenshots:", error);
+    return -1;
   }
 }
 
@@ -3446,27 +3686,40 @@ export function calculateSessionAttendanceSeconds(
   session: ClockSessionRecord,
   nowMs = Date.now(),
 ): number {
+  const clockInDay = formatClockDate(new Date(session.clockIn));
+  const today = formatLocalDateIso(new Date(nowMs));
+  const isLiveToday =
+    (session.status === "active" || session.status === "paused") && clockInDay === today;
+
+  const segmentEndMs = (seg: ClockSessionSegment) => {
+    if (seg.endedAt) return new Date(seg.endedAt).getTime();
+    if (isLiveToday) return nowMs;
+    const dayEnd = new Date(`${clockInDay}T23:59:59.999`).getTime();
+    return Math.min(nowMs, dayEnd);
+  };
+
   const segments = session.segments || [];
   if (segments.length > 0) {
     let totalSeconds = 0;
     for (const seg of segments) {
       if (!isEmployeeTimerSegment(seg)) continue;
       const startedAt = new Date(seg.startedAt).getTime();
-      const endedAt = seg.endedAt ? new Date(seg.endedAt).getTime() : nowMs;
-      totalSeconds += Math.max(0, Math.floor((endedAt - startedAt) / 1000));
+      const endedAt = segmentEndMs(seg);
+      const elapsedMs = Math.max(0, Math.min(endedAt - startedAt, 12 * 3600000));
+      totalSeconds += Math.floor(elapsedMs / 1000);
     }
     return totalSeconds;
   }
 
   let hours = Number(session.hours) || 0;
-  if (session.status === "active") {
+  if (isLiveToday) {
     const start = session.sessionStart || session.clockIn;
     hours += calculateSessionHours(start, nowMs);
   } else if (session.status === "paused") {
     const notes = (session.notes || "").toLowerCase();
     if (notes.includes("meeting") || notes.includes("idle") || session.notes === "System Idle") {
       const start = session.sessionStart || session.clockIn;
-      hours += calculateSessionHours(start, nowMs);
+      hours += calculateSessionHours(start, segmentEndMs({ startedAt: start } as ClockSessionSegment));
     }
   }
   return Math.max(0, Math.round(hours * 3600));
@@ -3566,7 +3819,12 @@ export function attendanceEntryToClockSession(entry: AttendanceEntry): ClockSess
 
 /** Match dashboard timer — live hours for active/paused office sessions. */
 export function liveAttendanceHours(entry: AttendanceEntry, nowMs = Date.now()): number {
-  if (entry.status !== "active" && entry.status !== "paused") return entry.hours;
+  const today = formatLocalDateIso(new Date(nowMs));
+  const isLiveToday =
+    (entry.status === "active" || entry.status === "paused") && entry.date === today;
+  if (!isLiveToday) {
+    return entry.storedHours ?? entry.hours;
+  }
   return calculateSessionAttendanceHours(attendanceEntryToClockSession(entry), nowMs);
 }
 
@@ -3632,18 +3890,69 @@ export async function fetchTeamClockSessionsByDate(dateStr: string): Promise<Clo
   }
 }
 
+export const REPORT_PAGE_SIZE = 15;
+
+export type ReportPagination = {
+  page: number;
+  pageSize: number;
+};
+
+export type PaginatedReport<T> = {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+};
+
+export type AttendanceReportPage = PaginatedReport<AttendanceEntry> & {
+  summaryHours: number;
+};
+
+export type TimesheetReportPage = PaginatedReport<TimesheetEntry> & {
+  summaryHours: number;
+};
+
+export type EmployeeHoursSummary = {
+  name: string;
+  employeeId?: string;
+  officeHours: number;
+  projectHours: number;
+  daysWorked: number;
+  totalHours: number;
+};
+
 export type AttendanceReportFilter = {
   startDate: string;
   endDate: string;
   employeeId?: string;
   employeeName?: string;
+  search?: string;
 };
 
 export type TimesheetReportFilter = {
   startDate: string;
   endDate: string;
   employeeId?: string;
+  employeeName?: string;
+  projectId?: string;
+  search?: string;
 };
+
+function toPaginatedReport<T>(
+  items: T[],
+  total: number,
+  page: number,
+  pageSize: number,
+): PaginatedReport<T> {
+  return {
+    items,
+    total,
+    page,
+    pageSize,
+    totalPages: Math.max(1, Math.ceil(Math.max(total, 0) / pageSize)),
+  };
+}
 
 function clockQueryRangeFromDates(startDate: string, endDate: string) {
   const start = new Date(`${startDate}T00:00:00`);
@@ -3652,11 +3961,35 @@ function clockQueryRangeFromDates(startDate: string, endDate: string) {
 }
 
 function attendanceCacheKey(filter: AttendanceReportFilter) {
-  return `${CACHE_KEYS.attendance}:${filter.startDate}:${filter.endDate}:${filter.employeeId ?? "all"}:${filter.employeeName ?? "all"}`;
+  return `${CACHE_KEYS.attendance}:${filter.startDate}:${filter.endDate}:${filter.employeeId ?? "all"}:${filter.employeeName ?? "all"}:${filter.search ?? ""}`;
 }
 
 function timesheetReportCacheKey(filter: TimesheetReportFilter) {
-  return `${CACHE_KEYS.timesheetReport}:${filter.startDate}:${filter.endDate}:${filter.employeeId ?? "all"}`;
+  return `${CACHE_KEYS.timesheetReport}:${filter.startDate}:${filter.endDate}:${filter.employeeId ?? "all"}:${filter.employeeName ?? "all"}:${filter.projectId ?? "all"}:${filter.search ?? ""}`;
+}
+
+function applyTimesheetProjectFilter(entries: TimesheetEntry[], projectId?: string) {
+  if (!projectId) return entries;
+  return entries.filter(e => e.projectId === projectId);
+}
+
+function applyAttendanceSearch<T extends { or: (filters: string) => T }>(query: T, search?: string) {
+  const q = search?.trim().replace(/[%_,]/g, "");
+  if (!q) return query;
+  return query.or(`employee_name.ilike.%${q}%,notes.ilike.%${q}%`);
+}
+
+function applyTimesheetSearch(entries: TimesheetEntry[], search?: string) {
+  const q = search?.trim().toLowerCase();
+  if (!q) return entries;
+  return entries.filter(
+    e =>
+      e.description.toLowerCase().includes(q) ||
+      (e.workNotes || "").toLowerCase().includes(q) ||
+      (e.taskTitle || "").toLowerCase().includes(q) ||
+      e.employee.toLowerCase().includes(q) ||
+      e.projectName.toLowerCase().includes(q),
+  );
 }
 
 function mapSessionsToAttendanceEntries(sessions: ClockSessionRecord[]): AttendanceEntry[] {
@@ -3677,36 +4010,230 @@ function mapSessionsToAttendanceEntries(sessions: ClockSessionRecord[]): Attenda
   }));
 }
 
+type AttendanceSummaryRow = Pick<
+  ClockSessionDbRow,
+  "id" | "employee_id" | "employee_name" | "clock_in" | "clock_out" | "session_start" | "status" | "hours" | "notes"
+>;
+
+function buildAttendanceSessionsQuery(filter: AttendanceReportFilter) {
+  const { start, end } = clockQueryRangeFromDates(filter.startDate, filter.endDate);
+  let query = supabase
+    .from("clock_sessions")
+    .select("*", { count: "exact" })
+    .gte("clock_in", start)
+    .lte("clock_in", end)
+    .order("clock_in", { ascending: false });
+  if (filter.employeeId || filter.employeeName?.trim()) {
+    query = applyEmployeeClockFilter(query, filter.employeeName ?? "", filter.employeeId);
+  }
+  return applyAttendanceSearch(query, filter.search);
+}
+
+function buildAttendanceSummaryQuery(filter: AttendanceReportFilter) {
+  const { start, end } = clockQueryRangeFromDates(filter.startDate, filter.endDate);
+  let query = supabase
+    .from("clock_sessions")
+    .select("id, employee_id, employee_name, clock_in, clock_out, session_start, status, hours, notes")
+    .gte("clock_in", start)
+    .lte("clock_in", end)
+    .order("clock_in", { ascending: false });
+  if (filter.employeeId || filter.employeeName?.trim()) {
+    query = applyEmployeeClockFilter(query, filter.employeeName ?? "", filter.employeeId);
+  }
+  return applyAttendanceSearch(query, filter.search);
+}
+
+async function attachLiveSegments(sessions: ClockSessionRecord[]): Promise<ClockSessionRecord[]> {
+  if (sessions.length === 0) return sessions;
+  const today = formatLocalDateIso(new Date());
+  const liveIds = sessions
+    .filter(
+      s =>
+        (s.status === "active" || s.status === "paused") &&
+        formatClockDate(new Date(s.clockIn)) === today,
+    )
+    .map(s => s.id);
+  if (liveIds.length === 0) return sessions;
+  const segmentsBySession = await fetchSegmentsForSessions(liveIds);
+  return sessions.map(s => ({
+    ...s,
+    segments: segmentsBySession.get(s.id) || s.segments || [],
+  }));
+}
+
+async function attachPageSegments(sessions: ClockSessionRecord[]): Promise<ClockSessionRecord[]> {
+  if (sessions.length === 0) return sessions;
+  const segmentsBySession = await fetchSegmentsForSessions(sessions.map(s => s.id));
+  return sessions.map(s => ({
+    ...s,
+    segments: segmentsBySession.get(s.id) || [],
+  }));
+}
+
+async function loadAttendanceSummaryRows(filter: AttendanceReportFilter): Promise<AttendanceSummaryRow[]> {
+  return fetchAllPaginated<AttendanceSummaryRow>((from, pageSize) =>
+    buildAttendanceSummaryQuery(filter).range(from, from + pageSize - 1),
+  );
+}
+
+async function summarizeAttendanceRows(rows: AttendanceSummaryRow[]) {
+  const today = formatLocalDateIso(new Date());
+  const liveIds = rows
+    .filter(
+      r =>
+        (r.status === "active" || r.status === "paused") &&
+        formatClockDate(new Date(r.clock_in)) === today,
+    )
+    .map(r => r.id);
+  const liveSegments = liveIds.length ? await fetchSegmentsForSessions(liveIds) : new Map<string, ClockSessionSegment[]>();
+
+  const nowMs = Date.now();
+  let totalHours = 0;
+  const byEmployee = new Map<
+    string,
+    { name: string; employeeId?: string; hours: number; days: Set<string> }
+  >();
+
+  for (const row of rows) {
+    const session = mapClockSession(row);
+    if (liveSegments.has(session.id)) {
+      session.segments = liveSegments.get(session.id) || [];
+    }
+    const hours = calculateSessionAttendanceHours(session, nowMs);
+    totalHours += hours;
+
+    const key = session.employeeId || session.employeeName.toLowerCase();
+    const bucket = byEmployee.get(key) || {
+      name: session.employeeName,
+      employeeId: session.employeeId || undefined,
+      hours: 0,
+      days: new Set<string>(),
+    };
+    bucket.hours += hours;
+    if (hours > 0) bucket.days.add(formatClockDate(new Date(session.clockIn)));
+    byEmployee.set(key, bucket);
+  }
+
+  return { total: rows.length, totalHours, byEmployee };
+}
+
 /** Office attendance rows — includes segments so hours match the dashboard timer. */
 async function loadAttendanceForReport(filter: AttendanceReportFilter): Promise<AttendanceEntry[]> {
-  const { start, end } = clockQueryRangeFromDates(filter.startDate, filter.endDate);
-
-  let sessions: ClockSessionRecord[];
   try {
-    sessions = await fetchPaginatedClockSessions((from, pageSize) => {
-      let query = supabase
-        .from("clock_sessions")
-        .select("*")
-        .gte("clock_in", start)
-        .lte("clock_in", end)
-        .order("clock_in", { ascending: false })
-        .range(from, from + pageSize - 1);
-      if (filter.employeeId || filter.employeeName?.trim()) {
-        query = applyEmployeeClockFilter(query, filter.employeeName ?? "", filter.employeeId);
-      }
-      return query;
-    });
+    const rows = await loadAttendanceSummaryRows(filter);
+    const sessions = await attachLiveSegments(rows.map(mapClockSession));
+    return mapSessionsToAttendanceEntries(sessions);
   } catch (error) {
     if (isMissingClockSessionsTable(error)) return [];
     throw error;
   }
+}
 
-  return mapSessionsToAttendanceEntries(sessions);
+async function loadAttendanceReportSummary(filter: AttendanceReportFilter) {
+  return getCached(`${attendanceCacheKey(filter)}:summary`, async () => {
+    const rows = await loadAttendanceSummaryRows(filter);
+    return summarizeAttendanceRows(rows);
+  }, ATTENDANCE_CACHE_TTL);
+}
+
+async function loadAttendanceReportPage(
+  filter: AttendanceReportFilter,
+  pagination: ReportPagination,
+): Promise<AttendanceReportPage> {
+  const { page, pageSize } = pagination;
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
+
+  try {
+    const [{ data, error, count }, summary] = await Promise.all([
+      buildAttendanceSessionsQuery(filter).range(from, to),
+      loadAttendanceReportSummary(filter),
+    ]);
+
+    if (error) {
+      if (isMissingClockSessionsTable(error)) {
+        return { ...toPaginatedReport([], 0, page, pageSize), summaryHours: 0 };
+      }
+      throw error;
+    }
+
+    clockSessionsTableReady = true;
+    const sessions = await attachPageSegments((data || []).map(mapClockSession));
+
+    return {
+      ...toPaginatedReport(mapSessionsToAttendanceEntries(sessions), count ?? summary.total, page, pageSize),
+      summaryHours: summary.totalHours,
+    };
+  } catch (error) {
+    if (isMissingClockSessionsTable(error)) {
+      return { ...toPaginatedReport([], 0, page, pageSize), summaryHours: 0 };
+    }
+    throw error;
+  }
 }
 
 /** Time Reports — only rows in the selected date range (and optional employee). */
 export async function fetchAttendanceForReport(filter: AttendanceReportFilter): Promise<AttendanceEntry[]> {
   return getCached(attendanceCacheKey(filter), () => loadAttendanceForReport(filter), ATTENDANCE_CACHE_TTL);
+}
+
+/** Paginated office attendance for Time Reports (loads one page + summary totals). */
+export async function fetchAttendanceReportPage(
+  filter: AttendanceReportFilter,
+  pagination: ReportPagination,
+): Promise<AttendanceReportPage> {
+  const cacheKey = `${attendanceCacheKey(filter)}:p${pagination.page}:s${pagination.pageSize}`;
+  return getCached(cacheKey, () => loadAttendanceReportPage(filter, pagination), ATTENDANCE_CACHE_TTL);
+}
+
+export async function fetchReportTeamSummaries(
+  attendanceFilter: AttendanceReportFilter,
+  timesheetFilter: TimesheetReportFilter,
+): Promise<EmployeeHoursSummary[]> {
+  const cacheKey = `${attendanceCacheKey(attendanceFilter)}:team:${timesheetReportCacheKey(timesheetFilter)}`;
+  return getCached(
+    cacheKey,
+    async () => {
+      const [attendanceRows, projectEntries] = await Promise.all([
+        loadAttendanceSummaryRows(attendanceFilter),
+        loadTimesheetReportEntries(timesheetFilter),
+      ]);
+      const { byEmployee: officeMap } = await summarizeAttendanceRows(attendanceRows);
+      const map = new Map<string, EmployeeHoursSummary>();
+
+      for (const [, office] of officeMap) {
+        const key = office.employeeId || office.name.toLowerCase();
+        map.set(key, {
+          name: office.name,
+          employeeId: office.employeeId,
+          officeHours: office.hours,
+          projectHours: 0,
+          daysWorked: office.days.size,
+          totalHours: office.hours,
+        });
+      }
+
+      for (const entry of projectEntries) {
+        const key = entry.employeeId || entry.employee.toLowerCase();
+        const existing = map.get(key) || {
+          name: entry.employee,
+          employeeId: entry.employeeId,
+          officeHours: 0,
+          projectHours: 0,
+          daysWorked: 0,
+          totalHours: 0,
+        };
+        existing.projectHours += entry.hours;
+        existing.totalHours = existing.officeHours + existing.projectHours;
+        map.set(key, existing);
+      }
+
+      return Array.from(map.values()).sort(
+        (a, b) => b.totalHours - a.totalHours || a.name.localeCompare(b.name),
+      );
+    },
+    ATTENDANCE_CACHE_TTL,
+  );
 }
 
 /** Office clock in/out rows for Timesheet / CEO attendance view. */
@@ -3724,21 +4251,185 @@ export async function fetchAttendanceEntries(): Promise<AttendanceEntry[]> {
   );
 }
 
+async function loadAttendanceWindowsByEmployee(
+  filter: TimesheetReportFilter,
+): Promise<Map<string, AttendanceTimeWindow[]>> {
+  const sessions = await loadAttendanceForReport({
+    startDate: filter.startDate,
+    endDate: filter.endDate,
+    employeeId: filter.employeeId,
+  });
+  const windows = clockSessionsToAttendanceWindows(sessions.map(attendanceEntryToClockSession));
+  const byEmployee = new Map<string, AttendanceTimeWindow[]>();
+  for (const window of windows) {
+    const id = window.employeeId || "";
+    const list = byEmployee.get(id) || [];
+    list.push(window);
+    byEmployee.set(id, list);
+  }
+  return byEmployee;
+}
+
+const IN_PROGRESS_STAGE = "in-progress";
+
+function taskReportDateIso(task: { task_date?: string | null; due?: string | null }) {
+  if (task.task_date?.trim()) return task.task_date.trim().slice(0, 10);
+  const parsed = parseTaskDueDate(task.due || undefined);
+  return parsed ? formatLocalDateIso(parsed) : null;
+}
+
+/** Split one work-stage segment into per-calendar-day seconds (wall clock). */
+function splitWorkStageSegmentByDay(
+  enteredAt: string,
+  exitedAt: string | null,
+  filter: TimesheetReportFilter,
+): Map<string, number> {
+  const byDay = new Map<string, number>();
+  const startMs = new Date(enteredAt).getTime();
+  const endMs = exitedAt ? new Date(exitedAt).getTime() : Date.now();
+  if (Number.isNaN(startMs) || endMs <= startMs) return byDay;
+
+  const cursor = new Date(startMs);
+  cursor.setHours(0, 0, 0, 0);
+
+  while (cursor.getTime() < endMs) {
+    const iso = formatLocalDateIso(cursor);
+    if (iso >= filter.startDate && iso <= filter.endDate) {
+      const dayStart = new Date(`${iso}T00:00:00`).getTime();
+      const dayEnd = new Date(`${iso}T23:59:59.999`).getTime();
+      const overlapStart = Math.max(startMs, dayStart);
+      const overlapEnd = Math.min(endMs, dayEnd);
+      if (overlapEnd > overlapStart) {
+        const seconds = Math.floor((overlapEnd - overlapStart) / 1000);
+        byDay.set(iso, (byDay.get(iso) || 0) + seconds);
+      }
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return byDay;
+}
+
+async function buildStageHistoryTimesheetEntries(
+  filter: TimesheetReportFilter,
+  projectMap: Map<string, string>,
+  profiles: EmployeeProfile[],
+): Promise<TimesheetEntry[]> {
+  if (!(await probeTaskStageTracking())) return [];
+
+  const rangeStartIso = `${filter.startDate}T00:00:00`;
+  const rangeEndIso = `${filter.endDate}T23:59:59.999`;
+
+  let historyRows: TaskStageHistoryRow[] = [];
+  try {
+    historyRows = await fetchAllPaginated<TaskStageHistoryRow>((from, pageSize) =>
+      supabase
+        .from("task_status_history")
+        .select("*")
+        .lte("entered_at", rangeEndIso)
+        .or(`exited_at.is.null,exited_at.gte.${rangeStartIso}`)
+        .order("entered_at", { ascending: true })
+        .range(from, from + pageSize - 1)
+    );
+  } catch {
+    return [];
+  }
+
+  if (historyRows.length === 0) return [];
+
+  const taskIds = [...new Set(historyRows.map(row => row.task_id))];
+  const taskRows = await fetchAllPaginatedInChunks<DbProjectTaskRow>(taskIds, (chunk, from, pageSize) =>
+    supabase
+      .from("project_tasks")
+      .select("*")
+      .in("id", chunk)
+      .range(from, from + pageSize - 1)
+  );
+
+  const taskMap = new Map(taskRows.map(task => [task.id, task]));
+  const byTaskDay = new Map<string, number>();
+
+  for (const row of historyRows) {
+    if (row.to_status !== IN_PROGRESS_STAGE) continue;
+
+    const task = taskMap.get(row.task_id);
+    if (!task) continue;
+    if (!taskBelongsToEmployeeFilter(task, row, filter, profiles)) continue;
+
+    // Open segment — only while task is still In Progress.
+    if (!row.exited_at && task.status !== IN_PROGRESS_STAGE) continue;
+
+    const daySeconds = splitWorkStageSegmentByDay(row.entered_at, row.exited_at, filter);
+    for (const [dateIso, seconds] of daySeconds) {
+      if (seconds <= 0) continue;
+      const key = `${row.task_id}:${dateIso}`;
+      byTaskDay.set(key, (byTaskDay.get(key) || 0) + seconds);
+    }
+  }
+
+  const entries: TimesheetEntry[] = [];
+  for (const [key, inProgressSeconds] of byTaskDay) {
+    if (inProgressSeconds <= 0) continue;
+
+    const [taskId, dateIso] = key.split(":");
+    const task = taskMap.get(taskId);
+    if (!task) continue;
+
+    const stageLabel = `In Progress ${formatStageDuration(inProgressSeconds)}`;
+    const notes = task.work_notes?.trim() || "";
+    const workNotes = notes ? `${stageLabel}\n${notes}` : stageLabel;
+    const employeeMeta = resolveTimesheetEmployeeMeta(task, null, filter, profiles);
+
+    entries.push({
+      id: `stage-${taskId}-${dateIso}`,
+      projectId: task.project_id,
+      projectName: projectMap.get(task.project_id) || "—",
+      employee:
+        employeeMeta.employee !== "—"
+          ? employeeMeta.employee
+          : filter.employeeName?.trim() ||
+            profileNameById(profiles, filter.employeeId) ||
+            profileNameById(profiles, task.assignee_id) ||
+            "—",
+      employeeId: employeeMeta.employeeId || filter.employeeId || task.assignee_id || undefined,
+      date: dateIso,
+      hours: Math.round((inProgressSeconds / 3600) * 100) / 100,
+      description: task.title,
+      taskTitle: task.title,
+      taskStatus: IN_PROGRESS_STAGE,
+      workNotes,
+      status: "submitted",
+      kind: "task",
+      taskId: task.id,
+    });
+  }
+
+  return entries;
+}
+
 async function fetchTimesheetEntriesRelationalInRange(filter: TimesheetReportFilter): Promise<TimesheetEntry[]> {
-  const [projects, sheetRows] = await Promise.all([
+  const [projects, profiles] = await Promise.all([
     fetchAllPaginated<{ id: string; name: string }>((from, pageSize) =>
       supabase.from("projects").select("id, name").range(from, from + pageSize - 1)
     ),
-    fetchAllPaginated<DbTimesheetEntryRow>((from, pageSize) => {
+    fetchEmployeeProfiles(),
+  ]);
+  const projectMap = new Map(projects.map(p => [p.id, p.name]));
+
+  // Project log = In Progress time from Kanban stage history only.
+  if (await probeTaskStageTracking()) {
+    const stageEntries = await buildStageHistoryTimesheetEntries(filter, projectMap, profiles);
+    return stageEntries.sort((a, b) => b.date.localeCompare(a.date));
+  }
+
+  const sheetRows = await fetchAllPaginated<DbTimesheetEntryRow>((from, pageSize) => {
       let query = supabase
         .from("timesheet_entries")
         .select("*")
         .gte("date", filter.startDate)
         .lte("date", filter.endDate);
-      if (filter.employeeId) query = query.eq("employee_id", filter.employeeId);
       return query.order("date", { ascending: false }).range(from, from + pageSize - 1);
-    }),
-  ]);
+    });
 
   const linkedTaskIds = [...new Set(sheetRows.map(r => r.linked_task_id).filter(Boolean))] as string[];
   const taskRows = linkedTaskIds.length
@@ -3751,18 +4442,17 @@ async function fetchTimesheetEntriesRelationalInRange(filter: TimesheetReportFil
       )
     : [];
 
-  const profiles = await fetchEmployeeProfiles();
-  const projectMap = new Map(projects.map(p => [p.id, p.name]));
   const taskMap = new Map(taskRows.map(t => [t.id, t]));
   const entries: TimesheetEntry[] = [];
 
   for (const row of sheetRows) {
     const linkedTask = row.linked_task_id ? taskMap.get(row.linked_task_id) : undefined;
-    entries.push({
+    const employeeName = profileNameById(profiles, row.employee_id) || "—";
+    const entry = {
       id: row.id,
       projectId: row.project_id,
       projectName: projectMap.get(row.project_id) || "—",
-      employee: profileNameById(profiles, row.employee_id) || "—",
+      employee: employeeName,
       employeeId: row.employee_id || undefined,
       date: row.date,
       hours: Number(row.hours) || 0,
@@ -3770,27 +4460,33 @@ async function fetchTimesheetEntriesRelationalInRange(filter: TimesheetReportFil
       taskTitle: linkedTask?.title,
       taskStatus: linkedTask?.status,
       workNotes: linkedTask?.work_notes || row.description,
-      status: "submitted",
-      kind: row.linked_task_id ? "task" : "manual",
+      status: "submitted" as const,
+      kind: (row.linked_task_id ? "task" : "manual") as TimesheetEntryKind,
       taskId: row.linked_task_id || undefined,
-    });
+    };
+    if (!entryBelongsToEmployee(entry, filter.employeeId, filter.employeeName)) continue;
+    entries.push(entry);
   }
 
-  let virtualTaskQuery = supabase
-    .from("project_tasks")
-    .select("*")
-    .gte("due", filter.startDate)
-    .lte("due", filter.endDate);
-  if (filter.employeeId) virtualTaskQuery = virtualTaskQuery.eq("assignee_id", filter.employeeId);
+  let virtualTaskQuery = supabase.from("project_tasks").select("*");
 
-  const virtualTaskRows = await fetchAllPaginated<DbProjectTaskRow>((from, pageSize) =>
-    virtualTaskQuery.order("due", { ascending: false }).range(from, from + pageSize - 1)
+  const allAssigneeTasks = await fetchAllPaginated<DbProjectTaskRow>((from, pageSize) =>
+    virtualTaskQuery.order("updated_at", { ascending: false }).range(from, from + pageSize - 1)
   );
+
+  const virtualTaskRows = allAssigneeTasks.filter(task => {
+    if (!taskBelongsToEmployeeFilter(task, null, filter, profiles)) return false;
+    const dateIso = taskReportDateIso(task);
+    return dateIso != null && dateIso >= filter.startDate && dateIso <= filter.endDate;
+  });
 
   for (const task of virtualTaskRows) {
     if (!taskHasLoggedTime(task)) continue;
     const syncedId = `ts-task-${task.id}`;
     if (entries.some(e => e.id === syncedId || e.taskId === task.id)) continue;
+
+    const dateIso = taskReportDateIso(task);
+    if (!dateIso) continue;
 
     entries.push({
       id: `virtual-ts-${task.id}`,
@@ -3798,7 +4494,7 @@ async function fetchTimesheetEntriesRelationalInRange(filter: TimesheetReportFil
       projectName: projectMap.get(task.project_id) || "—",
       employee: profileNameById(profiles, task.assignee_id) || "—",
       employeeId: task.assignee_id || undefined,
-      date: taskDueToIso(task.due || undefined),
+      date: dateIso,
       hours: parseEstHoursFromTask(task.est || undefined),
       description: task.work_notes?.trim() || task.title,
       taskTitle: task.title,
@@ -3814,20 +4510,46 @@ async function fetchTimesheetEntriesRelationalInRange(filter: TimesheetReportFil
 }
 
 /** Time Reports project tab — scoped to date range instead of full tables. */
-export async function fetchTimesheetEntriesForReport(filter: TimesheetReportFilter): Promise<TimesheetEntry[]> {
-  return getCached(timesheetReportCacheKey(filter), async () => {
-    if (await probeProjectRelations()) {
-      return fetchTimesheetEntriesRelationalInRange(filter);
-    }
+async function loadTimesheetReportEntries(filter: TimesheetReportFilter): Promise<TimesheetEntry[]> {
+  if (await probeProjectRelations()) {
+    return fetchTimesheetEntriesRelationalInRange(filter);
+  }
 
-    const all = await fetchTimesheetEntries();
-    return all.filter(entry => {
-      const iso = entryDateIsoFromTimesheet(entry.date);
-      if (!iso || iso < filter.startDate || iso > filter.endDate) return false;
-      if (filter.employeeId && entry.employeeId !== filter.employeeId) return false;
-      return true;
-    });
-  }, DATA_CACHE_TTL);
+  const all = await fetchTimesheetEntries();
+  return all.filter(entry => {
+    const iso = entryDateIsoFromTimesheet(entry.date);
+    if (!iso || iso < filter.startDate || iso > filter.endDate) return false;
+    return entryBelongsToEmployee(entry, filter.employeeId, filter.employeeName);
+  });
+}
+
+export async function fetchTimesheetEntriesForReport(filter: TimesheetReportFilter): Promise<TimesheetEntry[]> {
+  return getCached(timesheetReportCacheKey(filter), () => loadTimesheetReportEntries(filter), DATA_CACHE_TTL);
+}
+
+/** Paginated in-progress project time for Time Reports. */
+export async function fetchTimesheetReportPage(
+  filter: TimesheetReportFilter,
+  pagination: ReportPagination,
+): Promise<TimesheetReportPage> {
+  const cacheKey = `${timesheetReportCacheKey(filter)}:p${pagination.page}:s${pagination.pageSize}`;
+  return getCached(
+    cacheKey,
+    async () => {
+      const allEntries = applyTimesheetSearch(
+        applyTimesheetProjectFilter(await loadTimesheetReportEntries(filter), filter.projectId),
+        filter.search,
+      ).sort((a, b) => b.date.localeCompare(a.date));
+      const summaryHours = allEntries.reduce((sum, entry) => sum + entry.hours, 0);
+      const { page, pageSize } = pagination;
+      const start = (page - 1) * pageSize;
+      return {
+        ...toPaginatedReport(allEntries.slice(start, start + pageSize), allEntries.length, page, pageSize),
+        summaryHours,
+      };
+    },
+    DATA_CACHE_TTL,
+  );
 }
 
 function entryDateIsoFromTimesheet(date: string): string | null {
@@ -4106,19 +4828,82 @@ export function findProfileForUser(
   return undefined;
 }
 
-/** Scope rows to one employee — ID first; never loose first-name match. */
+/** Scope rows to one employee — match profile id and/or display name. */
 export function entryBelongsToEmployee(
   row: { employeeId?: string | null; employee?: string },
   employeeId?: string,
   employeeName?: string
 ) {
-  if (employeeId?.trim()) {
-    return row.employeeId === employeeId.trim();
+  if (!employeeId?.trim() && !employeeName?.trim()) return true;
+  if (employeeId?.trim() && row.employeeId?.trim() === employeeId.trim()) return true;
+  const name = employeeName?.trim() || "";
+  if (name && row.employee && namesMatch(row.employee, name)) return true;
+  return false;
+}
+
+function taskBelongsToEmployeeFilter(
+  task: DbProjectTaskRow,
+  historyRow: TaskStageHistoryRow | null,
+  filter: TimesheetReportFilter,
+  profiles: EmployeeProfile[],
+): boolean {
+  if (!filter.employeeId?.trim() && !filter.employeeName?.trim()) return true;
+
+  const filterId = filter.employeeId?.trim() || "";
+  const filterName =
+    filter.employeeName?.trim() ||
+    profileNameById(profiles, filterId) ||
+    "";
+
+  const assigneeId = task.assignee_id?.trim() || "";
+  if (filterId && assigneeId === filterId) return true;
+
+  const assigneeName = profileNameById(profiles, assigneeId);
+  if (filterName && assigneeName && namesMatch(assigneeName, filterName)) return true;
+
+  if (historyRow?.moved_by?.trim()) {
+    const moverId = historyRow.moved_by.trim();
+    if (filterId && moverId === filterId) return true;
+    const moverName = profileNameById(profiles, moverId);
+    if (filterName && moverName && namesMatch(moverName, filterName)) return true;
   }
-  if (employeeName?.trim() && row.employee) {
-    return row.employee.trim().toLowerCase() === employeeName.trim().toLowerCase();
+
+  return false;
+}
+
+function resolveTimesheetEmployeeMeta(
+  task: DbProjectTaskRow,
+  historyRow: TaskStageHistoryRow | null,
+  filter: TimesheetReportFilter,
+  profiles: EmployeeProfile[],
+) {
+  const filterId = filter.employeeId?.trim() || "";
+  const filterName =
+    filter.employeeName?.trim() ||
+    profileNameById(profiles, filterId) ||
+    "";
+
+  if (filterId || filterName) {
+    const moverId = historyRow?.moved_by?.trim() || "";
+    const moverName = profileNameById(profiles, moverId);
+    if (filterId && (task.assignee_id?.trim() === filterId || moverId === filterId)) {
+      return { employeeId: filterId, employee: filterName || profileNameById(profiles, filterId) || "—" };
+    }
+    if (filterName && moverName && namesMatch(moverName, filterName)) {
+      return { employeeId: moverId || filterId || task.assignee_id || undefined, employee: filterName };
+    }
+    if (filterName) {
+      const assigneeName = profileNameById(profiles, task.assignee_id);
+      if (assigneeName && namesMatch(assigneeName, filterName)) {
+        return { employeeId: task.assignee_id || filterId || undefined, employee: filterName };
+      }
+    }
   }
-  return !employeeId?.trim() && !employeeName?.trim();
+
+  return {
+    employeeId: task.assignee_id || undefined,
+    employee: profileNameById(profiles, task.assignee_id) || "—",
+  };
 }
 
 /** Match full name, first name, or partial name (e.g. "Deepak" ↔ "Deepak Kumar"). */
@@ -5027,7 +5812,9 @@ export async function insertNotification(input: {
   type: string;
   senderId?: string;
   referenceId?: string;
-}) {
+  /** When true, invoke send-push edge function (mobile + web FCM). */
+  sendPush?: boolean;
+}): Promise<AppNotification | null> {
   if (!input.recipientId?.trim()) {
     throw new Error("Notification recipient is required.");
   }
@@ -5041,23 +5828,46 @@ export async function insertNotification(input: {
     reference_id: input.referenceId || null,
   };
 
-  const { error } = await supabase.from("notifications").insert(payload);
+  const insertRow = async (row: typeof payload) => {
+    const { data, error } = await supabase.from("notifications").insert(row).select("*").single();
+    if (error) throw error;
+    return data as AppNotification;
+  };
 
-  if (error) {
-    if (error.code === "23503" && payload.sender_id) {
+  try {
+    const row = await insertRow(payload);
+    if (input.sendPush && row) {
+      void dispatchPushNotification(row);
+    }
+    return row;
+  } catch (error: unknown) {
+    const pgError = error as { code?: string };
+    if (pgError.code === "23503" && payload.sender_id) {
       console.warn("Sender ID foreign key mismatch, retrying without sender_id...");
-      const { error: retryError } = await supabase.from("notifications").insert({
-        ...payload,
-        sender_id: null,
-      });
-      if (retryError) {
-        console.error("Insert notification error:", retryError);
-        throw retryError;
+      const row = await insertRow({ ...payload, sender_id: null });
+      if (input.sendPush && row) {
+        void dispatchPushNotification(row);
       }
-      return;
+      return row;
     }
     console.error("Insert notification error:", error);
     throw error;
+  }
+}
+
+/** Fire FCM push via Supabase edge function (mobile fcm_token + optional web). */
+export async function dispatchPushNotification(record: AppNotification | Record<string, unknown>) {
+  try {
+    const { data, error } = await supabase.functions.invoke("send-push", {
+      body: { record },
+    });
+    if (error) {
+      console.warn("[Push] send-push failed:", error.message);
+      return;
+    }
+    console.info("[Push] send-push ok:", data);
+  } catch (err) {
+    console.warn("[Push] send-push invoke error:", err);
   }
 }
 

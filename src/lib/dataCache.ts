@@ -50,6 +50,11 @@ export function peekCached<T>(key: string, ttlMs: number): T | undefined {
   return entry.data;
 }
 
+export function setCachedData<T>(key: string, data: T) {
+  store.set(key, { data, fetchedAt: Date.now() });
+  notify(key);
+}
+
 export async function getCached<T>(
   key: string,
   loader: () => Promise<T>,

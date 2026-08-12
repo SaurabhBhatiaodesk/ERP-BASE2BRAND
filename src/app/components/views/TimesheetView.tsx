@@ -1,16 +1,24 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { Briefcase, Clock, Download, Pencil, Plus, Save, Search, Trash2 } from "lucide-react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { Briefcase, ChevronLeft, ChevronRight, Clock, Download, Pencil, Plus, Save, Search, Trash2 } from "lucide-react";
 import { Avatar } from "../ui";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
-import { useAttendanceReport, useEmployeeProfiles, useProjects, useTimesheetReport } from "@/hooks/useSupabaseData";
+import {
+  useAttendanceReportPage,
+  useEmployeeProfiles,
+  useProjects,
+  useReportTeamSummaries,
+  useTimesheetReport,
+} from "@/hooks/useSupabaseData";
 import {
   addTimesheetEntry,
   deleteTimesheetEntry,
-  entryBelongsToEmployee,
+  fetchAttendanceForReport,
+  fetchTimesheetEntriesForReport,
   findProfileForUser,
   formatTaskStatusLabel,
   getEmployeeProjects,
   liveAttendanceHours,
+  REPORT_PAGE_SIZE,
   saveTimesheetEntryEdit,
   type AttendanceEntry,
   type TimesheetEntry,
@@ -18,6 +26,7 @@ import {
 import { isAdminRole, isExecutiveProfile } from "@/lib/auth";
 import { isPersonalTaskRole } from "@/lib/database";
 import { WorkFlowGuide } from "../ui/WorkFlowGuide";
+import { SearchableSelect } from "../ui/SearchableSelect";
 
 function formatLocalDate(d: Date) {
   const y = d.getFullYear();
@@ -82,12 +91,6 @@ function entryDateIso(date: string): string | null {
   return formatLocalDate(d);
 }
 
-function isDateInRange(date: string, start: Date, end: Date) {
-  const iso = entryDateIso(date);
-  if (!iso) return false;
-  return iso >= formatLocalDate(start) && iso <= formatLocalDate(end);
-}
-
 function formatHoursDisplay(hours: number) {
   if (hours <= 0) return "0h";
   const totalMins = Math.round(hours * 60);
@@ -149,7 +152,111 @@ const formInputCls =
   "w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-4 py-2.5 text-sm text-[#e2e8f7] outline-none focus:border-indigo-500/50 font-['Plus_Jakarta_Sans']";
 const labelCls = "block text-xs font-['Plus_Jakarta_Sans'] text-[#6b7fa8] mb-1.5";
 
+function ReportPaginationBar({
+  page,
+  totalPages,
+  total,
+  pageSize,
+  onPageChange,
+  tone,
+  compact = false,
+}: {
+  page: number;
+  totalPages: number;
+  total: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+  tone: "office" | "project";
+  compact?: boolean;
+}) {
+  if (total <= 0) return null;
+
+  const border = tone === "office" ? "border-indigo-500/20" : "border-emerald-500/20";
+  const text = tone === "office" ? "text-indigo-300" : "text-emerald-300";
+  const btn =
+    tone === "office"
+      ? "border-indigo-500/30 text-indigo-200 hover:bg-indigo-500/10 disabled:opacity-40"
+      : "border-emerald-500/30 text-emerald-200 hover:bg-emerald-500/10 disabled:opacity-40";
+
+  const rangeStart = (page - 1) * pageSize + 1;
+  const rangeEnd = Math.min(page * pageSize, total);
+
+  if (compact) {
+    if (totalPages <= 1) {
+      return (
+        <span className={`text-xs font-['Geist_Mono'] ${text}`}>
+          {total} {total === 1 ? "entry" : "entries"}
+        </span>
+      );
+    }
+    return (
+      <div className="flex items-center gap-2">
+        <span className={`text-xs font-['Geist_Mono'] ${text}`}>
+          {rangeStart}–{rangeEnd} of {total}
+        </span>
+        <button
+          type="button"
+          disabled={page <= 1}
+          onClick={() => onPageChange(page - 1)}
+          className={`p-1 rounded-md border transition-colors ${btn}`}
+          title="Previous page"
+        >
+          <ChevronLeft size={14} />
+        </button>
+        <span className="text-xs text-[#a8b5d1] font-['Geist_Mono'] min-w-[48px] text-center">
+          {page}/{totalPages}
+        </span>
+        <button
+          type="button"
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(page + 1)}
+          className={`p-1 rounded-md border transition-colors ${btn}`}
+          title="Next page"
+        >
+          <ChevronRight size={14} />
+        </button>
+      </div>
+    );
+  }
+
+  if (totalPages <= 1) return null;
+
+  return (
+    <div className={`flex flex-wrap items-center justify-between gap-3 px-5 py-3 border-t ${border} bg-[#0d1326]/40`}>
+      <span className={`text-xs font-['Geist_Mono'] ${text}`}>
+        Showing {rangeStart}–{rangeEnd} of {total}
+      </span>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={page <= 1}
+          onClick={() => onPageChange(page - 1)}
+          className={`flex items-center gap-1 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${btn}`}
+        >
+          <ChevronLeft size={14} />
+          Prev
+        </button>
+        <span className="text-xs text-[#a8b5d1] font-['Geist_Mono'] min-w-[72px] text-center">
+          {page} / {totalPages}
+        </span>
+        <button
+          type="button"
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(page + 1)}
+          className={`flex items-center gap-1 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${btn}`}
+        >
+          Next
+          <ChevronRight size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 type TimeTab = "office" | "project";
+
+/** When viewing everyone, paginate whole project sections — not individual rows. */
+const PROJECT_GROUPS_PER_PAGE = 4;
 
 export function TimesheetView({
   userRole = "employee",
@@ -188,6 +295,9 @@ export function TimesheetView({
   const [editError, setEditError] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [liveTick, setLiveTick] = useState(0);
+  const [officePage, setOfficePage] = useState(1);
+  const [projectPage, setProjectPage] = useState(1);
+  const [csvLoading, setCsvLoading] = useState(false);
 
   const { data: profiles, loading: pLoading, error: pError } = useEmployeeProfiles();
   const { data: projects, loading: prLoading, error: prError, refresh: refreshProjects } = useProjects();
@@ -213,19 +323,24 @@ export function TimesheetView({
       startDate: string;
       endDate: string;
       employeeId?: string;
+      employeeName?: string;
+      search?: string;
     };
 
     if (personFilter !== "everyone") {
       if (filterProfile?.id) filter.employeeId = filterProfile.id;
+      if (filterProfile?.name) filter.employeeName = filterProfile.name;
     } else if (!isAdminRole(userRole) && myProfile?.id) {
       filter.employeeId = myProfile.id;
+      if (myProfile.name) filter.employeeName = myProfile.name;
     }
 
+    if (textFilter.trim()) filter.search = textFilter.trim();
+
     return filter;
-  }, [rangeStart, rangeEnd, personFilter, filterProfile?.id, userRole, myProfile?.id]);
+  }, [rangeStart, rangeEnd, personFilter, filterProfile?.id, filterProfile?.name, userRole, myProfile?.id, myProfile?.name, textFilter]);
 
   const timesheetFilter = useMemo(() => {
-    if (timeTab !== "project") return null;
     const filter = {
       startDate: formatLocalDate(rangeStart),
       endDate: formatLocalDate(rangeEnd),
@@ -233,31 +348,73 @@ export function TimesheetView({
       startDate: string;
       endDate: string;
       employeeId?: string;
+      employeeName?: string;
+      projectId?: string;
+      search?: string;
     };
 
     if (personFilter !== "everyone") {
       if (filterProfile?.id) filter.employeeId = filterProfile.id;
+      if (filterProfile?.name) filter.employeeName = filterProfile.name;
     } else if (!isAdminRole(userRole) && myProfile?.id) {
       filter.employeeId = myProfile.id;
+      if (myProfile.name) filter.employeeName = myProfile.name;
     }
 
-    return filter;
-  }, [timeTab, rangeStart, rangeEnd, personFilter, filterProfile?.id, userRole, myProfile?.id]);
+    if (textFilter.trim()) filter.search = textFilter.trim();
+    if (projectFilter !== "all") filter.projectId = projectFilter;
 
-  const { data: attendance, loading: aLoading, error: aError, refresh: refreshAttendance } =
-    useAttendanceReport(attendanceFilter);
+    return filter;
+  }, [rangeStart, rangeEnd, personFilter, filterProfile?.id, filterProfile?.name, userRole, myProfile?.id, myProfile?.name, textFilter, projectFilter]);
+
+  useEffect(() => {
+    setOfficePage(1);
+    setProjectPage(1);
+  }, [
+    attendanceFilter.startDate,
+    attendanceFilter.endDate,
+    attendanceFilter.employeeId,
+    attendanceFilter.search,
+    timesheetFilter.search,
+    timesheetFilter.projectId,
+    projectFilter,
+    personFilter,
+  ]);
+
+  const { data: attendancePage, loading: aLoading, error: aError, refresh: refreshAttendance } =
+    useAttendanceReportPage(
+      attendanceFilter,
+      { page: officePage, pageSize: REPORT_PAGE_SIZE },
+      timeTab !== "office",
+    );
   const {
-    data: entries,
-    loading: tLoading,
-    error: tError,
-    refresh: refreshTimesheets,
-  } = useTimesheetReport(timesheetFilter);
+    data: fullTimesheetEntries,
+    loading: fullTimesheetLoading,
+    refresh: refreshFullTimesheets,
+  } = useTimesheetReport(timesheetFilter, timeTab !== "project");
+
+  const refreshProjectTimesheets = useCallback(() => {
+    refreshFullTimesheets();
+  }, [refreshFullTimesheets]);
+
+  const showTeamSummary = isAdminRole(userRole) && personFilter === "everyone";
+  const { data: teamSummaries } = useReportTeamSummaries(
+    attendanceFilter,
+    timesheetFilter,
+    !showTeamSummary,
+  );
+
+  const attendance = attendancePage.items;
+  const projectEntries = useMemo(
+    () => [...fullTimesheetEntries].sort((a, b) => b.date.localeCompare(a.date)),
+    [fullTimesheetEntries],
+  );
 
   const loading =
     pLoading ||
-    aLoading ||
-    (timeTab === "project" && (tLoading || prLoading));
-  const error = pError || aError || (timeTab === "project" ? prError || tError : null);
+    (timeTab === "office" && aLoading) ||
+    (timeTab === "project" && (fullTimesheetLoading || prLoading));
+  const error = pError || aError || (timeTab === "project" ? prError : null);
 
   const visibleProfiles = useMemo(() => {
     if (isAdminRole(userRole)) return profiles;
@@ -307,65 +464,26 @@ export function TimesheetView({
     return getEmployeeProjects(projects, emp.name, emp.id);
   }, [projects, activeEmployee]);
 
-  const filteredEntries = useMemo(() => {
-    let list = [...entries];
-
-    if (personFilter !== "everyone") {
-      list = list.filter(e => entryBelongsToEmployee(e, personFilter));
-    } else if (!isAdminRole(userRole) && myProfile?.id) {
-      list = list.filter(e => entryBelongsToEmployee(e, myProfile.id));
-    }
-
-    if (projectFilter !== "all") {
-      const projectName = projects.find(p => p.id === projectFilter)?.name?.toLowerCase();
-      list = list.filter(
-        e =>
-          e.projectId === projectFilter ||
-          (projectName && e.projectName.toLowerCase() === projectName)
-      );
-    }
-
-    list = list.filter(e => isDateInRange(e.date, rangeStart, rangeEnd));
-
-    if (textFilter.trim()) {
-      const q = textFilter.toLowerCase();
-      list = list.filter(
-        e =>
-          e.description.toLowerCase().includes(q) ||
-          (e.workNotes || "").toLowerCase().includes(q) ||
-          (e.taskTitle || "").toLowerCase().includes(q) ||
-          e.employee.toLowerCase().includes(q) ||
-          e.projectName.toLowerCase().includes(q)
-      );
-    }
-
-    return list.sort((a, b) => b.date.localeCompare(a.date));
-  }, [entries, personFilter, projectFilter, rangeStart, rangeEnd, textFilter, userRole, visibleProfiles, projects]);
+  const filteredEntries = projectEntries;
 
   const filteredAttendance = useMemo(() => {
-    let list = [...attendance];
-
-    if (personFilter !== "everyone") {
-      list = list.filter(a => entryBelongsToEmployee(a, personFilter));
-    } else if (!isAdminRole(userRole) && myProfile?.id) {
-      list = list.filter(a => entryBelongsToEmployee(a, myProfile.id));
-    }
-
-    list = list.filter(a => isDateInRange(a.date, rangeStart, rangeEnd));
-
-    if (textFilter.trim()) {
-      const q = textFilter.toLowerCase();
-      list = list.filter(
-        a =>
-          a.employee.toLowerCase().includes(q) ||
-          (a.notes || "").toLowerCase().includes(q)
-      );
-    }
-
-    return list.sort((a, b) => b.date.localeCompare(a.date) || b.clockIn.localeCompare(a.clockIn));
-  }, [attendance, personFilter, rangeStart, rangeEnd, textFilter, userRole, userName]);
+    return [...attendance].sort((a, b) => b.date.localeCompare(a.date) || b.clockIn.localeCompare(a.clockIn));
+  }, [attendance]);
 
   const employeeTotals = useMemo(() => {
+    if (showTeamSummary) {
+      return teamSummaries
+        .map(s => ({
+          name: s.name,
+          officeHours: s.officeHours,
+          projectHours: s.projectHours,
+          totalHours: s.totalHours,
+          daysWorked: s.daysWorked,
+          days: new Set<string>(),
+        }))
+        .sort((a, b) => b.totalHours - a.totalHours || a.name.localeCompare(b.name));
+    }
+
     const map = new Map<
       string,
       { name: string; officeHours: number; projectHours: number; days: Set<string> }
@@ -396,7 +514,7 @@ export function TimesheetView({
         daysWorked: e.days.size,
       }))
       .sort((a, b) => b.totalHours - a.totalHours || a.name.localeCompare(b.name));
-  }, [filteredAttendance, filteredEntries, liveTick]);
+  }, [showTeamSummary, teamSummaries, filteredAttendance, filteredEntries, liveTick]);
 
   const groupedByEmployee = useMemo(() => {
     const map = new Map<string, AttendanceEntry[]>();
@@ -410,27 +528,41 @@ export function TimesheetView({
 
   const groupedByProject = useMemo(() => {
     const map = new Map<string, TimesheetEntry[]>();
-    for (const entry of filteredEntries) {
+    for (const entry of projectEntries) {
       const key = entry.projectName;
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(entry);
     }
     return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [filteredEntries]);
+  }, [projectEntries]);
+
+  const projectGroupPages = Math.max(1, Math.ceil(groupedByProject.length / PROJECT_GROUPS_PER_PAGE));
+  const paginateProjectGroups =
+    personFilter === "everyone" && groupedByProject.length > PROJECT_GROUPS_PER_PAGE;
+  const visibleProjectGroups = useMemo(() => {
+    if (!paginateProjectGroups) return groupedByProject;
+    const start = (projectPage - 1) * PROJECT_GROUPS_PER_PAGE;
+    return groupedByProject.slice(start, start + PROJECT_GROUPS_PER_PAGE);
+  }, [groupedByProject, paginateProjectGroups, projectPage]);
 
   const totalProjectHours = useMemo(
-    () => filteredEntries.reduce((sum, e) => sum + e.hours, 0),
-    [filteredEntries]
+    () => projectEntries.reduce((sum, entry) => sum + entry.hours, 0),
+    [projectEntries],
   );
+  const totalProjectEntryCount = projectEntries.length;
+  const totalOfficeHours = attendancePage.summaryHours;
 
-  const totalOfficeHours = useMemo(
-    () => filteredAttendance.reduce((sum, a) => sum + liveAttendanceHours(a), 0),
-    [filteredAttendance, liveTick]
-  );
+  const personSelectOptions = useMemo(() => {
+    const opts: { value: string; label: string }[] = [];
+    if (isAdminRole(userRole)) opts.push({ value: "everyone", label: "Everyone" });
+    for (const p of visibleProfiles) {
+      opts.push({ value: p.id, label: p.name });
+    }
+    return opts;
+  }, [visibleProfiles, userRole]);
 
   const activeTabHours = timeTab === "office" ? totalOfficeHours : totalProjectHours;
-  const activeTabEntryCount =
-    timeTab === "office" ? filteredAttendance.length : filteredEntries.length;
+  const activeTabEntryCount = timeTab === "office" ? attendancePage.total : totalProjectEntryCount;
 
   const rangePresets = [
     { label: "Last 7 days", days: 7 as const },
@@ -459,10 +591,41 @@ export function TimesheetView({
     applyRangePreset(30);
     setProjectFilter("all");
     setTextFilter("");
+    setOfficePage(1);
+    setProjectPage(1);
     if (isAdminRole(userRole)) {
       setPersonFilter("everyone");
     } else if (myProfile?.id) {
       setPersonFilter(myProfile.id);
+    }
+  }
+
+  async function handleDownloadCsv() {
+    setCsvLoading(true);
+    try {
+      const [allAttendance, allEntries] = await Promise.all([
+        fetchAttendanceForReport(attendanceFilter),
+        fetchTimesheetEntriesForReport(timesheetFilter),
+      ]);
+
+      let exportAttendance = allAttendance;
+      let exportEntries = allEntries;
+
+      if (projectFilter !== "all") {
+        const projectName = projects.find(p => p.id === projectFilter)?.name?.toLowerCase();
+        exportEntries = exportEntries.filter(
+          e =>
+            e.projectId === projectFilter ||
+            (projectName && e.projectName.toLowerCase() === projectName),
+        );
+      }
+
+      downloadCsv(
+        timeTab === "project" ? exportEntries : [],
+        timeTab === "office" ? exportAttendance : [],
+      );
+    } finally {
+      setCsvLoading(false);
     }
   }
 
@@ -519,7 +682,7 @@ export function TimesheetView({
       });
       closeEditEntry();
       refreshProjects();
-      refreshTimesheets();
+      refreshProjectTimesheets();
     } catch (err) {
       setEditError(err instanceof Error ? err.message : "Failed to update entry");
     } finally {
@@ -539,7 +702,7 @@ export function TimesheetView({
       });
       closeEditEntry();
       refreshProjects();
-      refreshTimesheets();
+      refreshProjectTimesheets();
     } catch (err) {
       setEditError(err instanceof Error ? err.message : "Failed to delete entry");
     } finally {
@@ -567,7 +730,7 @@ export function TimesheetView({
       setShowForm(false);
       setForm({ projectId: "", date: formatIso(new Date()), hours: "8", description: "" });
       refreshProjects();
-      refreshTimesheets();
+      refreshProjectTimesheets();
     } catch (err) {
       setFormError(err instanceof Error ? err.message : "Failed to save timesheet");
     } finally {
@@ -647,7 +810,7 @@ export function TimesheetView({
             <Clock size={15} />
             Office Attendance
             <span className="text-[10px] font-['Geist_Mono'] opacity-80">
-              {formatHoursDisplay(totalOfficeHours)} · {filteredAttendance.length}
+              {formatHoursDisplay(totalOfficeHours)} · {attendancePage.total}
             </span>
           </button>
           <button
@@ -660,9 +823,9 @@ export function TimesheetView({
             }`}
           >
             <Briefcase size={15} />
-            Project Log Time
+            In Progress Time
             <span className="text-[10px] font-['Geist_Mono'] opacity-80">
-              {formatHoursDisplay(totalProjectHours)} · {filteredEntries.length}
+              {formatHoursDisplay(totalProjectHours)} · {totalProjectEntryCount}
             </span>
           </button>
         </div>
@@ -670,18 +833,14 @@ export function TimesheetView({
 
       {/* Filters */}
       <div className="px-2 pb-4 flex flex-wrap items-center gap-3">
-        <select
+        <SearchableSelect
           value={personFilter}
-          onChange={e => setPersonFilter(e.target.value)}
-          className={selectCls}
-        >
-          {isAdminRole(userRole) && <option value="everyone">Everyone</option>}
-          {visibleProfiles.map(p => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
+          onChange={setPersonFilter}
+          options={personSelectOptions}
+          placeholder="Select person"
+          searchPlaceholder="Search employee…"
+          minWidth={200}
+        />
 
         {timeTab === "project" && (
           <select
@@ -690,9 +849,9 @@ export function TimesheetView({
             className={selectCls}
           >
             <option value="all">All projects</option>
-            {[...new Set(entries.map(e => e.projectId))].map(pid => {
+            {[...new Set(projectEntries.map(e => e.projectId))].map(pid => {
               const p = projects.find(pr => pr.id === pid);
-              const name = p?.name || entries.find(e => e.projectId === pid)?.projectName || pid;
+              const name = p?.name || projectEntries.find(e => e.projectId === pid)?.projectName || pid;
               return (
                 <option key={pid} value={pid}>
                   {name}
@@ -766,23 +925,44 @@ export function TimesheetView({
           </button>
         )}
 
-        <span className="text-xs text-[#6b7fa8] font-['Geist_Mono'] ml-auto">
-          {activeTabEntryCount} {activeTabEntryCount === 1 ? "entry" : "entries"}
-        </span>
+        <div className="ml-auto flex items-center gap-3">
+        {timeTab === "office" ? (
+          <ReportPaginationBar
+            page={officePage}
+            totalPages={attendancePage.totalPages}
+            total={attendancePage.total}
+            pageSize={REPORT_PAGE_SIZE}
+            onPageChange={setOfficePage}
+            tone="office"
+            compact
+          />
+        ) : paginateProjectGroups ? (
+          <ReportPaginationBar
+            page={projectPage}
+            totalPages={projectGroupPages}
+            total={groupedByProject.length}
+            pageSize={PROJECT_GROUPS_PER_PAGE}
+            onPageChange={setProjectPage}
+            tone="project"
+            compact
+          />
+        ) : (
+          <span className="text-xs font-['Geist_Mono'] text-emerald-300/90">
+            {groupedByProject.length} {groupedByProject.length === 1 ? "project" : "projects"} · {totalProjectEntryCount}{" "}
+            {totalProjectEntryCount === 1 ? "entry" : "entries"}
+          </span>
+        )}
 
         <button
           type="button"
-          onClick={() =>
-            downloadCsv(
-              timeTab === "project" ? filteredEntries : [],
-              timeTab === "office" ? filteredAttendance : []
-            )
-          }
-          className="flex items-center gap-1.5 text-sm text-emerald-400 hover:text-emerald-300 font-['Plus_Jakarta_Sans'] transition-colors"
+          disabled={csvLoading}
+          onClick={() => void handleDownloadCsv()}
+          className="flex items-center gap-1.5 text-sm text-emerald-400 hover:text-emerald-300 font-['Plus_Jakarta_Sans'] transition-colors disabled:opacity-50"
         >
           <Download size={14} />
-          Download CSV
+          {csvLoading ? "Exporting…" : "Download CSV"}
         </button>
+        </div>
       </div>
 
       {/* Employee summary — CEO sees everyone's total per tab */}
@@ -890,8 +1070,29 @@ export function TimesheetView({
       )}
 
       <div className="space-y-6 px-2">
+        {timeTab === "project" && visibleProjectGroups.length > 0 && paginateProjectGroups && (
+          <ReportPaginationBar
+            page={projectPage}
+            totalPages={projectGroupPages}
+            total={groupedByProject.length}
+            pageSize={PROJECT_GROUPS_PER_PAGE}
+            onPageChange={setProjectPage}
+            tone="project"
+          />
+        )}
+
+        {timeTab === "office" && groupedByEmployee.length > 0 && attendancePage.totalPages > 1 && (
+          <ReportPaginationBar
+            page={officePage}
+            totalPages={attendancePage.totalPages}
+            total={attendancePage.total}
+            pageSize={REPORT_PAGE_SIZE}
+            onPageChange={setOfficePage}
+            tone="office"
+          />
+        )}
+
         {timeTab === "office" && groupedByEmployee.map(([employeeName, rows]) => {
-          const empHours = rows.reduce((sum, r) => sum + liveAttendanceHours(r), 0);
           void liveTick;
           return (
             <div
@@ -907,13 +1108,13 @@ export function TimesheetView({
                     {employeeName}
                   </span>
                   <span className="text-[10px] text-[#6b7fa8] font-['Geist_Mono'] ml-2">
-                    ({rows.length} {rows.length === 1 ? "day" : "days"})
+                    ({attendancePage.total} {attendancePage.total === 1 ? "day" : "days"})
                   </span>
                 </div>
                 <div className="flex items-center gap-2 bg-indigo-500/15 border border-indigo-500/30 rounded-full px-3 py-1.5 shrink-0">
                   <Clock size={13} className="text-indigo-400" />
                   <span className="text-xs font-semibold text-indigo-300 font-['Plus_Jakarta_Sans']">
-                    {formatHoursDisplay(empHours)} total
+                    {formatHoursDisplay(attendancePage.summaryHours)} total
                   </span>
                 </div>
               </div>
@@ -971,6 +1172,17 @@ export function TimesheetView({
           );
         })}
 
+        {timeTab === "office" && groupedByEmployee.length > 0 && (
+          <ReportPaginationBar
+            page={officePage}
+            totalPages={attendancePage.totalPages}
+            total={attendancePage.total}
+            pageSize={REPORT_PAGE_SIZE}
+            onPageChange={setOfficePage}
+            tone="office"
+          />
+        )}
+
         {timeTab === "office" && groupedByEmployee.length === 0 && (
           <div className="bg-[#131a35]/60 border border-indigo-500/15 rounded-xl p-12 text-center">
             <p className="text-[#a8b5d1] font-['Plus_Jakarta_Sans'] mb-1">
@@ -1009,8 +1221,8 @@ export function TimesheetView({
           </div>
         )}
 
-        {timeTab === "project" && groupedByProject.map(([projectName, projectEntries]) => {
-            const projectHours = projectEntries.reduce((sum, e) => sum + e.hours, 0);
+        {timeTab === "project" && visibleProjectGroups.map(([projectName, projectEntries]) => {
+            const projectHoursOnPage = projectEntries.reduce((sum, e) => sum + e.hours, 0);
             return (
             <div
               key={projectName}
@@ -1032,7 +1244,7 @@ export function TimesheetView({
                 <div className="flex items-center gap-2 bg-emerald-500/15 border border-emerald-500/30 rounded-full px-3 py-1.5 shrink-0">
                   <Clock size={13} className="text-emerald-400" />
                   <span className="text-xs font-semibold text-emerald-300 font-['Plus_Jakarta_Sans']">
-                    {projectHours.toFixed(2)}h total
+                    {formatHoursDisplay(projectHoursOnPage)}
                   </span>
                 </div>
               </div>
@@ -1061,7 +1273,7 @@ export function TimesheetView({
                     {formatEntryDate(entry.date)}
                   </div>
                   <div className="px-5 py-4 text-sm font-semibold text-white font-['Geist_Mono'] border-r border-dashed border-emerald-500/10">
-                    {entry.hours}
+                    {formatHoursDisplay(entry.hours)}
                   </div>
                   <div className="px-5 py-4 border-r border-dashed border-emerald-500/10">
                     <div className="flex items-center gap-2">
@@ -1109,13 +1321,24 @@ export function TimesheetView({
                   Subtotal
                 </div>
                 <div className="px-5 py-3 text-sm font-bold text-emerald-400 font-['Geist_Mono'] border-l border-dashed border-emerald-500/15">
-                  {projectHours.toFixed(2)}h
+                  {formatHoursDisplay(projectEntries.reduce((sum, e) => sum + e.hours, 0))}
                 </div>
                 <div className="col-span-3 border-l border-dashed border-emerald-500/15" />
               </div>
             </div>
           );
         })}
+
+        {timeTab === "project" && visibleProjectGroups.length > 0 && paginateProjectGroups && (
+          <ReportPaginationBar
+            page={projectPage}
+            totalPages={projectGroupPages}
+            total={groupedByProject.length}
+            pageSize={PROJECT_GROUPS_PER_PAGE}
+            onPageChange={setProjectPage}
+            tone="project"
+          />
+        )}
       </div>
 
       {/* Edit entry modal */}

@@ -7,6 +7,7 @@ import {
   shiftWindowOnAxis,
   timelineHourLabels,
   timelineBlockDurationOnAxis,
+  timelineAxisRangeLabel,
 } from "@/lib/shiftConfig";
 import type { ClockSessionRecord, AppTask } from "@/lib/database";
 import { kindMeta, type ActivityKind } from "./ShiftView";
@@ -68,9 +69,9 @@ export function EmployeeDailyTimeline({
         <div>
           <p className="text-xs font-['Geist_Mono'] text-indigo-400 uppercase tracking-widest">Daily Timeline</p>
           <p className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans'] mt-1">
-            {emp.shiftStartLabel} → {emp.shiftEndLabel}
+            {timelineAxisRangeLabel(axis)}
             <span className="text-[#6b7fa8] font-normal font-['Geist_Mono'] text-xs ml-2">
-              · only your shift
+              · Your shift {emp.shiftStartLabel} → {emp.shiftEndLabel}
             </span>
           </p>
         </div>

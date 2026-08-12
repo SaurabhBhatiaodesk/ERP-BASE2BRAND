@@ -12,7 +12,7 @@ import { StatCard, Avatar, Badge, CustomTooltip } from "../ui";
 import { DataLoading, DataError } from "../ui/DataStatus";
 import { revenueData, pieData, aiInsights, activityFeed } from "../../data";
 import { useEmployeeProfiles, useProjects, useLeaveRequests } from "@/hooks/useSupabaseData";
-import { addProjectTask, updateLeaveStatus, insertNotification } from "@/lib/database";
+import { addProjectTask, updateLeaveStatus, insertNotification, findProfileForUser } from "@/lib/database";
 import { saveQuickAction } from "@/lib/quickActions";
 import { CallEmployeePicker, sendCallToEmployees } from "../CallEmployeePicker";
 
@@ -20,7 +20,13 @@ function formatIso(d = new Date()) {
   return d.toISOString().slice(0, 10);
 }
 
-export function CEODashboard() {
+export function CEODashboard({
+  userName = "CEO Admin",
+  userEmail = "",
+}: {
+  userName?: string;
+  userEmail?: string;
+}) {
   const { data: profiles, loading: profLoading, error: profError } = useEmployeeProfiles();
   const { data: projects, loading: projLoading } = useProjects();
   const { data: leaves, refresh: refreshLeaves } = useLeaveRequests();
@@ -74,6 +80,11 @@ export function CEODashboard() {
   }, [profiles, assignableEmployees]);
 
   const selectedAssignee = assignableEmployees.find(p => p.id === qaSelect);
+  const currentProfile = useMemo(
+    () => findProfileForUser(profiles, userName, userEmail),
+    [profiles, userName, userEmail]
+  );
+  const notifySenderName = currentProfile?.name || userName;
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -137,7 +148,8 @@ export function CEODashboard() {
           profiles: assignableEmployees,
           selectedIds: qaCallIds,
           message: qaInput,
-          callTitle: "CEO Calling",
+          callTitle: notifySenderName,
+          senderId: currentProfile?.id,
           insertNotification,
           saveQuickAction,
         });
@@ -156,7 +168,7 @@ export function CEODashboard() {
       } else if (qaModal === "broadcast") {
         if (!qaInput.trim()) throw new Error("Please enter a message.");
         
-        const broadcastMsg = qaInput.trim();
+        const broadcastMsg = qaInput.trim().replace(/\bcabin\b/gi, "desk");
         const audience = qaSelect || "All Staff";
         
         await saveQuickAction({
@@ -173,9 +185,10 @@ export function CEODashboard() {
           if (p.id) {
             return insertNotification({
               recipientId: p.id,
-              title: `Broadcast: ${audience}`,
+              senderId: currentProfile?.id,
+              title: notifySenderName,
               message: broadcastMsg,
-              type: "broadcast"
+              type: "broadcast",
             });
           }
         }));
@@ -302,7 +315,7 @@ export function CEODashboard() {
                     />
                     <div>
                       <label className="block text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mb-1.5">Message / Reason</label>
-                      <input value={qaInput} onChange={e => setQaInput(e.target.value)} placeholder='e.g. "Please come to my cabin"' className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-3 py-2.5 text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-indigo-500/50 font-['Plus_Jakarta_Sans']" />
+                      <input value={qaInput} onChange={e => setQaInput(e.target.value)} placeholder='e.g. "Please come to my desk"' className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-3 py-2.5 text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-indigo-500/50 font-['Plus_Jakarta_Sans']" />
                     </div>
                     <p className="text-[11px] text-[#6b7fa8] font-['Plus_Jakarta_Sans']">Selected employees will get an instant pop-up and phone-ring alert on their screen.</p>
                   </div>

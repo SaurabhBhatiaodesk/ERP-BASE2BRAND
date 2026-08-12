@@ -145,12 +145,14 @@ export async function sendCallToEmployees(input: {
   selectedIds: string[];
   message: string;
   callTitle: string;
+  senderId?: string;
   insertNotification: (input: {
     recipientId: string;
     title: string;
     message: string;
     type: string;
-  }) => Promise<void>;
+    senderId?: string;
+  }) => Promise<unknown>;
   saveQuickAction: (record: {
     type: "call";
     employees: string[];
@@ -161,7 +163,8 @@ export async function sendCallToEmployees(input: {
   const targets = input.profiles.filter(p => input.selectedIds.includes(p.id));
   if (!targets.length) throw new Error("Please select at least one employee.");
 
-  const callMessage = input.message.trim() || "Please come to my cabin";
+  const callMessage =
+    input.message.trim().replace(/\bcabin\b/gi, "desk") || "Please come to my desk";
 
   await input.saveQuickAction({
     type: "call",
@@ -174,6 +177,7 @@ export async function sendCallToEmployees(input: {
     targets.map(p =>
       input.insertNotification({
         recipientId: p.id,
+        senderId: input.senderId,
         title: input.callTitle,
         message: callMessage,
         type: "call",

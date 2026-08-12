@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, powerMonitor, desktopCapturer, systemPreferences } from 'electron';
+import { app, BrowserWindow, ipcMain, powerMonitor, desktopCapturer, systemPreferences, screen } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -67,13 +67,18 @@ app.whenReady().then(() => {
       if (process.platform === 'darwin') {
         const status = systemPreferences.getMediaAccessStatus('screen');
         if (status !== 'granted') {
+          console.error('Screenshot: macOS screen recording permission not granted');
           return null;
         }
       }
 
+      const primary = screen.getPrimaryDisplay();
+      const thumbW = Math.min(1920, primary.size.width || 1920);
+      const thumbH = Math.min(1080, primary.size.height || 1080);
+
       const sources = await desktopCapturer.getSources({
         types: ['screen'],
-        thumbnailSize: { width: 1280, height: 720 },
+        thumbnailSize: { width: thumbW, height: thumbH },
         fetchWindowIcons: false,
       });
 
@@ -90,7 +95,16 @@ app.whenReady().then(() => {
           return (bSize.width * bSize.height) - (aSize.width * aSize.height);
         })[0] ?? sources[0];
 
-      const jpeg = screenSource.thumbnail.toJPEG(70);
+      let jpeg = screenSource.thumbnail.toJPEG(70);
+
+      if (!jpeg.length || jpeg.length < 1500) {
+        console.warn('Screenshot: primary capture blank, trying window fallback');
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          const page = await mainWindow.capturePage();
+          jpeg = page.toJPEG(70);
+        }
+      }
+
       if (!jpeg.length || jpeg.length < 1500) {
         console.error('Screenshot: blank or invalid capture');
         return null;

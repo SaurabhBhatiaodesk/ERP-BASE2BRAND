@@ -44,6 +44,8 @@ import {
   shiftWindowOnAxis,
   clockMinToAxisMin,
   timelineBlockDurationOnAxis,
+  resolveTimelineAxis,
+  parseShiftStartMinutes,
   hhmm,
 } from "@/lib/shiftConfig";
 import {
@@ -1283,7 +1285,10 @@ export function ShiftView({
     return list;
   }, [profiles, userRole, viewerProfile?.dept]);
 
-  const timelineAxis = DEFAULT_TIMELINE_AXIS;
+  const timelineAxis = useMemo(() => {
+    const shiftStarts = visibleProfiles.map(p => parseShiftStartMinutes(p.shiftStart));
+    return resolveTimelineAxis(shiftStarts);
+  }, [visibleProfiles]);
 
   useEffect(() => {
     void refresh(false);

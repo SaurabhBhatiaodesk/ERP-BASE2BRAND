@@ -49,10 +49,11 @@ serve(async (req) => {
       return new Response(JSON.stringify({ error: "Profile not found" }), { status: 404 });
     }
 
-    // 4. Collect both Web and Mobile tokens
+    // 4. Collect FCM tokens — clock-in alerts go to mobile app first
     const tokens: string[] = [];
+    const mobileOnly = record.type === "clock_in";
     if (profile.fcm_token) tokens.push(profile.fcm_token); // Mobile App Token
-    if (profile.web_fcm_token) tokens.push(profile.web_fcm_token); // Web App Token
+    if (!mobileOnly && profile.web_fcm_token) tokens.push(profile.web_fcm_token); // Web App Token
 
     if (tokens.length === 0) {
       console.log(`User ${record.recipient_id} has no FCM tokens.`);

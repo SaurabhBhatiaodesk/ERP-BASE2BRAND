@@ -757,9 +757,16 @@ export function EmployeeDashboard({
   userEmail?: string;
   onNavigate?: (view: string, options?: EmployeeNavigateOptions) => void;
 }) {
-  const { data: tasks, loading: tLoading, error: tError, refresh: refreshTasks } = useProjectTasks();
-  const { data: timesheets, loading: tsLoading, error: tsError, refresh: refreshTimesheets } = useTimesheets();
   const { data: profiles, loading: pLoading, error: pError } = useEmployeeProfiles();
+  const myProfile = useMemo(
+    () => findProfileForUser(profiles, userName, userEmail),
+    [profiles, userName, userEmail]
+  );
+  const { data: tasks, loading: tLoading, error: tError, refresh: refreshTasks } = useProjectTasks({
+    assigneeId: myProfile?.id || undefined,
+    disabled: !myProfile?.id,
+  });
+  const { data: timesheets, loading: tsLoading, error: tsError, refresh: refreshTimesheets } = useTimesheets();
   const [activeClock, setActiveClock] = useState<ClockSessionRecord | null>(null);
   const [todaySession, setTodaySession] = useState<ClockSessionRecord | null>(null);
   const [showClockOutMenu, setShowClockOutMenu] = useState(false);
@@ -776,11 +783,6 @@ export function EmployeeDashboard({
   const [clockSetupNeeded, setClockSetupNeeded] = useState(false);
   const [tick, setTick] = useState(0);
   const [attendanceFetchTime, setAttendanceFetchTime] = useState(Date.now());
-
-  const myProfile = useMemo(
-    () => findProfileForUser(profiles, userName, userEmail),
-    [profiles, userName, userEmail]
-  );
 
   const refreshClockState = useCallback(async () => {
     if (!userName) return;
@@ -1256,15 +1258,17 @@ export function DevDashboard({
   onNavigate?: (view: string, options?: DevHubNavigateOptions) => void;
 }) {
   const uid = useId().replace(/:/g, "");
-  const { data: tasks, loading: tLoading, error: tError } = useProjectTasks();
-  const { data: projects, loading: pLoading, error: pError } = useProjects();
-  const { data: timesheets, loading: tsLoading, error: tsError } = useTimesheets();
   const { data: profiles } = useEmployeeProfiles();
-
   const myProfile = React.useMemo(
     () => findProfileForUser(profiles, userName, userEmail),
     [profiles, userName, userEmail]
   );
+  const { data: tasks, loading: tLoading, error: tError } = useProjectTasks({
+    assigneeId: myProfile?.id || undefined,
+    disabled: !myProfile?.id,
+  });
+  const { data: projects, loading: pLoading, error: pError } = useProjects();
+  const { data: timesheets, loading: tsLoading, error: tsError } = useTimesheets();
 
   const loading = tLoading || pLoading || tsLoading;
   const error = tError || pError || tsError;

@@ -9,7 +9,15 @@ function formatIso(d = new Date()) {
   return d.toISOString().slice(0, 10);
 }
 
-export function FloatingQuickActions({ roleLabel }: { roleLabel?: string }) {
+export function FloatingQuickActions({
+  roleLabel,
+  senderName,
+  senderId,
+}: {
+  roleLabel?: string;
+  senderName?: string;
+  senderId?: string;
+}) {
   const { data: profiles } = useEmployeeProfiles();
   const { data: projects } = useProjects();
   
@@ -82,6 +90,7 @@ export function FloatingQuickActions({ roleLabel }: { roleLabel?: string }) {
 
   const isMgmt = roleLabel === "CEO / Admin" || roleLabel === "Team Leader" || roleLabel === "HR Manager";
   const quickActions = isMgmt ? allQuickActions : allQuickActions.filter(a => a.id === "call" || a.id === "broadcast");
+  const notifySenderName = senderName?.trim() || roleLabel || "Manager";
 
   async function submitQA() {
     setQaError("");
@@ -107,7 +116,8 @@ export function FloatingQuickActions({ roleLabel }: { roleLabel?: string }) {
           profiles: assignableEmployees,
           selectedIds: qaCallIds,
           message: qaInput,
-          callTitle: roleLabel === "CEO / Admin" ? "CEO Calling" : "Message from Colleague",
+          callTitle: notifySenderName,
+          senderId,
           insertNotification,
           saveQuickAction,
         });
@@ -126,7 +136,7 @@ export function FloatingQuickActions({ roleLabel }: { roleLabel?: string }) {
       } else if (qaModal === "broadcast") {
         if (!qaInput.trim()) throw new Error("Please enter a message.");
         
-        const broadcastMsg = qaInput.trim();
+        const broadcastMsg = qaInput.trim().replace(/\bcabin\b/gi, "desk");
         const audience = qaSelect || "All Staff";
         
         await saveQuickAction({
@@ -143,9 +153,10 @@ export function FloatingQuickActions({ roleLabel }: { roleLabel?: string }) {
           if (p.id) {
             return insertNotification({
               recipientId: p.id,
-              title: `Broadcast: ${audience}`,
+              senderId,
+              title: notifySenderName,
               message: broadcastMsg,
-              type: "broadcast"
+              type: "broadcast",
             });
           }
         }));
@@ -252,7 +263,7 @@ export function FloatingQuickActions({ roleLabel }: { roleLabel?: string }) {
                     />
                     <div>
                       <label className="block text-[11px] font-semibold text-[#6b7fa8] uppercase tracking-wider mb-1.5 font-['Geist_Mono']">Message (Optional)</label>
-                      <input type="text" value={qaInput} onChange={e => setQaInput(e.target.value)} placeholder="e.g. Please come to my cabin" className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-[#6b7fa8] focus:outline-none focus:border-indigo-500/40" />
+                      <input type="text" value={qaInput} onChange={e => setQaInput(e.target.value)} placeholder="e.g. Please come to my desk" className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-[#6b7fa8] focus:outline-none focus:border-indigo-500/40" />
                     </div>
                   </div>
                 )}

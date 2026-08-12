@@ -1,7 +1,12 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { Monitor, Image as ImageIcon, X, Calendar, Search } from "lucide-react";
 import { useEmployeeProfiles } from "@/hooks/useSupabaseData";
-import { fetchEmployeeScreenshots, EmployeeScreenshot } from "@/lib/database";
+import {
+  fetchEmployeeScreenshots,
+  countEmployeeScreenshots,
+  localDateYmd,
+  EmployeeScreenshot,
+} from "@/lib/database";
 import { DataEmpty, DataLoading } from "../ui/DataStatus";
 import { Avatar } from "../ui";
 import { initialsFromName } from "@/lib/database";
@@ -12,8 +17,11 @@ export function ScreenshotsView({ employeeId }: { employeeId?: string }) {
   const [screenshots, setScreenshots] = useState<EmployeeScreenshot[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [date, setDate] = useState<string>(new Date().toISOString().split("T")[0]);
+  const [date, setDate] = useState<string>(localDateYmd());
+  const [dateMode, setDateMode] = useState<"week" | "day">("week");
   const [search, setSearch] = useState("");
+  const [emptyHint, setEmptyHint] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   const visibleProfiles = useMemo(() => {
     return profiles.filter(p => p.role !== "CEO" && p.role !== "Admin");
@@ -33,6 +41,7 @@ export function ScreenshotsView({ employeeId }: { employeeId?: string }) {
   useEffect(() => {
     if (!selectedEmployeeId) {
       setScreenshots([]);
+      setEmptyHint(null);
       return;
     }
     const profile = profiles.find(p => p.id === selectedEmployeeId);
@@ -40,16 +49,41 @@ export function ScreenshotsView({ employeeId }: { employeeId?: string }) {
 
     let isMounted = true;
     setLoading(true);
-    fetchEmployeeScreenshots(profile.name, profile.id, new Date(date))
-      .then(data => {
-        if (isMounted) setScreenshots(data);
+    setEmptyHint(null);
+    setFetchError(null);
+    const dateArg = dateMode === "day" ? date : undefined;
+    const daysBack = dateMode === "week" ? 7 : undefined;
+    fetchEmployeeScreenshots(profile.name, profile.id, dateArg, daysBack)
+      .then(async (data) => {
+        if (!isMounted) return;
+        setScreenshots(data);
+        if (data.length === 0) {
+          const total = await countEmployeeScreenshots(profile.name, profile.id);
+          if (!isMounted) return;
+          if (total > 0 && dateMode === "day") {
+            setEmptyHint(`This employee has ${total} screenshot(s) on other dates. Try "Last 7 days".`);
+          } else if (total > 0) {
+            setEmptyHint(`${total} screenshot(s) exist in the database but not in this date range.`);
+          } else if (total < 0) {
+            setEmptyHint("Could not load screenshots from the database. Check the browser console for errors.");
+          } else {
+            setEmptyHint(
+              "No screenshots saved yet. The employee must log in from the desktop app (.exe), stay clocked in, and have Cloudinary configured in .env."
+            );
+          }
+        }
+      })
+      .catch((err: unknown) => {
+        if (!isMounted) return;
+        setScreenshots([]);
+        setFetchError(err instanceof Error ? err.message : "Failed to load screenshots");
       })
       .finally(() => {
         if (isMounted) setLoading(false);
       });
 
     return () => { isMounted = false; };
-  }, [selectedEmployeeId, date, profiles]);
+  }, [selectedEmployeeId, date, dateMode, profiles]);
 
   return (
     <div className="flex flex-col lg:flex-row h-full min-h-[600px] gap-6">
@@ -84,7 +118,7 @@ export function ScreenshotsView({ employeeId }: { employeeId?: string }) {
                   onClick={() => setSelectedEmployeeId(p.id)}
                   className={`w-full flex items-center gap-3 p-2.5 rounded-lg transition-colors text-left ${selectedEmployeeId === p.id ? "bg-indigo-500/20 border-indigo-500/30 border" : "hover:bg-white/5 border border-transparent"}`}
                 >
-                  <Avatar src={p.profileImageUrl} fallback={initialsFromName(p.name)} size="sm" />
+                  <Avatar src={p.profileImageUrl} initials={initialsFromName(p.name)} size="sm" />
                   <div className="flex-1 min-w-0">
                     <p className={`text-sm font-medium truncate font-['Plus_Jakarta_Sans'] ${selectedEmployeeId === p.id ? "text-indigo-300" : "text-white"}`}>{p.name}</p>
                     <p className="text-xs text-[#6b7fa8] truncate">{p.dept}</p>
@@ -112,14 +146,34 @@ export function ScreenshotsView({ employeeId }: { employeeId?: string }) {
             </div>
           </div>
           
-          <div className="flex items-center gap-2">
-            <Calendar size={16} className="text-[#6b7fa8]" />
-            <input 
-              type="date"
-              value={date}
-              onChange={e => setDate(e.target.value)}
-              className="bg-[#0d1326] border border-[rgba(99,102,241,0.15)] rounded-lg px-3 py-1.5 text-sm text-white outline-none focus:border-indigo-500/50 [color-scheme:dark]"
-            />
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex rounded-lg overflow-hidden border border-[rgba(99,102,241,0.15)]">
+              <button
+                type="button"
+                onClick={() => setDateMode("week")}
+                className={`px-3 py-1.5 text-xs font-['Geist_Mono'] ${dateMode === "week" ? "bg-indigo-500/20 text-indigo-300" : "bg-[#0d1326] text-[#6b7fa8] hover:text-white"}`}
+              >
+                Last 7 days
+              </button>
+              <button
+                type="button"
+                onClick={() => setDateMode("day")}
+                className={`px-3 py-1.5 text-xs font-['Geist_Mono'] ${dateMode === "day" ? "bg-indigo-500/20 text-indigo-300" : "bg-[#0d1326] text-[#6b7fa8] hover:text-white"}`}
+              >
+                One day
+              </button>
+            </div>
+            {dateMode === "day" && (
+              <>
+                <Calendar size={16} className="text-[#6b7fa8]" />
+                <input 
+                  type="date"
+                  value={date}
+                  onChange={e => setDate(e.target.value)}
+                  className="bg-[#0d1326] border border-[rgba(99,102,241,0.15)] rounded-lg px-3 py-1.5 text-sm text-white outline-none focus:border-indigo-500/50 [color-scheme:dark]"
+                />
+              </>
+            )}
           </div>
         </div>
 
@@ -133,8 +187,18 @@ export function ScreenshotsView({ employeeId }: { employeeId?: string }) {
               <DataLoading label="Loading screenshots..." />
             </div>
           ) : screenshots.length === 0 ? (
-            <div className="h-full flex items-center justify-center">
-              <DataEmpty message={`No screenshots recorded for ${date}.`} />
+            <div className="h-full flex flex-col items-center justify-center gap-3 px-6 text-center">
+              <DataEmpty message={
+                dateMode === "day"
+                  ? `No screenshots recorded for ${date}.`
+                  : "No screenshots in the last 7 days."
+              } />
+              {fetchError && (
+                <p className="text-sm text-red-400 max-w-md">{fetchError}</p>
+              )}
+              {emptyHint && (
+                <p className="text-sm text-[#6b7fa8] max-w-md">{emptyHint}</p>
+              )}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">

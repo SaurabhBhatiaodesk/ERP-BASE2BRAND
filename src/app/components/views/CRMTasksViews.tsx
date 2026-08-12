@@ -11,6 +11,7 @@ import {
 import { Avatar, Badge } from "../ui";
 import { TaskStagePills } from "../TaskStagePills";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
+import { SearchableSelect } from "../ui/SearchableSelect";
 import { useEmployeeProfiles, useLeads, useProjectTasks, useProjects } from "@/hooks/useSupabaseData";
 import {
   addProjectTask,
@@ -1173,9 +1174,17 @@ export function TasksView({
   embedded?: boolean;
   onNavConsumed?: () => void;
 }) {
-  const { data: tasks, loading, error, refresh } = useProjectTasks();
   const { data: projects } = useProjects();
   const { data: profiles } = useEmployeeProfiles();
+  const personalView = isPersonalTaskRole(userRole);
+  const currentProfile = useMemo(
+    () => findProfileForUser(profiles, userName, userEmail),
+    [profiles, userName, userEmail]
+  );
+  const { data: tasks, loading, error, refresh } = useProjectTasks({
+    assigneeId: personalView && currentProfile?.id ? currentProfile.id : undefined,
+    disabled: personalView && !currentProfile?.id,
+  });
   const targetDate = useMemo(() => new Date().toLocaleDateString("en-CA"), []);
   const [clockSessions, setClockSessions] = useState<Awaited<ReturnType<typeof fetchTeamClockSessionsByDate>>>([]);
   const [view, setView] = useState<TaskView>("kanban");
@@ -1203,11 +1212,11 @@ export function TasksView({
   const filterRef = useRef<HTMLDivElement>(null);
   const [liveTick, setLiveTick] = useState(0);
 
-  const personalView = isPersonalTaskRole(userRole);
-  const currentProfile = useMemo(
-    () => findProfileForUser(profiles, userName, userEmail),
-    [profiles, userName, userEmail]
-  );
+  const taskHub = embedded && personalView && !fixedProjectId;
+
+  useEffect(() => {
+    if (taskHub) setView("kanban");
+  }, [taskHub]);
 
   const refreshClockSessions = useCallback(async () => {
     try {
@@ -1251,6 +1260,11 @@ export function TasksView({
     if (personalView) return getEmployeeProjects(projects, userName, currentProfile?.id);
     return projects;
   }, [projects, userName, personalView, userRole, currentProfile?.id]);
+
+  const projectSelectOptions = useMemo(
+    () => availableProjects.map(p => ({ value: p.id, label: p.name })),
+    [availableProjects],
+  );
 
   const assignees = useMemo(
     () => profiles.filter(p => p.dept !== "Executive" && p.name !== "CEO Admin"),
@@ -1607,7 +1621,7 @@ export function TasksView({
     }
   };
 
-  if (loading) return <DataLoading label="Loading tasks from projects..." />;
+  if (loading && tasks.length === 0) return <DataLoading label="Loading tasks from projects..." />;
   if (error) return <DataError message={error} />;
 
   const viewOptions: { id: TaskView; label: string; icon: React.FC<{ size?: number; className?: string }> }[] = [
@@ -1617,6 +1631,7 @@ export function TasksView({
     { id: "timeline", label: "Timeline", icon: GitBranch },
     { id: "workload", label: "Workload", icon: Users },
   ];
+  const visibleViewOptions = taskHub ? viewOptions.filter(v => v.id === "kanban") : viewOptions;
 
   const showFilterEmpty = filteredTasks.length === 0 && activeFilterCount > 0;
 
@@ -1630,6 +1645,10 @@ export function TasksView({
               {taskSubtitle} <span className="mx-1">·</span><span className="text-red-500 font-bold animate-pulse">live</span> from Supabase
             </p>
           </div>
+        ) : taskHub ? (
+          <p className="text-xs text-[#6b7fa8] font-['Geist_Mono']">
+            {filteredTasks.length} task{filteredTasks.length === 1 ? "" : "s"} across your projects
+          </p>
         ) : (
           <p className="text-xs text-[#6b7fa8] font-['Geist_Mono']">
             {filteredTasks.length} task{filteredTasks.length === 1 ? "" : "s"} in this project
@@ -1758,9 +1777,10 @@ export function TasksView({
         </div>
       </div>
 
+      {!taskHub && (
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-1 bg-[#080c1f] border border-[rgba(99,102,241,0.1)] rounded-xl p-1 w-fit">
-          {viewOptions.map(v => (
+          {visibleViewOptions.map(v => (
             <button key={v.id} onClick={() => setView(v.id)}
               className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-['Plus_Jakarta_Sans'] transition-all ${view === v.id ? "bg-indigo-600 text-white shadow-sm" : "text-[#6b7fa8] hover:text-[#a8b5d1] hover:bg-white/[0.03]"}`}>
               <v.icon size={13} /> {v.label}
@@ -1776,11 +1796,25 @@ export function TasksView({
           </div>
         )}
       </div>
+      )}
 
-      {view === "kanban"   && (
+      {(taskHub || view === "kanban") && (
         showFilterEmpty
           ? <DataEmpty message="No tasks match your filters." />
-          : kanbanGrouping === "assignee" ? (
+          : filteredTasks.length === 0 && !activeFilterCount && taskHub
+            ? (
+              <div className="text-center py-12 bg-[#0d1326]/40 border border-[rgba(99,102,241,0.1)] rounded-2xl">
+                <DataEmpty message="No tasks yet. Add a task and select which project it belongs to." />
+                <button
+                  type="button"
+                  onClick={() => openNewTask(kanbanColumns[0])}
+                  className="mt-4 inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white text-sm font-semibold"
+                >
+                  <Plus size={14} /> Add Task
+                </button>
+              </div>
+            )
+          : kanbanGrouping === "assignee" && !taskHub ? (
             <KanbanView
               tasks={filteredTasks}
               columns={taskAssignees}
@@ -1895,12 +1929,14 @@ export function TasksView({
                   {editingTask ? (
                     <input value={editingTask.project} readOnly className={`${inputCls} opacity-70 cursor-not-allowed`} />
                   ) : (
-                    <select value={form.projectId} onChange={e => setForm({ ...form, projectId: e.target.value })} className={inputCls}>
-                      <option value="">Select project</option>
-                      {availableProjects.map(p => (
-                        <option key={p.id} value={p.id}>{p.name}</option>
-                      ))}
-                    </select>
+                    <SearchableSelect
+                      value={form.projectId}
+                      onChange={projectId => setForm({ ...form, projectId })}
+                      options={projectSelectOptions}
+                      placeholder="Select project"
+                      searchPlaceholder="Search project…"
+                      minWidth={220}
+                    />
                   )}
                 </div>
               )}

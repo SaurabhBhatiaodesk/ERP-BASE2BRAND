@@ -8,8 +8,19 @@ import {
   fetchTimesheetEntries,
   fetchAttendanceEntries,
   fetchAttendanceForReport,
+  fetchAttendanceReportPage,
   fetchTimesheetEntriesForReport,
+  fetchTimesheetReportPage,
+  fetchReportTeamSummaries,
+  REPORT_PAGE_SIZE,
+  type AttendanceReportPage,
+  type TimesheetReportPage,
+  type ReportPagination,
+  type EmployeeHoursSummary,
   fetchProjectTasks,
+  fetchProjectTasksForAssignee,
+  projectTasksCacheKey,
+  warmProjectTasksStageHistory,
   fetchTodayTasksForEmployee,
   fetchLeaveRequests,
   type Employee,
@@ -28,7 +39,7 @@ import {
   type ATSVacancy,
   type ATSInterview,
 } from "@/lib/database";
-import { CACHE_KEYS, invalidateDataCache, peekCached, subscribeDataCache } from "@/lib/dataCache";
+import { CACHE_KEYS, invalidateDataCache, invalidateDataCachePrefix, peekCached, subscribeDataCache } from "@/lib/dataCache";
 import { supabase } from "@/lib/supabase";
 
 type LoadState<T> = {
@@ -39,6 +50,7 @@ type LoadState<T> = {
 };
 
 const DEFAULT_TTL = 30_000;
+const PROJECT_TASKS_TTL = 60_000;
 
 function useQuery<T>(
   cacheKey: string,
@@ -180,76 +192,168 @@ export function useEmployeeProfiles() {
   return result;
 }
 
-export function useProjectTasks() {
+type ProjectTasksRealtimeListener = () => void;
+
+let projectTasksChannel: ReturnType<typeof supabase.channel> | null = null;
+let projectTasksHandlersRegistered = false;
+let projectTasksRealtimeRefCount = 0;
+let projectTasksBroadcastTimer: ReturnType<typeof setTimeout> | null = null;
+const projectTasksRealtimeListeners = new Set<ProjectTasksRealtimeListener>();
+
+function broadcastProjectTasksRealtimeChange() {
+  if (projectTasksBroadcastTimer) clearTimeout(projectTasksBroadcastTimer);
+  projectTasksBroadcastTimer = setTimeout(() => {
+    projectTasksBroadcastTimer = null;
+    invalidateDataCache(CACHE_KEYS.projectTasks);
+    invalidateDataCachePrefix(`${CACHE_KEYS.projectTasks}:assignee:`);
+    for (const listener of projectTasksRealtimeListeners) {
+      listener();
+    }
+  }, 250);
+}
+
+function removeStaleProjectTasksChannels() {
+  for (const channel of supabase.getChannels()) {
+    const topic = (channel as { topic?: string }).topic ?? "";
+    if (topic.includes("project-tasks-live")) {
+      void supabase.removeChannel(channel);
+    }
+  }
+  projectTasksChannel = null;
+  projectTasksHandlersRegistered = false;
+}
+
+function ensureProjectTasksChannel() {
+  if (projectTasksChannel && projectTasksHandlersRegistered) return;
+
+  removeStaleProjectTasksChannels();
+
+  projectTasksChannel = supabase
+    .channel("project-tasks-live")
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "project_tasks" },
+      broadcastProjectTasksRealtimeChange
+    )
+    .on(
+      "postgres_changes",
+      { event: "UPDATE", schema: "public", table: "projects" },
+      broadcastProjectTasksRealtimeChange
+    )
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "task_status_history" },
+      broadcastProjectTasksRealtimeChange
+    )
+    .subscribe();
+  projectTasksHandlersRegistered = true;
+}
+
+function subscribeProjectTasksRealtime(listener: ProjectTasksRealtimeListener) {
+  projectTasksRealtimeListeners.add(listener);
+  projectTasksRealtimeRefCount += 1;
+
+  ensureProjectTasksChannel();
+
+  return () => {
+    projectTasksRealtimeListeners.delete(listener);
+    projectTasksRealtimeRefCount -= 1;
+    if (projectTasksRealtimeRefCount <= 0) {
+      if (projectTasksBroadcastTimer) {
+        clearTimeout(projectTasksBroadcastTimer);
+        projectTasksBroadcastTimer = null;
+      }
+      if (projectTasksChannel) {
+        void supabase.removeChannel(projectTasksChannel);
+        projectTasksChannel = null;
+      }
+      projectTasksHandlersRegistered = false;
+      projectTasksRealtimeRefCount = 0;
+    }
+  };
+}
+
+export function useProjectTasks(options?: { assigneeId?: string; disabled?: boolean }) {
+  const assigneeId = options?.assigneeId?.trim() || "";
+  const disabled = Boolean(options?.disabled);
+  const cacheKey = projectTasksCacheKey(assigneeId || undefined);
+  const fetchTasks = useCallback(() => {
+    return assigneeId ? fetchProjectTasksForAssignee(assigneeId) : fetchProjectTasks();
+  }, [assigneeId]);
+
   const [data, setData] = useState<AppTask[]>(
-    () => peekCached<AppTask[]>(CACHE_KEYS.projectTasks, DEFAULT_TTL) ?? []
+    () => peekCached<AppTask[]>(cacheKey, PROJECT_TASKS_TTL) ?? []
   );
-  const [loading, setLoading] = useState(() => !peekCached(CACHE_KEYS.projectTasks, DEFAULT_TTL));
+  const [loading, setLoading] = useState(
+    () => !disabled && !peekCached<AppTask[]>(cacheKey, PROJECT_TASKS_TTL)
+  );
   const [error, setError] = useState<string | null>(null);
-  const realtimeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const enrichKeyRef = useRef("");
 
   const load = useCallback(async (silent = false) => {
-    if (!silent && !peekCached(CACHE_KEYS.projectTasks, DEFAULT_TTL)) setLoading(true);
+    if (disabled) {
+      setLoading(false);
+      return;
+    }
+    const cached = peekCached<AppTask[]>(cacheKey, PROJECT_TASKS_TTL);
+    if (!silent && !cached) setLoading(true);
+    else if (cached?.length) setLoading(false);
     setError(null);
     try {
-      setData(await fetchProjectTasks());
+      const tasks = await fetchTasks();
+      setData(tasks);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load tasks");
     } finally {
-      if (!silent) setLoading(false);
+      setLoading(false);
     }
-  }, []);
+  }, [cacheKey, disabled, fetchTasks]);
 
   const refresh = useCallback(() => {
-    invalidateDataCache(CACHE_KEYS.projectTasks);
+    invalidateDataCache(cacheKey);
+    enrichKeyRef.current = "";
+    void load(true);
+  }, [cacheKey, load]);
+
+  const onRealtimeChange = useCallback(() => {
+    enrichKeyRef.current = "";
     void load(true);
   }, [load]);
 
-  const scheduleRealtimeReload = useCallback(() => {
-    if (realtimeTimerRef.current) clearTimeout(realtimeTimerRef.current);
-    realtimeTimerRef.current = setTimeout(() => {
-      realtimeTimerRef.current = null;
-      invalidateDataCache(CACHE_KEYS.projectTasks);
-      void load(true);
-    }, 250);
+  useEffect(() => {
+    void load(false);
   }, [load]);
 
   useEffect(() => {
-    load(false);
-  }, [load]);
-
-  useEffect(() => {
-    return subscribeDataCache(CACHE_KEYS.projectTasks, () => {
-      const fresh = peekCached<AppTask[]>(CACHE_KEYS.projectTasks, DEFAULT_TTL);
+    return subscribeDataCache(cacheKey, () => {
+      const fresh = peekCached<AppTask[]>(cacheKey, PROJECT_TASKS_TTL);
       if (fresh) setData(fresh);
     });
-  }, []);
+  }, [cacheKey]);
 
   useEffect(() => {
-    const room = supabase
-      .channel("project-tasks-live")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "project_tasks" },
-        scheduleRealtimeReload
-      )
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "projects" },
-        scheduleRealtimeReload
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "task_status_history" },
-        scheduleRealtimeReload
-      )
-      .subscribe();
+    return subscribeProjectTasksRealtime(onRealtimeChange);
+  }, [onRealtimeChange]);
+
+  useEffect(() => {
+    if (loading || data.length === 0) return;
+    const key = data.map(t => t.taskId).join("|");
+    if (!key || key === enrichKeyRef.current) return;
+    enrichKeyRef.current = key;
+
+    let cancelled = false;
+    void warmProjectTasksStageHistory(cacheKey, data)
+      .then(enriched => {
+        if (!cancelled) setData(enriched);
+      })
+      .catch(() => {
+        enrichKeyRef.current = "";
+      });
 
     return () => {
-      if (realtimeTimerRef.current) clearTimeout(realtimeTimerRef.current);
-      supabase.removeChannel(room);
+      cancelled = true;
     };
-  }, [scheduleRealtimeReload]);
+  }, [loading, data, cacheKey]);
 
   return { data, loading, error, refresh };
 }
@@ -277,28 +381,131 @@ export function useAttendance() {
 }
 
 export function useAttendanceReport(filter: AttendanceReportFilter) {
-  const cacheKey = `${CACHE_KEYS.attendance}:${filter.startDate}:${filter.endDate}:${filter.employeeId ?? "all"}:${filter.employeeName ?? "all"}`;
+  const cacheKey = `${CACHE_KEYS.attendance}:${filter.startDate}:${filter.endDate}:${filter.employeeId ?? "all"}:${filter.employeeName ?? "all"}:${filter.search ?? ""}`;
   return useQuery(
     cacheKey,
     () => fetchAttendanceForReport(filter),
     [] as AttendanceEntry[],
-    [filter.startDate, filter.endDate, filter.employeeId, filter.employeeName],
+    [filter.startDate, filter.endDate, filter.employeeId, filter.employeeName, filter.search],
     20_000
   );
 }
 
-export function useTimesheetReport(filter: TimesheetReportFilter | null) {
+const EMPTY_ATTENDANCE_PAGE: AttendanceReportPage = {
+  items: [],
+  total: 0,
+  page: 1,
+  pageSize: REPORT_PAGE_SIZE,
+  totalPages: 1,
+  summaryHours: 0,
+};
+
+export function useAttendanceReportPage(
+  filter: AttendanceReportFilter | null,
+  pagination: ReportPagination,
+  disabled = false,
+) {
   const cacheKey = filter
-    ? `${CACHE_KEYS.timesheetReport}:${filter.startDate}:${filter.endDate}:${filter.employeeId ?? "all"}`
+    ? `${CACHE_KEYS.attendance}:${filter.startDate}:${filter.endDate}:${filter.employeeId ?? "all"}:${filter.search ?? ""}:p${pagination.page}:s${pagination.pageSize}`
+    : `${CACHE_KEYS.attendance}:idle`;
+
+  return useQuery(
+    cacheKey,
+    () => (filter ? fetchAttendanceReportPage(filter, pagination) : Promise.resolve(EMPTY_ATTENDANCE_PAGE)),
+    EMPTY_ATTENDANCE_PAGE,
+    filter
+      ? [filter.startDate, filter.endDate, filter.employeeId, filter.search, pagination.page, pagination.pageSize]
+      : [],
+    20_000,
+    disabled || !filter,
+  );
+}
+
+const EMPTY_TIMESHEET_PAGE: TimesheetReportPage = {
+  items: [],
+  total: 0,
+  page: 1,
+  pageSize: REPORT_PAGE_SIZE,
+  totalPages: 1,
+  summaryHours: 0,
+};
+
+export function useTimesheetReportPage(
+  filter: TimesheetReportFilter | null,
+  pagination: ReportPagination,
+  disabled = false,
+) {
+  const cacheKey = filter
+    ? `${CACHE_KEYS.timesheetReport}:${filter.startDate}:${filter.endDate}:${filter.employeeId ?? "all"}:${filter.projectId ?? "all"}:${filter.search ?? ""}:p${pagination.page}:s${pagination.pageSize}`
+    : `${CACHE_KEYS.timesheetReport}:idle`;
+
+  return useQuery(
+    cacheKey,
+    () => (filter ? fetchTimesheetReportPage(filter, pagination) : Promise.resolve(EMPTY_TIMESHEET_PAGE)),
+    EMPTY_TIMESHEET_PAGE,
+    filter
+      ? [filter.startDate, filter.endDate, filter.employeeId, filter.projectId, filter.search, pagination.page, pagination.pageSize]
+      : [],
+    DEFAULT_TTL,
+    disabled || !filter,
+  );
+}
+
+export function useReportTeamSummaries(
+  attendanceFilter: AttendanceReportFilter | null,
+  timesheetFilter: TimesheetReportFilter | null,
+  disabled = false,
+) {
+  const cacheKey =
+    attendanceFilter && timesheetFilter
+      ? `${CACHE_KEYS.attendance}:${attendanceFilter.startDate}:team:${timesheetFilter.startDate}:${attendanceFilter.employeeId ?? "all"}`
+      : `${CACHE_KEYS.attendance}:team:idle`;
+
+  return useQuery(
+    cacheKey,
+    () =>
+      attendanceFilter && timesheetFilter
+        ? fetchReportTeamSummaries(attendanceFilter, timesheetFilter)
+        : Promise.resolve([] as EmployeeHoursSummary[]),
+    [] as EmployeeHoursSummary[],
+    attendanceFilter && timesheetFilter
+      ? [
+          attendanceFilter.startDate,
+          attendanceFilter.endDate,
+          attendanceFilter.employeeId,
+          attendanceFilter.search,
+          timesheetFilter.startDate,
+          timesheetFilter.endDate,
+          timesheetFilter.employeeId,
+          timesheetFilter.search,
+        ]
+      : [],
+    20_000,
+    disabled || !attendanceFilter || !timesheetFilter,
+  );
+}
+
+export function useTimesheetReport(filter: TimesheetReportFilter | null, disabled = false) {
+  const cacheKey = filter
+    ? `${CACHE_KEYS.timesheetReport}:${filter.startDate}:${filter.endDate}:${filter.employeeId ?? "all"}:${filter.employeeName ?? "all"}:${filter.projectId ?? "all"}:${filter.search ?? ""}:full`
     : `${CACHE_KEYS.timesheetReport}:idle`;
 
   return useQuery(
     cacheKey,
     () => (filter ? fetchTimesheetEntriesForReport(filter) : Promise.resolve([] as TimesheetEntry[])),
     [] as TimesheetEntry[],
-    filter ? [filter.startDate, filter.endDate, filter.employeeId] : [],
+    filter
+      ? [
+          filter.startDate,
+          filter.endDate,
+          filter.employeeId,
+          filter.employeeName,
+          filter.projectId,
+          filter.search,
+        ]
+      : [],
     DEFAULT_TTL,
-    !filter
+    disabled || !filter
   );
 }
 

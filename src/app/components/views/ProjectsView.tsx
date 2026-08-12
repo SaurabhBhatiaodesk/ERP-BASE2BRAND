@@ -1,8 +1,9 @@
 import React, { useMemo, useState } from "react";
-import { FolderOpen, Search, Star, Edit2, X, Target, Settings, Users, Plus } from "lucide-react";
+import { CheckSquare, FolderOpen, Layers, Search, Star, Edit2, X, Target, Settings, Users, Plus } from "lucide-react";
 import { Avatar } from "../ui";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
 import { useEmployeeProfiles, useProjectTasks, useProjects } from "@/hooks/useSupabaseData";
+import { TasksView } from "./CRMTasksViews";
 import {
   filterTasksForUser,
   findProfileForUser,
@@ -218,7 +219,6 @@ export function ProjectsView({
   onNavigate?: (view: string, tab?: any) => void;
 }) {
   const { data: projects, loading: pLoading, error: pError, refresh: refreshProjects } = useProjects();
-  const { data: tasks, loading: tLoading, error: tError } = useProjectTasks();
   const { data: profiles, refresh: refreshProfiles } = useEmployeeProfiles();
   const currentProfile = useMemo(
     () => findProfileForUser(profiles, userName, userEmail),
@@ -227,10 +227,18 @@ export function ProjectsView({
   const [search, setSearch] = useState("");
   const [favorites, setFavorites] = useState<Set<string>>(() => readFavorites());
   const [editingProject, setEditingProject] = useState<Project | null>(null);
+  const [workspaceTab, setWorkspaceTab] = useState<"projects" | "tasks">("tasks");
 
   const canViewAllProjects =
     isAdminRole(userRole) || Boolean(currentProfile && isExecutiveProfile(currentProfile));
   const isPersonal = !canViewAllProjects;
+
+  const { data: tasks, loading: tLoading, error: tError } = useProjectTasks({
+    assigneeId: isPersonal && currentProfile?.id ? currentProfile.id : undefined,
+    disabled:
+      (isPersonal && !currentProfile?.id) ||
+      (isPersonal && workspaceTab === "tasks"),
+  });
   const firstName = userName.split(/\s+/)[0] || "there";
   const canEditProject = ["ceo", "teamlead", "manager", "hr"].includes(userRole.toLowerCase());
 
@@ -283,29 +291,63 @@ export function ProjectsView({
     });
   }
 
-  const loading = pLoading || tLoading;
-  const error = pError || tError;
+  const loading = isPersonal && workspaceTab === "tasks" ? false : pLoading || tLoading;
+  const error = pError || (workspaceTab === "projects" ? tError : null);
 
-  if (loading) return <DataLoading label="Loading projects..." />;
+  if (loading) return <DataLoading label={workspaceTab === "tasks" ? "Loading tasks..." : "Loading projects..."} />;
   if (error) return <DataError message={error} />;
 
   return (
     <div className="max-w-6xl mx-auto">
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-8">
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
         <div>
           <div className="flex items-center gap-2 text-indigo-400/80 mb-1">
-            <FolderOpen size={16} />
+            {workspaceTab === "tasks" ? <CheckSquare size={16} /> : <FolderOpen size={16} />}
             <span className="text-[11px] font-['Geist_Mono'] uppercase tracking-wider">
               {isPersonal ? "Your workspace" : "Company projects"}
             </span>
           </div>
           <h1 className="text-2xl font-bold text-white font-['Plus_Jakarta_Sans']">
-            {isPersonal ? `${firstName}'s projects` : "All projects"}
+            {isPersonal
+              ? workspaceTab === "tasks"
+                ? "My Tasks"
+                : `${firstName}'s projects`
+              : "All projects"}
           </h1>
           <p className="text-sm text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mt-1">
-            {filteredProjects.length} project{filteredProjects.length === 1 ? "" : "s"} · tap to open
+            {isPersonal && workspaceTab === "tasks"
+              ? "Kanban board — add tasks here and pick the project. Tasks appear in that project too."
+              : `${filteredProjects.length} project${filteredProjects.length === 1 ? "" : "s"} · tap to open`}
           </p>
         </div>
+        {isPersonal ? (
+          <div className="flex items-center gap-1 bg-[#0d1326] border border-[rgba(99,102,241,0.15)] rounded-xl p-1 w-fit">
+            <button
+              type="button"
+              onClick={() => setWorkspaceTab("tasks")}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold font-['Plus_Jakarta_Sans'] transition-all ${
+                workspaceTab === "tasks"
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "text-[#6b7fa8] hover:text-white hover:bg-white/[0.03]"
+              }`}
+            >
+              <Layers size={15} />
+              My Tasks
+            </button>
+            <button
+              type="button"
+              onClick={() => setWorkspaceTab("projects")}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold font-['Plus_Jakarta_Sans'] transition-all ${
+                workspaceTab === "projects"
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "text-[#6b7fa8] hover:text-white hover:bg-white/[0.03]"
+              }`}
+            >
+              <FolderOpen size={15} />
+              Projects
+            </button>
+          </div>
+        ) : (
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full sm:w-auto">
           <div className="relative w-full sm:w-72 shrink-0">
             <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#6b7fa8]" />
@@ -325,7 +367,29 @@ export function ProjectsView({
             </button>
           )}
         </div>
+        )}
       </div>
+
+      {isPersonal && workspaceTab === "tasks" ? (
+        <TasksView
+          userName={userName}
+          userEmail={userEmail}
+          userRole={userRole}
+          embedded
+        />
+      ) : (
+        <>
+      {isPersonal && workspaceTab === "projects" && (
+        <div className="relative w-full sm:w-72 shrink-0 mb-6">
+          <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#6b7fa8]" />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search projects..."
+            className="w-full bg-[#0d1326] border border-[rgba(99,102,241,0.15)] rounded-xl pl-10 pr-4 py-2.5 text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-indigo-500/40 font-['Plus_Jakarta_Sans']"
+          />
+        </div>
+      )}
 
       {filteredProjects.length === 0 ? (
         <div className="bg-[#0d1326]/50 border border-[rgba(99,102,241,0.1)] rounded-2xl p-16 text-center">
@@ -367,6 +431,8 @@ export function ProjectsView({
             refreshProfiles();
           }}
         />
+      )}
+        </>
       )}
     </div>
   );

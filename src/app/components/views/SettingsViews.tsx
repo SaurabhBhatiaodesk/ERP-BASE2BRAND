@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import {
   UserCheck, Award, Bell, Monitor, Globe, AlertTriangle, Zap,
   Clock, Activity, Brain, DollarSign, Users, Send, Plus,
-  ChevronLeft, X, Layers, MessageSquare
+  ChevronLeft, X, Layers, MessageSquare, Timer
 } from "lucide-react";
 import { Avatar, Badge } from "../ui";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
@@ -212,11 +212,12 @@ export function NotificationsCenterView({
   onNotificationClick: (n: any) => void;
 }) {
   const [filter, setFilter] = useState("All");
-  const categories = ["All", "project_assigned", "chat_message"];
+  const categories = ["All", "clock_in", "project_assigned", "chat_message"];
   const unread = notifications.filter(n => !n.is_read).length;
   const filtered = filter === "All" ? notifications : notifications.filter(n => n.type === filter);
 
   const getCategoryLabel = (type: string) => {
+    if (type === "clock_in") return "Clock-in";
     if (type === "project_assigned") return "Project";
     if (type === "chat_message") return "Chat";
     return type;
@@ -248,7 +249,14 @@ export function NotificationsCenterView({
         {filtered.length === 0 ? (
           <div className="text-center p-8 text-[#6b7fa8] text-sm">No notifications found.</div>
         ) : filtered.map(n => {
-          const IconComp = n.type === "project_assigned" ? Layers : (n.type === "chat_message" ? MessageSquare : Bell);
+          const IconComp =
+            n.type === "clock_in"
+              ? Timer
+              : n.type === "project_assigned"
+                ? Layers
+                : n.type === "chat_message"
+                  ? MessageSquare
+                  : Bell;
           return (
             <div key={n.id} onClick={() => { if (!n.is_read) markAsRead(n.id); onNotificationClick(n); }}
               className={`flex items-start gap-4 p-4 rounded-xl border cursor-pointer transition-all hover:border-indigo-500/20 ${n.is_read ? "bg-[#0d1326] border-[rgba(99,102,241,0.08)] opacity-60" : "bg-[#0d1326] border-[rgba(99,102,241,0.18)]"}`}>
