@@ -142,6 +142,7 @@ export type ShiftDeptFilter =
   | "sales"
   | "csr"
   | "hr"
+  | "b2b-campus"
   | "tl";
 
 type ShiftFilterOption = {
@@ -158,6 +159,7 @@ export const SHIFT_DEPT_OPTIONS: ShiftFilterOption[] = [
   { id: "sales", label: "Sales", group: "team", activeClass: "bg-emerald-600/90 text-white border-emerald-500/50 shadow-lg shadow-emerald-500/20" },
   { id: "csr", label: "CSR", group: "team", activeClass: "bg-sky-600/90 text-white border-sky-500/50 shadow-lg shadow-sky-500/20" },
   { id: "hr", label: "HR", group: "team", activeClass: "bg-amber-600/90 text-white border-amber-500/50 shadow-lg shadow-amber-500/20" },
+  { id: "b2b-campus", label: "B2B Campus", group: "team", activeClass: "bg-rose-600/90 text-white border-rose-500/50 shadow-lg shadow-rose-500/20" },
   { id: "tl", label: "Team Lead", group: "leadership", activeClass: "bg-fuchsia-600/90 text-white border-fuchsia-500/50 shadow-lg shadow-fuchsia-500/20" },
 ];
 
@@ -188,12 +190,27 @@ function profileMatchesTeamLeadFilter(profile: { role: string; appRole?: string 
   );
 }
 
+/**
+ * B2B Campus is Base2Brand's campus/placement vertical. Its people are spread
+ * across several dept labels in the DB (e.g. "b2b Campus", "B2B Campus Team",
+ * but also "HR & Operations" and "Sales"), so we match on the campus dept OR on
+ * the roles that define this team: teachers, counsellors (incl. telecaller
+ * counsellors), placement coordinators, plus sales and manager roles.
+ */
+function profileMatchesB2BCampusFilter(profile: { dept: string; role: string }): boolean {
+  const dept = profile.dept.trim().toLowerCase();
+  const role = profile.role.trim().toLowerCase();
+  if (/campus/.test(dept)) return true;
+  return /teacher|counsell?or|councell?or|placement|telecaller|faculty|trainer|academic|admission|sales|manager/.test(role);
+}
+
 export function profileMatchesShiftFilter(
   profile: { dept: string; role: string; appRole?: string },
   filter: ShiftDeptFilter
 ): boolean {
   if (filter === "all") return true;
   if (filter === "tl") return profileMatchesTeamLeadFilter(profile);
+  if (filter === "b2b-campus") return profileMatchesB2BCampusFilter(profile);
   return profileMatchesShiftDeptFilter(profile.dept, filter);
 }
 
