@@ -4210,7 +4210,7 @@ export async function fetchReportTeamSummaries(
     async () => {
       const [attendanceRows, projectEntries] = await Promise.all([
         loadAttendanceSummaryRows(attendanceFilter),
-        loadTimesheetReportEntries(timesheetFilter),
+        fetchTimesheetEntriesForReport(timesheetFilter),
       ]);
       const { byEmployee: officeMap } = await summarizeAttendanceRows(attendanceRows);
       const map = new Map<string, EmployeeHoursSummary>();
@@ -4544,7 +4544,17 @@ async function loadTimesheetReportEntries(filter: TimesheetReportFilter): Promis
 }
 
 export async function fetchTimesheetEntriesForReport(filter: TimesheetReportFilter): Promise<TimesheetEntry[]> {
-  return getCached(timesheetReportCacheKey(filter), () => loadTimesheetReportEntries(filter), DATA_CACHE_TTL);
+  return getCached(
+    timesheetReportCacheKey(filter),
+    async () => {
+      const entries = await loadTimesheetReportEntries(filter);
+      return applyTimesheetSearch(
+        applyTimesheetProjectFilter(entries, filter.projectId),
+        filter.search,
+      );
+    },
+    DATA_CACHE_TTL,
+  );
 }
 
 /** Paginated in-progress project time for Time Reports. */

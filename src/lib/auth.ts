@@ -472,6 +472,11 @@ export function isShiftTrackerRole(role: string) {
   return role === "ceo" || role === "teamlead";
 }
 
+/** Payroll Dashboard — salary data is HR & CEO only */
+export function isPayrollRole(role: string) {
+  return role === "ceo" || role === "hr";
+}
+
 export function isExecutiveProfile(profile: { name: string; role: string; dept: string }) {
   return (
     profile.dept === "Executive" ||

@@ -617,16 +617,7 @@ export function TimesheetView({
       ]);
 
       let exportAttendance = allAttendance;
-      let exportEntries = allEntries;
-
-      if (projectFilter !== "all") {
-        const projectName = projects.find(p => p.id === projectFilter)?.name?.toLowerCase();
-        exportEntries = exportEntries.filter(
-          e =>
-            e.projectId === projectFilter ||
-            (projectName && e.projectName.toLowerCase() === projectName),
-        );
-      }
+      const exportEntries = allEntries;
 
       downloadCsv(
         timeTab === "project" ? exportEntries : [],
