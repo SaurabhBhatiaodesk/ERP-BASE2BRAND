@@ -4,6 +4,7 @@ import { Avatar } from "../ui";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
 import {
   useAttendanceReportPage,
+  useAttendanceReportSummaryHours,
   useEmployeeProfiles,
   useProjects,
   useReportTeamSummaries,
@@ -387,6 +388,10 @@ export function TimesheetView({
       { page: officePage, pageSize: REPORT_PAGE_SIZE },
       timeTab !== "office",
     );
+  const { data: officeSummaryHours, refresh: refreshOfficeSummaryHours } = useAttendanceReportSummaryHours(
+    attendanceFilter,
+    timeTab !== "office",
+    );
   const {
     data: fullTimesheetEntries,
     loading: fullTimesheetLoading,
@@ -446,12 +451,15 @@ export function TimesheetView({
   useEffect(() => {
     if (timeTab !== "office" || !hasLiveOfficeSession) return;
     const tickId = window.setInterval(() => setLiveTick(t => t + 1), 1000);
-    const syncId = window.setInterval(() => void refreshAttendance(), 30_000);
+    const syncId = window.setInterval(() => {
+      void refreshAttendance();
+      void refreshOfficeSummaryHours();
+    }, 30_000);
     return () => {
       window.clearInterval(tickId);
       window.clearInterval(syncId);
     };
-  }, [timeTab, hasLiveOfficeSession, refreshAttendance]);
+  }, [timeTab, hasLiveOfficeSession, refreshAttendance, refreshOfficeSummaryHours]);
 
   const activeEmployee = useMemo(() => {
     if (filterProfile) return filterProfile;
@@ -550,7 +558,7 @@ export function TimesheetView({
     [projectEntries],
   );
   const totalProjectEntryCount = projectEntries.length;
-  const totalOfficeHours = attendancePage.summaryHours;
+  const totalOfficeHours = officeSummaryHours;
 
   const personSelectOptions = useMemo(() => {
     const opts: { value: string; label: string }[] = [];
@@ -849,7 +857,12 @@ export function TimesheetView({
             className={selectCls}
           >
             <option value="all">All projects</option>
-            {[...new Set(projectEntries.map(e => e.projectId))].map(pid => {
+            {[
+              ...new Set([
+                ...(personFilter === "everyone" ? projects : employeeProjects).map(p => p.id),
+                ...projectEntries.map(e => e.projectId),
+              ]),
+            ].map(pid => {
               const p = projects.find(pr => pr.id === pid);
               const name = p?.name || projectEntries.find(e => e.projectId === pid)?.projectName || pid;
               return (
@@ -1114,7 +1127,7 @@ export function TimesheetView({
                 <div className="flex items-center gap-2 bg-indigo-500/15 border border-indigo-500/30 rounded-full px-3 py-1.5 shrink-0">
                   <Clock size={13} className="text-indigo-400" />
                   <span className="text-xs font-semibold text-indigo-300 font-['Plus_Jakarta_Sans']">
-                    {formatHoursDisplay(attendancePage.summaryHours)} total
+                    {formatHoursDisplay(officeSummaryHours)} total
                   </span>
                 </div>
               </div>
