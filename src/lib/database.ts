@@ -4136,6 +4136,12 @@ async function loadAttendanceReportSummary(filter: AttendanceReportFilter) {
   }, ATTENDANCE_CACHE_TTL);
 }
 
+/**
+ * Page fetch only — does NOT wait on the full-range summary (which requires
+ * downloading every session in range to sum hours). That summary is fetched
+ * separately via fetchAttendanceReportSummaryHours() so the table can render
+ * as soon as its own page query resolves.
+ */
 async function loadAttendanceReportPage(
   filter: AttendanceReportFilter,
   pagination: ReportPagination,
@@ -4145,10 +4151,7 @@ async function loadAttendanceReportPage(
   const to = from + pageSize - 1;
 
   try {
-    const [{ data, error, count }, summary] = await Promise.all([
-      buildAttendanceSessionsQuery(filter).range(from, to),
-      loadAttendanceReportSummary(filter),
-    ]);
+    const { data, error, count } = await buildAttendanceSessionsQuery(filter).range(from, to);
 
     if (error) {
       if (isMissingClockSessionsTable(error)) {
@@ -4161,13 +4164,24 @@ async function loadAttendanceReportPage(
     const sessions = await attachPageSegments((data || []).map(mapClockSession));
 
     return {
-      ...toPaginatedReport(mapSessionsToAttendanceEntries(sessions), count ?? summary.total, page, pageSize),
-      summaryHours: summary.totalHours,
+      ...toPaginatedReport(mapSessionsToAttendanceEntries(sessions), count ?? 0, page, pageSize),
+      summaryHours: 0,
     };
   } catch (error) {
     if (isMissingClockSessionsTable(error)) {
       return { ...toPaginatedReport([], 0, page, pageSize), summaryHours: 0 };
     }
+    throw error;
+  }
+}
+
+/** Total hours across the whole filtered range — fetched independently of the page so it never blocks the table. */
+export async function fetchAttendanceReportSummaryHours(filter: AttendanceReportFilter): Promise<number> {
+  try {
+    const summary = await loadAttendanceReportSummary(filter);
+    return summary.totalHours;
+  } catch (error) {
+    if (isMissingClockSessionsTable(error)) return 0;
     throw error;
   }
 }
@@ -4407,13 +4421,19 @@ async function buildStageHistoryTimesheetEntries(
   return entries;
 }
 
+async function fetchProjectIdNameMap(): Promise<{ id: string; name: string }[]> {
+  return getCached(
+    "project_id_name_map",
+    () =>
+      fetchAllPaginated<{ id: string; name: string }>((from, pageSize) =>
+        supabase.from("projects").select("id, name").range(from, from + pageSize - 1)
+      ),
+    DATA_CACHE_TTL,
+  );
+}
+
 async function fetchTimesheetEntriesRelationalInRange(filter: TimesheetReportFilter): Promise<TimesheetEntry[]> {
-  const [projects, profiles] = await Promise.all([
-    fetchAllPaginated<{ id: string; name: string }>((from, pageSize) =>
-      supabase.from("projects").select("id, name").range(from, from + pageSize - 1)
-    ),
-    fetchEmployeeProfiles(),
-  ]);
+  const [projects, profiles] = await Promise.all([fetchProjectIdNameMap(), fetchEmployeeProfiles()]);
   const projectMap = new Map(projects.map(p => [p.id, p.name]));
 
   // Project log = In Progress time from Kanban stage history only.

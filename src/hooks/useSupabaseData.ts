@@ -9,6 +9,7 @@ import {
   fetchAttendanceEntries,
   fetchAttendanceForReport,
   fetchAttendanceReportPage,
+  fetchAttendanceReportSummaryHours,
   fetchTimesheetEntriesForReport,
   fetchTimesheetReportPage,
   fetchReportTeamSummaries,
@@ -416,6 +417,29 @@ export function useAttendanceReportPage(
     filter
       ? [filter.startDate, filter.endDate, filter.employeeId, filter.search, pagination.page, pagination.pageSize]
       : [],
+    20_000,
+    disabled || !filter,
+  );
+}
+
+/**
+ * Total hours across the whole filtered range. Fetched independently of the
+ * page above (that full-range sum is the expensive part) so it never blocks
+ * the table from rendering — it fills in the badge once ready.
+ */
+export function useAttendanceReportSummaryHours(
+  filter: AttendanceReportFilter | null,
+  disabled = false,
+) {
+  const cacheKey = filter
+    ? `${CACHE_KEYS.attendance}:${filter.startDate}:${filter.endDate}:${filter.employeeId ?? "all"}:${filter.search ?? ""}:summaryHours`
+    : `${CACHE_KEYS.attendance}:summaryHours:idle`;
+
+  return useQuery(
+    cacheKey,
+    () => (filter ? fetchAttendanceReportSummaryHours(filter) : Promise.resolve(0)),
+    0,
+    filter ? [filter.startDate, filter.endDate, filter.employeeId, filter.search] : [],
     20_000,
     disabled || !filter,
   );
