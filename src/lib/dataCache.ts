@@ -21,6 +21,7 @@ export const CACHE_KEYS = {
   leads: "leads",
   leadsAsClients: "leads_as_clients",
   leaveRequests: "leave_requests",
+  publicHolidays: "public_holidays",
   chatUnread: "chat_unread",
 } as const;
 

@@ -5,10 +5,16 @@ import {
 } from "lucide-react";
 import { Avatar } from "../ui";
 import { DataEmpty, DataError, DataLoading } from "../ui/DataStatus";
-import { useAttendanceReport, useEmployeeProfiles, useLeaveRequests } from "@/hooks/useSupabaseData";
+import {
+  useAttendanceReport,
+  useEmployeeProfiles,
+  useLeaveRequests,
+  usePublicHolidays,
+} from "@/hooks/useSupabaseData";
 import { initialsFromName, updateEmployeeProfile, type EmployeeProfile } from "@/lib/database";
 import { isPayrollRole } from "@/lib/auth";
 import {
+  buildHolidayCalendar,
   buildPayrollForEmployee,
   daysInMonthOf,
   formatDayLabel,
@@ -19,6 +25,7 @@ import {
   parseSalaryAmount,
   toDateKey,
   PAID_LEAVE_QUOTA_PER_QUARTER,
+  SANDWICH_WINDOW_PAD_DAYS,
   type PayrollResult,
 } from "@/lib/payroll";
 
@@ -46,11 +53,14 @@ export function PayrollView({ userRole = "ceo" }: { userRole?: string }) {
 
   const allowed = isPayrollRole(userRole);
 
+  // Padded past both ends of the month: sandwich-leave detection needs to see
+  // the Friday before the 1st and the Monday after the last day.
   const range = useMemo(() => {
     const { year, monthIndex } = cursor;
+    const pad = SANDWICH_WINDOW_PAD_DAYS;
     return {
-      startDate: toDateKey(new Date(year, monthIndex, 1)),
-      endDate: toDateKey(new Date(year, monthIndex, daysInMonthOf(year, monthIndex))),
+      startDate: toDateKey(new Date(year, monthIndex, 1 - pad)),
+      endDate: toDateKey(new Date(year, monthIndex, daysInMonthOf(year, monthIndex) + pad)),
     };
   }, [cursor]);
 
@@ -61,6 +71,11 @@ export function PayrollView({ userRole = "ceo" }: { userRole?: string }) {
     refresh: refreshProfiles,
   } = useEmployeeProfiles();
   const { data: leaveRequests, loading: leavesLoading } = useLeaveRequests();
+  const {
+    data: holidayRows,
+    loading: holidaysLoading,
+    error: holidaysError,
+  } = usePublicHolidays();
   const { data: attendance, loading: attendanceLoading, error: attendanceError } =
     useAttendanceReport(allowed ? range : { startDate: range.startDate, endDate: range.startDate });
 
@@ -68,8 +83,13 @@ export function PayrollView({ userRole = "ceo" }: { userRole?: string }) {
   const isCurrentMonth =
     cursor.year === today.getFullYear() && cursor.monthIndex === today.getMonth();
 
+  const holidays = useMemo(() => buildHolidayCalendar(holidayRows), [holidayRows]);
+
   const rows: PayrollRow[] = useMemo(() => {
     if (!allowed) return [];
+    // Never compute against a half-loaded calendar — every public holiday
+    // would come out as an absence and dock a day's salary.
+    if (holidaysLoading || holidaysError) return [];
     return profiles
       .filter(p => p.name !== "CEO Admin")
       .map(profile => ({
@@ -85,11 +105,15 @@ export function PayrollView({ userRole = "ceo" }: { userRole?: string }) {
           monthIndex: cursor.monthIndex,
           attendance,
           leaveRequests,
+          holidays,
           today: todayKey,
         }),
       }))
       .sort((a, b) => a.profile.name.localeCompare(b.profile.name));
-  }, [allowed, profiles, attendance, leaveRequests, cursor, todayKey]);
+  }, [
+    allowed, profiles, attendance, leaveRequests, cursor, todayKey,
+    holidays, holidaysLoading, holidaysError,
+  ]);
 
   const visibleRows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -163,8 +187,8 @@ export function PayrollView({ userRole = "ceo" }: { userRole?: string }) {
     );
   }
 
-  const loading = profilesLoading || attendanceLoading || leavesLoading;
-  const error = profilesError || attendanceError;
+  const loading = profilesLoading || attendanceLoading || leavesLoading || holidaysLoading;
+  const error = profilesError || attendanceError || holidaysError;
 
   return (
     <div className="space-y-5">

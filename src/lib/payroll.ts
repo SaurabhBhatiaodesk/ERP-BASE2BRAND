@@ -18,18 +18,43 @@
  *      4th+ approved leave in a quarter is unpaid.
  *   3. A Mon–Fri day with no clock-in and no approved leave is "Absent" and is
  *      always cut — it never consumes the paid-leave quota.
- *   4. Net pay = (base salary / days in month) × payable days.
+ *   4. Listed public holidays are paid non-working days (`PAYROLL_HOLIDAYS`).
+ *   5. SANDWICH LEAVE — a weekend/holiday gap with leave or absence on BOTH
+ *      sides is itself counted as leave. Off on Friday and the following
+ *      Monday? That Saturday and Sunday are billed too.
+ *   6. Net pay = (base salary / days in month) × payable days.
  */
 
 /** Paid leaves granted per calendar quarter. Bump this to change the policy. */
 export const PAID_LEAVE_QUOTA_PER_QUARTER = 3;
 
 /**
- * Company-wide paid holidays as "YYYY-MM-DD". Empty for now — a weekday
- * holiday that nobody clocks in on will read as "Absent" until it is listed
- * here. Fill this in (or swap it for a DB-backed list) when HR supplies dates.
+ * Company-wide paid holidays, "YYYY-MM-DD" → name.
+ *
+ * HR owns this list in the `public_holidays` table (see
+ * `supabase/public_holidays.sql`) — there is deliberately no hardcoded copy,
+ * because a stale fallback would quietly pay the wrong salary. A weekday that
+ * is NOT in the calendar reads as "Absent" for everyone who did not clock in,
+ * so callers must treat a failed load as an error, never as an empty calendar.
  */
-export const PAYROLL_HOLIDAYS: readonly string[] = [];
+export type HolidayCalendar = ReadonlyMap<string, string>;
+
+/** For months genuinely outside any holiday, and for tests. */
+export const EMPTY_HOLIDAY_CALENDAR: HolidayCalendar = new Map();
+
+export function buildHolidayCalendar(
+  rows: Iterable<{ date: string; name: string }>,
+): HolidayCalendar {
+  return new Map([...rows].map(row => [row.date, row.name]));
+}
+
+/**
+ * Longest run of non-working days a sandwich will swallow. 2 covers the plain
+ * Fri→Mon weekend; 3 also covers a weekend with a public holiday stuck to it
+ * (leave Fri 6 Nov, off Sat 7 + Diwali Sun 8/Mon 9, leave Tue 10). Anything
+ * longer is a genuine company shutdown, not a stretched weekend.
+ */
+export const SANDWICH_MAX_BRIDGE_DAYS = 3;
 
 /** 0 = Sunday, 6 = Saturday. Both are paid non-working days. */
 const WEEKEND_WEEKDAYS = new Set([0, 6]);
@@ -76,10 +101,21 @@ export type PayrollContext = {
   /** "YYYY-MM-DD" — days after this are "upcoming", not deducted. */
   today: string;
   baseSalary: number;
-  /** Dates with at least one clock session. */
+  /**
+   * Dates with at least one clock session. Covers a few days either side of
+   * the month as well, so a sandwich straddling the month boundary is visible.
+   */
   workedDates: ReadonlySet<string>;
   /** Approved leave days falling inside this month. */
   leaveByDate: ReadonlyMap<string, PayrollLeaveDay>;
+  /**
+   * Working days — inside the month AND a few days either side of it — that
+   * the employee was off: approved leave or unexplained absence. These are the
+   * days that can flank a weekend and turn it into a sandwich.
+   */
+  sandwichAnchorDates: ReadonlySet<string>;
+  /** HR's paid-holiday calendar, loaded from `public_holidays`. */
+  holidays: HolidayCalendar;
   /** Paid-leave allowance still unused when this month began. */
   quotaAtMonthStart: number;
   /** "YYYY-MM-DD" or null when unknown. */
@@ -87,7 +123,11 @@ export type PayrollContext = {
 };
 
 /** Mutable scratchpad threaded through the day loop. */
-export type PayrollState = { quotaLeft: number };
+export type PayrollState = {
+  quotaLeft: number;
+  /** Weekend/holiday days this month that a sandwich has claimed. */
+  sandwichDates: ReadonlySet<string>;
+};
 
 export type PayrollAdjustment = {
   factorId: string;
@@ -180,13 +220,77 @@ export function isWeekend(dateKey: string) {
   return WEEKEND_WEEKDAYS.has(new Date(y, m - 1, d).getDay());
 }
 
-export function isHoliday(dateKey: string) {
-  return PAYROLL_HOLIDAYS.includes(dateKey);
+/** "Republic Day", or null when the date is an ordinary one. */
+export function holidayName(dateKey: string, holidays: HolidayCalendar): string | null {
+  return holidays.get(dateKey) ?? null;
+}
+
+export function isHoliday(dateKey: string, holidays: HolidayCalendar) {
+  return holidays.has(dateKey);
 }
 
 /** Mon–Fri and not a listed holiday — the only days that can ever be cut. */
-export function isWorkingDay(dateKey: string) {
-  return !isWeekend(dateKey) && !isHoliday(dateKey);
+export function isWorkingDay(dateKey: string, holidays: HolidayCalendar) {
+  return !isWeekend(dateKey) && !isHoliday(dateKey, holidays);
+}
+
+/** "2026-08-17" + 3 → "2026-08-20". Negative deltas walk backwards. */
+export function shiftDateKey(dateKey: string, deltaDays: number) {
+  const [y, m, d] = dateKey.split("-").map(Number);
+  return toDateKey(new Date(y, m - 1, d + deltaDays));
+}
+
+/** A day a sandwich can swallow: a weekend or a paid public holiday. */
+function isBridgeableDay(dateKey: string, holidays: HolidayCalendar) {
+  return isWeekend(dateKey) || isHoliday(dateKey, holidays);
+}
+
+/**
+ * How far outside the month we have to look to spot a sandwich that straddles
+ * the boundary — e.g. leave on Fri 31 Jul + Mon 3 Aug bills 1–2 Aug.
+ */
+export const SANDWICH_WINDOW_PAD_DAYS = SANDWICH_MAX_BRIDGE_DAYS + 1;
+
+/**
+ * The weekend/holiday days OF THIS MONTH that get billed as leave because the
+ * employee was off on both sides of them.
+ *
+ * Walks a padded window, finds every unbroken run of non-working days, and
+ * keeps the runs whose immediate neighbours are both anchors. A run the
+ * employee actually clocked into is left alone.
+ */
+export function computeSandwichDates(ctx: PayrollContext): ReadonlySet<string> {
+  const sandwiched = new Set<string>();
+  const monthDays = monthDateKeys(ctx.year, ctx.monthIndex);
+  if (monthDays.length === 0) return sandwiched;
+
+  const windowEnd = shiftDateKey(monthDays[monthDays.length - 1], SANDWICH_WINDOW_PAD_DAYS);
+  let cursor = shiftDateKey(monthDays[0], -SANDWICH_WINDOW_PAD_DAYS);
+
+  while (cursor <= windowEnd) {
+    if (!isBridgeableDay(cursor, ctx.holidays)) {
+      cursor = shiftDateKey(cursor, 1);
+      continue;
+    }
+
+    const run: string[] = [];
+    while (cursor <= windowEnd && isBridgeableDay(cursor, ctx.holidays)) {
+      run.push(cursor);
+      cursor = shiftDateKey(cursor, 1);
+    }
+
+    if (run.length > SANDWICH_MAX_BRIDGE_DAYS) continue;
+    // A run touching the window edge has an unknown neighbour, so the lookups
+    // below miss and it is correctly left alone.
+    if (!ctx.sandwichAnchorDates.has(shiftDateKey(run[0], -1))) continue;
+    if (!ctx.sandwichAnchorDates.has(shiftDateKey(run[run.length - 1], 1))) continue;
+
+    for (const date of run) {
+      if (date.startsWith(`${ctx.month}-`) && !ctx.workedDates.has(date)) sandwiched.add(date);
+    }
+  }
+
+  return sandwiched;
 }
 
 // ─── Money helpers ───────────────────────────────────────────────────────────
@@ -232,6 +336,25 @@ export function formatDays(days: number) {
 // ─── Factors ─────────────────────────────────────────────────────────────────
 
 /**
+ * Spends `needed` days of the quarterly allowance and reports what that bought.
+ * Whatever the quota could not cover is deducted. Days are settled in calendar
+ * order, so the earliest leave in a quarter is the one that gets paid.
+ */
+function spendLeaveQuota(
+  state: PayrollState,
+  needed: number,
+  labels: { paid: string; unpaid: string },
+): PayrollDayVerdict {
+  const covered = Math.min(state.quotaLeft, needed);
+  state.quotaLeft = Math.max(0, state.quotaLeft - covered);
+  const uncovered = Math.max(0, needed - covered);
+
+  return uncovered <= 0
+    ? { kind: "paid-leave", label: labels.paid, deduct: 0 }
+    : { kind: "unpaid-leave", label: labels.unpaid, deduct: uncovered };
+}
+
+/**
  * Ordered. The first `classify` that returns non-null owns the day.
  * Append new factors here — put a factor ABOVE the ones it should override.
  */
@@ -246,6 +369,22 @@ export const PAYROLL_FACTORS: PayrollFactor[] = [
         : null,
   },
   {
+    // Sits ABOVE weekend/holiday on purpose: it exists precisely to overrule
+    // them on the days it claims.
+    id: "sandwich-leave",
+    label: "Sandwich leave",
+    description:
+      "A weekend or holiday with leave/absence on BOTH sides is billed as leave — " +
+      "off Friday and Monday and the weekend between them counts too.",
+    classify: (date, _ctx, state) =>
+      state.sandwichDates.has(date)
+        ? spendLeaveQuota(state, 1, {
+            paid: "Paid Leave — Sandwich",
+            unpaid: "Unpaid Leave — Sandwich (quarter quota used)",
+          })
+        : null,
+  },
+  {
     id: "weekend",
     label: "Weekend",
     description: "Saturday and Sunday are always paid and never deducted.",
@@ -256,8 +395,10 @@ export const PAYROLL_FACTORS: PayrollFactor[] = [
     id: "holiday",
     label: "Public holiday",
     description: "Listed company holidays are paid non-working days.",
-    classify: date =>
-      isHoliday(date) ? { kind: "holiday", label: "Public holiday (paid)", deduct: 0 } : null,
+    classify: (date, ctx) => {
+      const name = holidayName(date, ctx.holidays);
+      return name ? { kind: "holiday", label: `${name} (paid holiday)`, deduct: 0 } : null;
+    },
   },
   {
     id: "upcoming",
@@ -281,19 +422,10 @@ export const PAYROLL_FACTORS: PayrollFactor[] = [
       const leave = ctx.leaveByDate.get(date);
       if (!leave) return null;
 
-      const needed = leave.days;
-      const covered = Math.min(state.quotaLeft, needed);
-      state.quotaLeft = Math.max(0, state.quotaLeft - covered);
-      const uncovered = Math.max(0, needed - covered);
-
-      if (uncovered <= 0) {
-        return { kind: "paid-leave", label: `Paid Leave — ${leave.leaveType}`, deduct: 0 };
-      }
-      return {
-        kind: "unpaid-leave",
-        label: `Unpaid Leave — ${leave.leaveType} (quarter quota used)`,
-        deduct: uncovered,
-      };
+      return spendLeaveQuota(state, leave.days, {
+        paid: `Paid Leave — ${leave.leaveType}`,
+        unpaid: `Unpaid Leave — ${leave.leaveType} (quarter quota used)`,
+      });
     },
   },
   {
@@ -311,7 +443,12 @@ export function computeMonthlyPayroll(
   identity: { employeeId: string; employeeName: string },
   factors: PayrollFactor[] = PAYROLL_FACTORS,
 ): PayrollResult {
-  const state: PayrollState = { quotaLeft: ctx.quotaAtMonthStart };
+  const state: PayrollState = {
+    quotaLeft: ctx.quotaAtMonthStart,
+    // Needs the whole month in view, so it is resolved once up front rather
+    // than day by day inside the factor.
+    sandwichDates: computeSandwichDates(ctx),
+  };
   const days: PayrollDay[] = [];
 
   for (const date of monthDateKeys(ctx.year, ctx.monthIndex)) {
@@ -411,8 +548,13 @@ function inclusiveDateKeys(startDate: string, endDate: string) {
  * A single-date request logged as 0.5 days becomes a half day; everything else
  * is one full day per working day in the range.
  */
-export function expandLeaveDays(request: PayrollLeaveInput): PayrollLeaveDay[] {
-  const workingDays = inclusiveDateKeys(request.startDate, request.endDate).filter(isWorkingDay);
+export function expandLeaveDays(
+  request: PayrollLeaveInput,
+  holidays: HolidayCalendar,
+): PayrollLeaveDay[] {
+  const workingDays = inclusiveDateKeys(request.startDate, request.endDate).filter(date =>
+    isWorkingDay(date, holidays),
+  );
   if (workingDays.length === 0) return [];
 
   const isHalfDay = workingDays.length === 1 && request.days > 0 && request.days < 1;
@@ -447,12 +589,14 @@ export function buildPayrollForEmployee(input: {
   monthIndex: number;
   attendance: PayrollAttendanceInput[];
   leaveRequests: PayrollLeaveInput[];
+  /** HR's calendar from `public_holidays`. Never pass an empty map as a
+   *  stand-in for "still loading" — every holiday would bill as an absence. */
+  holidays: HolidayCalendar;
   today?: string;
 }): PayrollResult {
-  const { profile, year, monthIndex } = input;
+  const { profile, year, monthIndex, holidays } = input;
   const today = input.today ?? toDateKey(new Date());
   const month = monthKey(year, monthIndex);
-  const monthPrefix = `${month}-`;
 
   const idMatch = profile.id;
   const nameMatch = normalizeName(profile.name);
@@ -461,9 +605,16 @@ export function buildPayrollForEmployee(input: {
     (!employeeId && normalizeName(employeeName) === nameMatch) ||
     normalizeName(employeeName) === nameMatch;
 
+  // Padded either side of the month so a Fri–Mon sandwich spanning the
+  // boundary can see both of its anchors. `input.attendance` must cover this
+  // window too, or the extra days read as absences.
+  const monthDays = monthDateKeys(year, monthIndex);
+  const windowStart = shiftDateKey(monthDays[0], -SANDWICH_WINDOW_PAD_DAYS);
+  const windowEnd = shiftDateKey(monthDays[monthDays.length - 1], SANDWICH_WINDOW_PAD_DAYS);
+
   const workedDates = new Set<string>();
   for (const entry of input.attendance) {
-    if (!entry.date.startsWith(monthPrefix)) continue;
+    if (entry.date < windowStart || entry.date > windowEnd) continue;
     if (belongsToEmployee(entry.employeeId, entry.employee)) workedDates.add(entry.date);
   }
 
@@ -476,7 +627,7 @@ export function buildPayrollForEmployee(input: {
   let quotaUsedBeforeMonth = 0;
 
   for (const request of approved) {
-    for (const day of expandLeaveDays(request)) {
+    for (const day of expandLeaveDays(request, holidays)) {
       const dayMonth = day.date.slice(0, 7);
       if (dayMonth === month) {
         // A day already claimed by an earlier request keeps the larger claim.
@@ -489,6 +640,20 @@ export function buildPayrollForEmployee(input: {
   }
 
   const quotaAtMonthStart = Math.max(0, PAID_LEAVE_QUOTA_PER_QUARTER - quotaUsedBeforeMonth);
+  const joinedOn = parseJoinedDate(profile.joined);
+
+  // Anything the employee owed us a day for and did not deliver — approved
+  // leave and plain absence alike — can anchor a sandwich. Absence has to
+  // count, or skipping the leave form would be the cheaper way to take a long
+  // weekend.
+  const sandwichAnchorDates = new Set<string>();
+  for (const date of inclusiveDateKeys(windowStart, windowEnd)) {
+    if (!isWorkingDay(date, holidays)) continue;
+    if (date > today) continue;
+    if (joinedOn && date < joinedOn) continue;
+    if (workedDates.has(date)) continue;
+    sandwichAnchorDates.add(date);
+  }
 
   const ctx: PayrollContext = {
     month,
@@ -499,8 +664,10 @@ export function buildPayrollForEmployee(input: {
     baseSalary: parseSalaryAmount(profile.salary) ?? 0,
     workedDates,
     leaveByDate,
+    sandwichAnchorDates,
+    holidays,
     quotaAtMonthStart,
-    joinedOn: parseJoinedDate(profile.joined),
+    joinedOn,
   };
 
   const result = computeMonthlyPayroll(ctx, {
