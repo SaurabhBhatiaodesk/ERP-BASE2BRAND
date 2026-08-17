@@ -17,7 +17,7 @@ import {
   addProjectTask,
   deleteProjectTask,
   clockRangeForDate,
-  clockSessionsToAttendanceWindows,
+  clockSessionsToTaskTimerWindows,
   createLead,
   fetchEmployeeHistoricalSessions,
   fetchTeamClockSessionsByDate,
@@ -1243,8 +1243,10 @@ export function TasksView({
     };
   }, [refreshClockSessions]);
 
+  // Step-In windows, not raw attendance: a ticket's clock must not advance
+  // during meetings, lunch, breaks, or after Day End / logout.
   const attendanceWindows = useMemo(
-    () => clockSessionsToAttendanceWindows(clockSessions),
+    () => clockSessionsToTaskTimerWindows(clockSessions),
     [clockSessions],
   );
 

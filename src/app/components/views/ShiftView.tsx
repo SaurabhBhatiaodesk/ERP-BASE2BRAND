@@ -15,7 +15,7 @@ import {
   initialsFromName,
   isClockSessionsTableReady,
   isTaskInKanbanListForDate,
-  clockSessionsToAttendanceWindows,
+  clockSessionsToTaskTimerWindows,
   findProfileForUser,
   type AttendanceTimeWindow,
   type ClockSessionRecord,
@@ -350,9 +350,12 @@ function TaskStageList({ tasks, max = 4, large = false, targetDate }: { tasks: S
             large ? "px-3 py-2.5 shadow-sm shadow-black/20" : "px-2 py-1.5"
           }`}
         >
-          <p className={`text-white font-['Plus_Jakarta_Sans'] font-semibold leading-snug mb-1.5 ${
-            large ? "text-xs" : "text-[10px]"
-          }`}>
+          <p
+            title={task.title}
+            className={`text-white font-['Plus_Jakarta_Sans'] font-semibold leading-snug mb-1.5 break-words ${
+              large ? "text-xs line-clamp-2" : "text-[10px] truncate"
+            }`}
+          >
             {task.title}
           </p>
           <TaskStageGrid task={task} compact={!large} targetDate={targetDate} />
@@ -433,7 +436,12 @@ function TaskStageDetail({
         <div className="flex items-start gap-3 min-w-0">
           <Timer size={large ? 18 : 14} className="text-amber-400 shrink-0 mt-0.5" />
           <div className="min-w-0">
-            <p className={`font-semibold text-white font-['Plus_Jakarta_Sans'] ${large ? "text-sm leading-snug" : "text-xs truncate"}`}>
+            <p
+              title={task.title}
+              className={`font-semibold text-white font-['Plus_Jakarta_Sans'] break-words ${
+                large ? "text-sm leading-snug line-clamp-2" : "text-xs truncate"
+              }`}
+            >
               {task.title}
             </p>
             <p className={`text-[#8fa0c4] font-['Geist_Mono'] mt-1 ${large ? "text-xs" : "text-[10px]"}`}>
@@ -973,7 +981,10 @@ export function EmployeeDetailPanel({
                 <CheckSquare size={16} className="text-indigo-400 shrink-0 mt-0.5" />
                 <div className="min-w-0">
                   <span className="text-[#8fa0c4] text-sm block">Current task</span>
-                  <span className="text-white font-semibold font-['Plus_Jakarta_Sans'] text-sm leading-snug">
+                  <span
+                    title={emp.workTasks[0]?.title || "Not started (move to In Progress)"}
+                    className="text-white font-semibold font-['Plus_Jakarta_Sans'] text-sm leading-snug line-clamp-2 break-words"
+                  >
                     {emp.workTasks[0]?.title || "Not started (move to In Progress)"}
                   </span>
                 </div>
@@ -987,7 +998,13 @@ export function EmployeeDetailPanel({
                     </span>
                     <div className="space-y-1 mt-1">
                       {emp.trackedTasks.filter(t => t.status === "todo").map(t => (
-                        <p key={t.taskId} className="text-slate-200 text-sm font-['Geist_Mono'] leading-snug">{t.title}</p>
+                        <p
+                          key={t.taskId}
+                          title={t.title}
+                          className="text-slate-200 text-sm font-['Geist_Mono'] leading-snug truncate"
+                        >
+                          {t.title}
+                        </p>
                       ))}
                     </div>
                   </div>
@@ -1001,7 +1018,7 @@ export function EmployeeDetailPanel({
               <div className="flex items-center gap-3 min-w-0">
                 <Globe size={16} className="text-cyan-400 shrink-0" />
                 <span className="text-[#8fa0c4] text-sm shrink-0">Screen:</span>
-                <span className="text-indigo-300 text-sm truncate font-['Geist_Mono']">{emp.currentScreen}</span>
+                <span title={emp.currentScreen} className="text-indigo-300 text-sm truncate font-['Geist_Mono']">{emp.currentScreen}</span>
               </div>
             </div>
             <div className="space-y-3.5">
@@ -1272,8 +1289,10 @@ export function ShiftView({
     () => new Date().toLocaleDateString("en-CA") // "YYYY-MM-DD" local time
   );
 
-  const attendanceWindows = useMemo(
-    () => clockSessionsToAttendanceWindows(sessions),
+  // Step-In windows, not raw attendance: task timers must not advance during
+  // meetings, lunch, breaks, or after Day End / logout.
+  const taskTimerWindows = useMemo(
+    () => clockSessionsToTaskTimerWindows(sessions),
     [sessions]
   );
 
@@ -1385,6 +1404,7 @@ export function ShiftView({
         workTasksInput: workTasks,
         trackedTasksInput: trackedTasks,
         timelineAxis,
+        taskTimerWindows,
       });
     });
     list.sort((a, b) => a.name.localeCompare(b.name));
@@ -1730,7 +1750,7 @@ export function ShiftView({
                   emp={emp}
                   nowMin={nowMin}
                   targetDate={targetDate}
-                  attendanceSessions={attendanceWindows}
+                  attendanceSessions={taskTimerWindows}
                   allTasks={tasks}
                 />
               </div>
@@ -1743,7 +1763,10 @@ export function ShiftView({
                   </div>
                   <span className={`text-xs font-bold font-['Geist_Mono'] ${emp.productivity >= 90 ? "text-emerald-400" : emp.productivity >= 75 ? "text-indigo-400" : "text-amber-400"}`}>{emp.productivity}%</span>
                 </div>
-                <p className="text-[10px] text-[#6b7fa8] truncate font-['Geist_Mono']">
+                <p
+                  title={emp.workTasks[0]?.title || undefined}
+                  className="text-[10px] text-[#6b7fa8] truncate font-['Geist_Mono']"
+                >
                   {emp.workTasks[0]?.title
                     || (emp.trackedTasks.some(t => t.status === "todo")
                       ? `${emp.trackedTasks.filter(t => t.status === "todo").length} in To Do`
@@ -1789,7 +1812,7 @@ export function ShiftView({
                 ? cumulativeTaskStageTotals(
                     currentWorkTask,
                     emp.id,
-                    attendanceWindows,
+                    taskTimerWindows,
                   )
                 : null;
               
@@ -1812,12 +1835,24 @@ export function ShiftView({
                     <div className={`flex items-start gap-2 text-xs font-['Geist_Mono'] ${meta.color}`}>
                       <span className={`shrink-0 w-2 h-2 mt-1 rounded-full ${meta.bg} shadow-[0_0_8px_currentColor] ${emp.status === "working" ? "animate-pulse" : "opacity-80"}`} />
                       <div className="flex flex-col flex-1 min-w-0">
-                        <span className="whitespace-normal break-words leading-snug font-semibold drop-shadow-sm" style={{ wordBreak: 'break-word' }}>
-                          {emp.status === "working"
-                            ? (emp.workTasks[0]?.title
-                              || (emp.trackedTasks.length > 0 ? "Clocked in — task not started" : "Clocked in"))
-                            : (emp.status === "idle" && (emp.idleDurationMins || 0) > 0 ? `Not at desk for ${emp.idleDurationMins}m` : meta.label)}
-                        </span>
+                        {(() => {
+                          const statusText =
+                            emp.status === "working"
+                              ? (emp.workTasks[0]?.title
+                                || (emp.trackedTasks.length > 0 ? "Clocked in — task not started" : "Clocked in"))
+                              : (emp.status === "idle" && (emp.idleDurationMins || 0) > 0 ? `Not at desk for ${emp.idleDurationMins}m` : meta.label);
+                          return (
+                            // Clamped: a long task title used to wrap freely here and
+                            // stretch the whole row. Full text on hover.
+                            <span
+                              title={statusText}
+                              className="line-clamp-2 break-words leading-snug font-semibold drop-shadow-sm"
+                              style={{ wordBreak: "break-word" }}
+                            >
+                              {statusText}
+                            </span>
+                          );
+                        })()}
                         {emp.status === "working" && currentWorkTaskTimeSum > 0 && (
                           <span className="text-[10px] font-bold text-indigo-300 mt-2 bg-indigo-500/20 border border-indigo-500/30 px-2 py-1 rounded shadow-sm w-fit tracking-wide uppercase">
                             Task Time: {formatStageDuration(currentWorkTaskTimeSum)}
@@ -1854,7 +1889,7 @@ export function ShiftView({
           nowMin={nowMin}
           allTasks={tasks}
           targetDate={targetDate}
-          attendanceSessions={attendanceWindows}
+          attendanceSessions={taskTimerWindows}
         />
       )}
     </div>

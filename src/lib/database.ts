@@ -3681,6 +3681,50 @@ export function isEmployeeTimerSegment(seg: ClockSessionSegment): boolean {
   return false;
 }
 
+/**
+ * Task (ticket) timers run ONLY while the employee is stepped in.
+ *
+ * Stricter than `isEmployeeTimerSegment`: a meeting is attendance, but it is
+ * not work on a ticket, so it does not advance any task's stage clock. Idle
+ * still counts — the employee is at their desk, just briefly inactive.
+ *
+ *   working      → counts (Step In)
+ *   idle         → counts
+ *   meeting      → STOPS the task timer
+ *   lunch_break  → STOPS
+ *   break        → STOPS (unless it is a legacy idle pause)
+ *   no session   → STOPS (logged out, Day End, weekend, on leave)
+ */
+export function isStepInSegment(seg: ClockSessionSegment): boolean {
+  if (seg.kind === "working" || seg.kind === "idle") return true;
+  if (seg.kind === "break") {
+    const label = seg.label.toLowerCase();
+    return label.includes("idle") || seg.label === "System Idle";
+  }
+  return false;
+}
+
+/**
+ * Cutover for the Step-In-only task timer rule (local time).
+ *
+ * Time logged BEFORE this instant keeps the old counting rule, so historical
+ * reports and Kanban totals do not silently shrink. From here on, meetings and
+ * breaks no longer advance a ticket's clock. Segments are classified by their
+ * start, so a meeting already running at the cutover is grandfathered whole.
+ */
+export const TASK_TIMER_STEP_IN_ONLY_FROM = "2026-08-17T00:00:00";
+
+const TASK_TIMER_STEP_IN_ONLY_FROM_MS = new Date(TASK_TIMER_STEP_IN_ONLY_FROM).getTime();
+
+/** Applies the strict rule only to segments that started on/after the cutover. */
+export function countsTowardTaskTimer(seg: ClockSessionSegment): boolean {
+  const startedMs = new Date(seg.startedAt).getTime();
+  if (Number.isNaN(startedMs) || startedMs < TASK_TIMER_STEP_IN_ONLY_FROM_MS) {
+    return isEmployeeTimerSegment(seg);
+  }
+  return isStepInSegment(seg);
+}
+
 /** Same total as employee dashboard timer — working + meeting + idle (live open segments included). */
 export function calculateSessionAttendanceSeconds(
   session: ClockSessionRecord,
@@ -3735,13 +3779,18 @@ export type AttendanceTimeWindow = {
   clockOut: string | null;
 };
 
-/** Clock-in windows for task-time overlap (working + meeting + idle segments). */
-export function clockSessionsToAttendanceWindows(sessions: ClockSessionRecord[]): AttendanceTimeWindow[] {
+function sessionsToWindows(
+  sessions: ClockSessionRecord[],
+  accepts: (seg: ClockSessionSegment) => boolean,
+): AttendanceTimeWindow[] {
   const windows: AttendanceTimeWindow[] = [];
   for (const session of sessions) {
-    const segments = session.segments?.filter(isEmployeeTimerSegment) ?? [];
-    if (segments.length > 0) {
-      for (const seg of segments) {
+    // Only fall back to the whole session when NOTHING was recorded. A session
+    // whose segments were all rejected (e.g. a meeting-only afternoon) must
+    // contribute no window at all — not the entire clocked-in span.
+    if (session.segments?.length) {
+      for (const seg of session.segments) {
+        if (!accepts(seg)) continue;
         windows.push({
           employeeId: session.employeeId,
           clockIn: seg.startedAt,
@@ -3757,6 +3806,24 @@ export function clockSessionsToAttendanceWindows(sessions: ClockSessionRecord[])
     }
   }
   return windows;
+}
+
+/** Clock-in windows for attendance totals (working + meeting + idle segments). */
+export function clockSessionsToAttendanceWindows(sessions: ClockSessionRecord[]): AttendanceTimeWindow[] {
+  return sessionsToWindows(sessions, isEmployeeTimerSegment);
+}
+
+/**
+ * Step-In windows for task (ticket) stage timers — the same clocked-in spans
+ * minus meetings and breaks. Outside these windows no task advances its clock,
+ * which is what stops the timer on logout, Day End, lunch, meetings, weekends
+ * and leave (none of those produce a Step-In segment).
+ *
+ * Legacy sessions with no segments at all still fall back to the whole
+ * session, so pre-segment history keeps its clocked-in bound.
+ */
+export function clockSessionsToTaskTimerWindows(sessions: ClockSessionRecord[]): AttendanceTimeWindow[] {
+  return sessionsToWindows(sessions, countsTowardTaskTimer);
 }
 
 /** Total employee dashboard timer today in seconds (office + meeting + idle). */

@@ -378,12 +378,16 @@ export function applyOptimisticTaskStatusMove(
   };
 }
 
+/**
+ * Sums the per-task totals that `buildShiftActiveTasks` already computed —
+ * deliberately NOT a re-aggregation, so the Step-In scoping applied there is
+ * not silently dropped and time is not counted outside working hours.
+ */
 export function aggregateEmployeeStageTotals(tasks: ShiftActiveTask[]): Record<string, number> {
   const totals: Record<string, number> = {};
   for (const task of tasks) {
-    const taskTotals = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt);
     for (const status of STAGE_ORDER) {
-      totals[status] = (totals[status] || 0) + (taskTotals[status] || 0);
+      totals[status] = (totals[status] || 0) + (task.stageTotals[status] || 0);
     }
   }
   return totals;
@@ -469,10 +473,32 @@ export function effectiveStatusEnteredAt(task: Pick<AppTask, "statusEnteredAt" |
   return task.statusEnteredAt || task.createdAt || "";
 }
 
-export function buildShiftActiveTask(task?: AppTask | null): ShiftActiveTask | null {
+/**
+ * Scoping for a shift-tracker task. Pass the employee's Step-In windows
+ * (`clockSessionsToTaskTimerWindows`) so stage time only accrues while they
+ * were actually stepped in — without them the clock runs through logout,
+ * weekends and leave.
+ */
+export type TaskTimerScope = {
+  assigneeId?: string | null;
+  attendanceSessions?: AttendanceOverlapWindow[];
+  targetDate?: string;
+};
+
+export function buildShiftActiveTask(
+  task?: AppTask | null,
+  scope?: TaskTimerScope,
+): ShiftActiveTask | null {
   if (!task) return null;
   const statusEnteredAt = effectiveStatusEnteredAt(task);
-  const totals = aggregateStageSeconds(task.stageHistory, task.status, statusEnteredAt);
+  const totals = aggregateStageSeconds(
+    task.stageHistory,
+    task.status,
+    statusEnteredAt,
+    scope?.targetDate,
+    scope?.assigneeId,
+    scope?.attendanceSessions,
+  );
   return {
     taskId: task.taskId,
     title: task.title,
@@ -494,8 +520,13 @@ function isTaskTrackedToday(task: AppTask) {
   return d.toDateString() === now.toDateString();
 }
 
-export function buildShiftActiveTasks(tasks: AppTask[]): ShiftActiveTask[] {
-  return tasks.map(buildShiftActiveTask).filter((t): t is ShiftActiveTask => t != null);
+export function buildShiftActiveTasks(
+  tasks: AppTask[],
+  scope?: TaskTimerScope,
+): ShiftActiveTask[] {
+  return tasks
+    .map(task => buildShiftActiveTask(task, scope))
+    .filter((t): t is ShiftActiveTask => t != null);
 }
 
 const TASK_STATUS_SORT_RANK: Record<string, number> = {

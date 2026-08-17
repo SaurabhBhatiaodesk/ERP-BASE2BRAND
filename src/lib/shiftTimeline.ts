@@ -1,7 +1,12 @@
 import type { ClockSessionRecord, ClockSessionSegment } from "./database";
 import type { ActivityKind, ShiftEmployee, TimelineBlock } from "@/app/components/views/ShiftView";
 import type { AppTask } from "./database";
-import { buildShiftActiveTasks, aggregateStageSeconds, shortStageLabel, type ShiftActiveTask } from "./taskStageTime";
+import {
+  buildShiftActiveTasks,
+  shortStageLabel,
+  type AttendanceOverlapWindow,
+  type ShiftActiveTask,
+} from "./taskStageTime";
 import {
   SHIFT_DURATION,
   DEFAULT_TIMELINE_AXIS,
@@ -232,9 +237,10 @@ export function calcProductivity(
   
   let productive = 0;
   if (trackedTasks && trackedTasks.length > 0) {
+    // Use the totals already computed under Step-In scoping — re-aggregating
+    // here would drop that scoping and count time outside working hours.
     productive = trackedTasks.reduce((sum, task) => {
-      const totals = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, targetDate);
-      const activeSecs = (totals["in-progress"] || 0) + (totals["progress"] || 0);
+      const activeSecs = (task.stageTotals["in-progress"] || 0) + (task.stageTotals["progress"] || 0);
       return sum + (activeSecs / 60);
     }, 0);
   } else {
@@ -286,14 +292,18 @@ export function buildShiftEmployee(input: {
   trackedTasksInput?: AppTask[];
   targetDate?: string;
   timelineAxis?: TimelineAxis;
+  /** Step-In windows from `clockSessionsToTaskTimerWindows` — without them
+   *  task timers keep running through logout, breaks, weekends and leave. */
+  taskTimerWindows?: AttendanceOverlapWindow[];
 }): ShiftEmployee & { profileImageUrl?: string } {
   const {
     id, name, avatar, role, dept, session, currentTask = "—", profileImageUrl, shiftStart,
     lastActiveAt, workTasksInput = [], trackedTasksInput = [], targetDate,
-    timelineAxis = DEFAULT_TIMELINE_AXIS,
+    timelineAxis = DEFAULT_TIMELINE_AXIS, taskTimerWindows,
   } = input;
-  const workTasks = buildShiftActiveTasks(workTasksInput);
-  const trackedTasks = buildShiftActiveTasks(trackedTasksInput);
+  const taskScope = { assigneeId: id, attendanceSessions: taskTimerWindows, targetDate };
+  const workTasks = buildShiftActiveTasks(workTasksInput, taskScope);
+  const trackedTasks = buildShiftActiveTasks(trackedTasksInput, taskScope);
   const workTask = workTasks[0] ?? null;
   const taskTitle = workTask?.title || currentTask;
   const shiftStartMin = parseShiftStartMinutes(shiftStart);
