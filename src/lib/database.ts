@@ -6016,3 +6016,347 @@ export async function dispatchPushNotification(record: AppNotification | Record<
   }
 }
 
+// ==========================================
+// Meetings
+// ==========================================
+
+export type MeetingStatus = "scheduled" | "ongoing" | "completed" | "cancelled";
+
+export type Meeting = {
+  id: string;
+  title: string;
+  type: string;
+  platform: string;
+  meeting_link: string | null;
+  date: string;              // "YYYY-MM-DD"
+  start_time: string;        // "HH:MM"
+  end_time?: string;         // computed: start_time + duration_minutes (not stored in DB)
+  duration_minutes: number;  // actual DB column name
+  duration_mins: number;     // alias for convenience (same value)
+  status: MeetingStatus;
+  organizer_id: string;
+  organizer_name?: string;
+  agenda: string | null;
+  created_at: string;
+  participants: MeetingParticipant[];
+};
+
+export type MeetingParticipant = {
+  id: string;
+  meeting_id: string;
+  participant_id: string;
+  participant_name?: string;
+  participant_avatar?: string;
+  added_at: string;
+};
+
+export type CreateMeetingInput = {
+  title: string;
+  type: string;
+  platform: string;
+  meeting_link?: string;
+  date: string;
+  start_time: string;
+  duration_mins: number;
+  organizer_id: string;
+  organizer_name: string;
+  participant_ids: string[];
+  agenda?: string;
+};
+
+export type UpdateMeetingInput = Partial<Omit<CreateMeetingInput, "organizer_id" | "organizer_name">> & {
+  organizer_name?: string;
+  new_participant_ids?: string[];
+};
+
+/**
+ * Fetch all meetings visible to a user (organizer + participant).
+ * Returns meetings with their participants joined.
+ */
+export async function fetchMeetings(userId: string): Promise<Meeting[]> {
+  if (!userId) return [];
+
+  // Fetch ALL meetings where user is organizer OR in participant_ids jsonb array
+  // We fetch all and filter client-side to avoid complex PostgREST jsonb queries
+  const { data: meetingRows, error: mErr } = await supabase
+    .from("meetings")
+    .select("*")
+    .order("date", { ascending: true });
+
+  if (mErr) {
+    console.error("fetchMeetings query error:", mErr);
+    return [];
+  }
+  if (!meetingRows || meetingRows.length === 0) return [];
+
+  // Filter: user is organizer OR user is in participant_ids array
+  const visibleMeetings = (meetingRows as Record<string, unknown>[]).filter(m => {
+    if (m.organizer_id === userId) return true;
+    const pIds = m.participant_ids as string[] | null;
+    if (Array.isArray(pIds) && pIds.includes(userId)) return true;
+    return false;
+  });
+
+  if (visibleMeetings.length === 0) return [];
+
+  // Also try meeting_participants join table for cross-referencing
+  const meetingIds = visibleMeetings.map(m => m.id as string);
+  const { data: allParticipants } = await supabase
+    .from("meeting_participants")
+    .select("*")
+    .in("meeting_id", meetingIds);
+
+  // Fetch profiles to resolve names
+  const profiles = await getDbEmployeeProfiles();
+  const profileMap = new Map(profiles.map(p => [p.id, p]));
+
+  // Helper: normalise start_time to "HH:MM" regardless of "01:00 PM" or "13:00" format
+  function normaliseTime(raw: string | undefined | null): string {
+    if (!raw) return "00:00";
+    const trimmed = raw.trim();
+    // Handle "01:00 PM" / "1:00 AM" style
+    const match12 = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+    if (match12) {
+      let h = parseInt(match12[1], 10);
+      const m = match12[2];
+      const ampm = match12[3].toUpperCase();
+      if (ampm === "PM" && h !== 12) h += 12;
+      if (ampm === "AM" && h === 12) h = 0;
+      return `${String(h).padStart(2, "0")}:${m}`;
+    }
+    // Already "HH:MM"
+    return trimmed;
+  }
+
+  // Helper: normalise status to lowercase
+  function normaliseStatus(raw: unknown): MeetingStatus {
+    const s = String(raw ?? "scheduled").toLowerCase().trim();
+    if (s === "ongoing") return "ongoing";
+    if (s === "completed") return "completed";
+    if (s === "cancelled" || s === "canceled") return "cancelled";
+    return "scheduled";
+  }
+
+  // Assemble
+  return visibleMeetings.map(m => {
+    const organizer = profileMap.get(m.organizer_id as string);
+
+    // Build participants from jsonb array (primary) + join table (fallback)
+    const pIds = (m.participant_ids as string[]) ?? [];
+    const pNames = (m.participant_names as string[]) ?? [];
+    const joinTableRows = ((allParticipants ?? []) as MeetingParticipant[])
+      .filter(p => p.meeting_id === m.id);
+
+    const participants: MeetingParticipant[] = pIds.length > 0
+      ? pIds.map((pid, idx) => {
+          const prof = profileMap.get(pid);
+          return {
+            id: `${m.id}-${pid}`,
+            meeting_id: m.id as string,
+            participant_id: pid,
+            participant_name: prof?.name ?? pNames[idx] ?? "Unknown",
+            participant_avatar: prof?.profile_image_url ?? "",
+            added_at: m.created_at as string,
+          };
+        })
+      : joinTableRows.map(p => {
+          const prof = profileMap.get(p.participant_id);
+          return {
+            ...p,
+            participant_name: prof?.name ?? "Unknown",
+            participant_avatar: prof?.profile_image_url ?? "",
+          };
+        });
+
+    const normStart = normaliseTime(m.start_time as string);
+    const durMins = (m.duration_minutes as number) ?? (m.duration_mins as number) ?? 30;
+    const [h, min] = normStart.split(":").map(Number);
+    const total = h * 60 + (min || 0) + durMins;
+    const computedEndTime = `${String(Math.floor(total / 60) % 24).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+
+    return {
+      ...m,
+      start_time: normStart,
+      end_time: computedEndTime,
+      duration_mins: durMins,
+      duration_minutes: durMins,
+      status: normaliseStatus(m.status),
+      organizer_name: (m.organizer_name as string) || organizer?.name || "Unknown",
+      participants,
+    } as Meeting;
+  });
+}
+
+/**
+ * Create a new meeting and notify all participants.
+ */
+export async function createMeeting(input: CreateMeetingInput): Promise<Meeting | null> {
+  // Resolve participant names for storage
+  const profiles = await getDbEmployeeProfiles();
+  const profileMap = new Map(profiles.map(p => [p.id, p]));
+  const participantNames = input.participant_ids.map(pid => profileMap.get(pid)?.name ?? "Unknown");
+
+  const { data, error } = await supabase
+    .from("meetings")
+    .insert({
+      title: input.title,
+      type: input.type,
+      platform: input.platform,
+      meeting_link: input.meeting_link ?? "",
+      date: input.date,
+      start_time: input.start_time,
+      duration_minutes: input.duration_mins,
+      status: "scheduled",
+      organizer_id: input.organizer_id,
+      organizer_name: input.organizer_name,
+      agenda: input.agenda ?? "",
+      participant_ids: input.participant_ids,
+      participant_names: participantNames,
+    })
+    .select("*")
+    .single();
+
+  if (error || !data) {
+    console.error("createMeeting error:", error);
+    return null;
+  }
+
+  const meetingId = (data as Meeting).id;
+
+  // Insert participant rows into join table
+  if (input.participant_ids.length > 0) {
+    const participantRows = input.participant_ids.map(pid => ({
+      meeting_id: meetingId,
+      participant_id: pid,
+    }));
+    const { error: pErr } = await supabase.from("meeting_participants").insert(participantRows);
+    if (pErr) console.error("createMeeting participants error:", pErr);
+
+    // Notify participants
+    await _sendMeetingNotifications({
+      meetingId,
+      meetingTitle: input.title,
+      organizerId: input.organizer_id,
+      organizerName: input.organizer_name,
+      participantIds: input.participant_ids,
+      action: "invited",
+    });
+  }
+
+  invalidateDataCache("meetings");
+  return data as Meeting;
+}
+
+/**
+ * Update an existing meeting. Pass new_participant_ids to add new attendees.
+ */
+export async function updateMeeting(
+  meetingId: string,
+  input: UpdateMeetingInput,
+  organizerId: string,
+  organizerName: string
+): Promise<boolean> {
+  const patch: Record<string, unknown> = {};
+  if (input.title !== undefined) patch.title = input.title;
+  if (input.type !== undefined) patch.type = input.type;
+  if (input.platform !== undefined) patch.platform = input.platform;
+  if (input.meeting_link !== undefined) patch.meeting_link = input.meeting_link;
+  if (input.date !== undefined) patch.date = input.date;
+  if (input.start_time !== undefined) patch.start_time = input.start_time;
+  if (input.duration_mins !== undefined) patch.duration_minutes = input.duration_mins;
+  if (input.agenda !== undefined) patch.agenda = input.agenda;
+
+  const { error } = await supabase.from("meetings").update(patch).eq("id", meetingId);
+  if (error) {
+    console.error("updateMeeting error:", error);
+    return false;
+  }
+
+  if (input.new_participant_ids && input.new_participant_ids.length > 0) {
+    const rows = input.new_participant_ids.map(pid => ({
+      meeting_id: meetingId,
+      participant_id: pid,
+    }));
+    await supabase.from("meeting_participants").upsert(rows, { onConflict: "meeting_id,participant_id" });
+    await _sendMeetingNotifications({
+      meetingId,
+      meetingTitle: input.title ?? "Meeting",
+      organizerId,
+      organizerName,
+      participantIds: input.new_participant_ids,
+      action: "updated",
+    });
+  }
+
+  invalidateDataCache("meetings");
+  return true;
+}
+
+/** Cancel a meeting (sets status = 'cancelled'). */
+export async function cancelMeeting(meetingId: string): Promise<boolean> {
+  const { error } = await supabase
+    .from("meetings")
+    .update({ status: "cancelled" })
+    .eq("id", meetingId);
+  if (error) {
+    console.error("cancelMeeting error:", error);
+    return false;
+  }
+  invalidateDataCache("meetings");
+  return true;
+}
+
+/** Change a meeting's status (e.g. scheduled → ongoing → completed). */
+export async function updateMeetingStatus(meetingId: string, status: MeetingStatus): Promise<boolean> {
+  const { error } = await supabase
+    .from("meetings")
+    .update({ status })
+    .eq("id", meetingId);
+  if (error) {
+    console.error("updateMeetingStatus error:", error);
+    return false;
+  }
+  invalidateDataCache("meetings");
+  return true;
+}
+
+/** Internal: bulk-notify participants of a meeting event. */
+async function _sendMeetingNotifications({
+  meetingId,
+  meetingTitle,
+  organizerId,
+  organizerName,
+  participantIds,
+  action,
+}: {
+  meetingId: string;
+  meetingTitle: string;
+  organizerId: string;
+  organizerName: string;
+  participantIds: string[];
+  action: "invited" | "updated";
+}): Promise<void> {
+  const recipients = participantIds.filter(id => id !== organizerId);
+  if (recipients.length === 0) return;
+
+  const title =
+    action === "invited"
+      ? `📅 Meeting Invite: ${meetingTitle}`
+      : `📅 Meeting Updated: ${meetingTitle}`;
+  const message =
+    action === "invited"
+      ? `${organizerName} has invited you to a meeting.`
+      : `${organizerName} has updated the meeting details.`;
+
+  const rows = recipients.map(pid => ({
+    recipient_id: pid,
+    sender_id: organizerId,
+    title,
+    message,
+    type: "meeting_invited",
+    reference_id: meetingId,
+  }));
+
+  const { error } = await supabase.from("notifications").insert(rows);
+  if (error) console.error("_sendMeetingNotifications error:", error);
+}

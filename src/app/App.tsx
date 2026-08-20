@@ -10,7 +10,7 @@ import {
   AlertTriangle, ArrowUpRight, Clock, Star, GitBranch,
   DollarSign, UserCheck, Plus, X, Send, Activity,
   Globe, Hash, ChevronRight, Building2, Award, Layers,
-  Timer, Monitor, ChevronLeft, Settings, TrendingUp, LogOut, User, Calendar, Wallet
+  Timer, Monitor, ChevronLeft, Settings, TrendingUp, LogOut, User, Calendar, Wallet, Video
 } from "lucide-react";
 
 // Imported views
@@ -26,6 +26,7 @@ import { PayrollView } from "./components/views/PayrollView";
 import { TimesheetView } from "./components/views/TimesheetView";
 import { ProjectsView } from "./components/views/ProjectsView";
 import { ProjectWorkspaceView } from "./components/views/ProjectWorkspaceView";
+import { MeetingView } from "./components/views/MeetingView";
 import { ThemeSwitcher } from "./components/ThemeSwitcher";
 import { Toaster } from "./components/ui/sonner";
 import { findProfileForUser, isPersonalTaskRole } from "@/lib/database";
@@ -62,6 +63,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "profiles", label: "Employee Profiles", icon: UserCheck },
     { id: "timesheet", label: "Time Sheet", icon: Clock },
     { id: "timereports", label: "Time Reports", icon: Calendar },
+    { id: "meetings", label: "Meetings", icon: Video },
     { id: "productivity", label: "AI Productivity", icon: Monitor },
     { id: "analytics", label: "Analytics", icon: BarChart3 },
     { id: "revenue", label: "Revenue & KPI", icon: DollarSign },
@@ -80,6 +82,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "projects", label: "Projects", icon: Layers },
     { id: "tasks", label: "Tasks", icon: CheckSquare, badge: 2 },
     { id: "shifts", label: "Shift Tracker", icon: Timer },
+    { id: "meetings", label: "Meetings", icon: Video },
     { id: "register", label: "Register / Add", icon: Plus },
     { id: "timesheet", label: "Time Sheet", icon: Clock },
     { id: "chat", label: "Chat", icon: MessageSquare, badge: 4 },
@@ -88,6 +91,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "employee", label: "Dashboard", icon: LayoutDashboard },
     { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "projects", label: "Projects & Work", icon: Layers },
+    { id: "meetings", label: "Meetings", icon: Video },
     { id: "timesheet", label: "Time Reports", icon: Clock },
     { id: "chat", label: "Chat", icon: MessageSquare, badge: 2 },
   ],
@@ -95,6 +99,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "employee", label: "Dashboard", icon: LayoutDashboard },
     { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "projects", label: "Projects & Work", icon: Layers },
+    { id: "meetings", label: "Meetings", icon: Video },
     { id: "timesheet", label: "Time Reports", icon: Clock },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
@@ -103,6 +108,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "designer", label: "Design Hub", icon: Star },
     { id: "projects", label: "Projects & Work", icon: Layers },
+    { id: "meetings", label: "Meetings", icon: Video },
     { id: "timesheet", label: "Time Reports", icon: Clock },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
@@ -111,6 +117,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "marketing", label: "Marketing Hub", icon: TrendingUp },
     { id: "crm", label: "CRM", icon: Briefcase, badge: 3 },
+    { id: "meetings", label: "Meetings", icon: Video },
     { id: "analytics", label: "Analytics", icon: BarChart3 },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
@@ -121,6 +128,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "timesheet", label: "Time Sheet", icon: Clock },
     { id: "hrms", label: "HRMS", icon: Award },
     { id: "payroll", label: "Payroll Dashboard", icon: Wallet },
+    { id: "meetings", label: "Meetings", icon: Video },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
 };
@@ -138,7 +146,7 @@ const viewTitles: Record<string, string> = {
   projects: "Projects & Work", leaves: "Apply Leave",
   settings: "Settings", notifications: "Notifications",
   broadcast: "Broadcast", projectworkspace: "Project", projectdetail: "Project Details", invoices: "Invoices & Billing",
-  copilot: "AI Copilot",
+  copilot: "AI Copilot", meetings: "Meetings & Schedule",
 };
 
 type ChatMessage = { role: "ai" | "user"; text: string };
@@ -382,6 +390,8 @@ export default function App() {
       setActiveView("projects");
     } else if (n.type === "clock_in") {
       setActiveView("shifts");
+    } else if (n.type === "meeting_invited") {
+      setActiveView("meetings");
     }
   };
 
@@ -888,6 +898,13 @@ export default function App() {
       );
       case "invoices": return <InvoiceView />;
       case "copilot": return <AICopilotView />;
+      case "meetings": return (
+        <MeetingView
+          userId={currentProfile?.id ?? ""}
+          userName={userName}
+          userEmail={userEmail}
+        />
+      );
       default: return <CEODashboard userName={userName} userEmail={userEmail} />;
     }
   };
