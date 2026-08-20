@@ -330,6 +330,13 @@ export type LeaveRequest = {
   reportingTo?: string;
 };
 
+/** One row of HR's paid-holiday calendar. `date` is "YYYY-MM-DD". */
+export type PublicHoliday = {
+  id: string;
+  date: string;
+  name: string;
+};
+
 export type AppTask = {
   id: string;
   taskId: string;
@@ -832,6 +839,47 @@ export function formatTaskStatusLabel(status?: string) {
 
 export function normalizeTaskStatusForStorage(status?: string) {
   return mapTaskStatus(status || "todo");
+}
+
+// ─── Public Holidays ────────────────────────────────────────────────────────
+
+/** Holidays change a few times a year — no point re-fetching every 30s. */
+const HOLIDAY_CACHE_TTL = 10 * 60_000;
+
+/**
+ * HR's paid-holiday calendar (`supabase/public_holidays.sql`).
+ *
+ * Unlike most fetchers here this one THROWS instead of falling back to `[]` —
+ * including when the table is missing (42P01). An empty calendar is not a
+ * harmless default for payroll: every public holiday would silently bill as an
+ * absence and dock a day's salary. Callers must surface the failure.
+ */
+export async function fetchPublicHolidays(): Promise<PublicHoliday[]> {
+  return getCached(
+    CACHE_KEYS.publicHolidays,
+    async () => {
+      const { data, error } = await supabase
+        .from("public_holidays")
+        .select("id, holiday_date, name")
+        .order("holiday_date", { ascending: true });
+
+      if (error) {
+        console.error("fetchPublicHolidays error:", error);
+        throw new Error(
+          error.code === "42P01"
+            ? "Holiday calendar table is missing — run supabase/public_holidays.sql."
+            : `Failed to load the holiday calendar: ${error.message}`,
+        );
+      }
+
+      return (data ?? []).map(row => ({
+        id: row.id,
+        date: row.holiday_date,
+        name: row.name,
+      }));
+    },
+    HOLIDAY_CACHE_TTL,
+  );
 }
 
 // ─── Leave Requests ─────────────────────────────────────────────────────────
@@ -4277,7 +4325,7 @@ export async function fetchReportTeamSummaries(
     async () => {
       const [attendanceRows, projectEntries] = await Promise.all([
         loadAttendanceSummaryRows(attendanceFilter),
-        loadTimesheetReportEntries(timesheetFilter),
+        fetchTimesheetEntriesForReport(timesheetFilter),
       ]);
       const { byEmployee: officeMap } = await summarizeAttendanceRows(attendanceRows);
       const map = new Map<string, EmployeeHoursSummary>();
@@ -4611,7 +4659,17 @@ async function loadTimesheetReportEntries(filter: TimesheetReportFilter): Promis
 }
 
 export async function fetchTimesheetEntriesForReport(filter: TimesheetReportFilter): Promise<TimesheetEntry[]> {
-  return getCached(timesheetReportCacheKey(filter), () => loadTimesheetReportEntries(filter), DATA_CACHE_TTL);
+  return getCached(
+    timesheetReportCacheKey(filter),
+    async () => {
+      const entries = await loadTimesheetReportEntries(filter);
+      return applyTimesheetSearch(
+        applyTimesheetProjectFilter(entries, filter.projectId),
+        filter.search,
+      );
+    },
+    DATA_CACHE_TTL,
+  );
 }
 
 /** Paginated in-progress project time for Time Reports. */

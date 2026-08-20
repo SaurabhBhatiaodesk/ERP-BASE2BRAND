@@ -24,6 +24,8 @@ import {
   warmProjectTasksStageHistory,
   fetchTodayTasksForEmployee,
   fetchLeaveRequests,
+  fetchPublicHolidays,
+  type PublicHoliday,
   type Employee,
   type Lead,
   type ClientProfile,
@@ -115,6 +117,21 @@ export function useEmployees() {
 
 export function useLeads() {
   return useQuery(CACHE_KEYS.leads, fetchLeads, [] as Lead[]);
+}
+
+/**
+ * HR's paid-holiday calendar. The `[]` fallback here is only what renders
+ * while `loading` is true or `error` is set — payroll must check both before
+ * trusting it, since an empty calendar bills every holiday as an absence.
+ */
+export function usePublicHolidays() {
+  return useQuery(
+    CACHE_KEYS.publicHolidays,
+    fetchPublicHolidays,
+    [] as PublicHoliday[],
+    [],
+    10 * 60_000,
+  );
 }
 
 export function useATSVacancies() {

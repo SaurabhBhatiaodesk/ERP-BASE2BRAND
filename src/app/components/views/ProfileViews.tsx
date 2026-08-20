@@ -1145,7 +1145,7 @@ export function RegistrationFormsView({
               <label className={labelCls}>Department *</label>
               <select value={empForm.dept} onChange={e => setEmpForm({...empForm, dept: e.target.value})} className={`${selectCls} ${fieldErrors.dept ? "border-rose-500/50" : ""}`}>
                 <option value="">Select department</option>
-                {["Development","Design","Marketing","HR & Operations","Sales","Finance"].map(d => <option key={d} value={d}>{d}</option>)}
+                {["Development","Design","Marketing","HR & Operations","Sales","B2B Campus","Finance"].map(d => <option key={d} value={d}>{d}</option>)}
               </select>
               {fieldErrors.dept && <p className={fieldErrorCls}>{fieldErrors.dept}</p>}
             </div>

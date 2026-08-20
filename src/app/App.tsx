@@ -10,7 +10,7 @@ import {
   AlertTriangle, ArrowUpRight, Clock, Star, GitBranch,
   DollarSign, UserCheck, Plus, X, Send, Activity,
   Globe, Hash, ChevronRight, Building2, Award, Layers,
-  Timer, Monitor, ChevronLeft, Settings, TrendingUp, LogOut, User, Calendar
+  Timer, Monitor, ChevronLeft, Settings, TrendingUp, LogOut, User, Calendar, Wallet
 } from "lucide-react";
 
 // Imported views
@@ -22,6 +22,7 @@ import { TeamLeaderDashboard, EmployeeDashboard, DevDashboard, DesignDashboard, 
 import { AuthScreen, roleColorMap, roleLabelMap } from "./components/AuthScreen";
 import { EmployeeProfilePage, ClientDetailPage, ProductivityTimelineView, RegistrationFormsView } from "./components/views/ProfileViews";
 import { RecruitmentView } from "./components/views/RecruitmentView";
+import { PayrollView } from "./components/views/PayrollView";
 import { TimesheetView } from "./components/views/TimesheetView";
 import { ProjectsView } from "./components/views/ProjectsView";
 import { ProjectWorkspaceView } from "./components/views/ProjectWorkspaceView";
@@ -57,6 +58,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "tasks", label: "Tasks", icon: CheckSquare, badge: 2 },
     { id: "hr", label: "HR & People", icon: Users },
     { id: "hrms", label: "HRMS", icon: Award },
+    { id: "payroll", label: "Payroll Dashboard", icon: Wallet },
     { id: "profiles", label: "Employee Profiles", icon: UserCheck },
     { id: "timesheet", label: "Time Sheet", icon: Clock },
     { id: "timereports", label: "Time Reports", icon: Calendar },
@@ -118,6 +120,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "recruitment", label: "Recruitment", icon: Briefcase },
     { id: "timesheet", label: "Time Sheet", icon: Clock },
     { id: "hrms", label: "HRMS", icon: Award },
+    { id: "payroll", label: "Payroll Dashboard", icon: Wallet },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
 };
@@ -129,7 +132,7 @@ const viewTitles: Record<string, string> = {
   tasks: "Tasks", hr: "HR & People", analytics: "Analytics",
   chat: "Chat", teamlead: "My Team", employee: "My Dashboard",
   developer: "Dev Hub", designer: "Design Hub", marketing: "Marketing Hub",
-  revenue: "Revenue & KPI", hrms: "HRMS",
+  revenue: "Revenue & KPI", hrms: "HRMS", payroll: "Payroll Dashboard",
   profiles: "Employee Profiles", clientdetail: "Client Profiles",
   timesheet: "Time Sheet", timereports: "Time Reports", productivity: "AI Productivity", register: "Register & Add",
   projects: "Projects & Work", leaves: "Apply Leave",
@@ -789,6 +792,7 @@ export default function App() {
       case "recruitment": return <RecruitmentView />;
       case "revenue": return <RevenueKPIView />;
       case "hrms": return <HRMSView />;
+      case "payroll": return <PayrollView userRole={userRole} />;
       case "profiles": return (
         <EmployeeProfilePage
           userName={userName}
