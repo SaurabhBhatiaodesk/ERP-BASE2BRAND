@@ -91,6 +91,7 @@ function getEffectiveStatus(m: Meeting): MeetingStatus {
   const now = new Date();
   const dateTime = (t: string) => new Date(`${m.date}T${t}:00`);
   if (now >= dateTime(m.start_time) && now < dateTime(m.end_time)) return "ongoing";
+  if (now >= dateTime(m.end_time)) return "completed";
   return m.status;
 }
 
