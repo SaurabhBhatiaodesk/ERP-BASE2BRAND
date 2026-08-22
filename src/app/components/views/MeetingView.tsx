@@ -566,7 +566,6 @@ function ScheduleModal({ profiles, organizerId, organizerName, editingMeeting, o
 
   async function handleSave() {
     if (!title.trim()) { toast.error("Meeting title is required"); return; }
-    if (selectedPIds.length === 0) { toast.error("Add at least one participant"); return; }
 
     // Validate that meeting is not in the past
     if (!isEditing) {
@@ -608,7 +607,7 @@ function ScheduleModal({ profiles, organizerId, organizerName, editingMeeting, o
           participant_ids: selectedPIds,
           agenda: agenda || undefined,
         });
-        toast.success("Meeting scheduled! Participants notified.");
+        toast.success(selectedPIds.length > 0 ? "Meeting scheduled! Participants notified." : "Meeting scheduled!");
       }
       onSaved();
       onClose();
@@ -702,7 +701,7 @@ function ScheduleModal({ profiles, organizerId, organizerName, editingMeeting, o
           {/* Duration + End Time */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className={labelCls}>Duration</label>
+              <label className={labelCls}>Duration *</label>
               <select
                 id="meeting-duration"
                 className={inputCls}
@@ -720,7 +719,7 @@ function ScheduleModal({ profiles, organizerId, organizerName, editingMeeting, o
 
           {/* Participants */}
           <div>
-            <label className={labelCls}>Participants *</label>
+            <label className={labelCls}>Participants</label>
             <div className={`${cardCls} overflow-hidden`}>
               <div className="relative">
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#6b7fa8]" />
