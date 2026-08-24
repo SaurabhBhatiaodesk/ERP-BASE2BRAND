@@ -35,7 +35,7 @@
       "target": [
         "nsis"
       ],
-      "icon": "assets/icon.png"
+      "icon": "assets/icon.ico"
     },
     "mac": {
       "target": [
@@ -95,6 +95,7 @@
     "lucide-react": "0.487.0",
     "motion": "12.23.24",
     "next-themes": "0.4.6",
+    "number-to-words": "^1.2.4",
     "react-day-picker": "8.10.1",
     "react-dnd": "16.0.1",
     "react-dnd-html5-backend": "16.0.1",
@@ -104,6 +105,7 @@
     "react-responsive-masonry": "2.7.1",
     "react-router": "7.13.0",
     "react-slick": "0.31.0",
+    "react-to-pdf": "^3.2.2",
     "recharts": "2.15.2",
     "sonner": "2.0.3",
     "tailwind-merge": "3.2.0",
@@ -118,10 +120,12 @@
     "@vitejs/plugin-react": "4.7.0",
     "electron": "^41.7.1",
     "electron-builder": "^26.15.3",
+    "pg": "^8.23.0",
     "tailwindcss": "4.1.12",
     "typescript": "^6.0.3",
     "vite": "6.3.5",
-    "vite-plugin-electron": "^1.0.4"
+    "vite-plugin-electron": "^1.0.4",
+    "ws": "^8.21.3"
   },
   "peerDependencies": {
     "react": "18.3.1",

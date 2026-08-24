@@ -33,7 +33,8 @@ import { findProfileForUser, isPersonalTaskRole } from "@/lib/database";
 import { useEmployeeProfiles } from "@/hooks/useSupabaseData";
 import { Avatar } from "./components/ui";
 import { useChatUnreadCounts } from "@/hooks/useChat";
-import { SettingsPage, NotificationsCenterView, BroadcastView, ProjectDetailPage, InvoiceView } from "./components/views/SettingsViews";
+import { SettingsPage, NotificationsCenterView, BroadcastView, ProjectDetailPage } from "./components/views/SettingsViews";
+import { InvoicingView } from "./components/views/InvoicingView";
 import { AICopilotView } from "./components/views/AICopilotView";
 import { useElectronIdleTracker, IDLE_THRESHOLD_SECS } from "@/hooks/useElectronIdleTracker";
 import { useEmployeeScreenshotCapture } from "@/hooks/useEmployeeScreenshotCapture";
@@ -128,6 +129,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "timesheet", label: "Time Sheet", icon: Clock },
     { id: "hrms", label: "HRMS", icon: Award },
     { id: "payroll", label: "Payroll Dashboard", icon: Wallet },
+    { id: "invoices", label: "Invoices", icon: DollarSign },
     { id: "meetings", label: "Meetings", icon: Video },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
@@ -896,7 +898,7 @@ export default function App() {
           }}
         />
       );
-      case "invoices": return <InvoiceView />;
+      case "invoices": return <InvoicingView userRole={userRole} />;
       case "copilot": return <AICopilotView />;
       case "meetings": return (
         <MeetingView

@@ -684,7 +684,7 @@ function ScheduleModal({ profiles, organizerId, organizerName, editingMeeting, o
                 value={date}
                 min={todayStr()}
                 onChange={e => setDate(e.target.value)}
-              />
+              />.
             </div>
             <div>
               <label className={labelCls}>Start Time *</label>

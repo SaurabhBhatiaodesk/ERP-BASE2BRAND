@@ -6360,3 +6360,591 @@ async function _sendMeetingNotifications({
   const { error } = await supabase.from("notifications").insert(rows);
   if (error) console.error("_sendMeetingNotifications error:", error);
 }
+
+// ==========================================
+// Invoicing
+// ==========================================
+
+export type InvoiceCompany = {
+  id: string;
+  legacy_id: string | null;
+  trade_name: string;
+  company_address: string | null;
+  ifsc: string | null;
+  pan_no: string | null;
+  gst_no: string | null;
+  signature_url: string | null;
+  logo_url: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreateInvoiceCompanyInput = {
+  trade_name: string;
+  company_address?: string;
+  ifsc?: string;
+  pan_no?: string;
+  gst_no?: string;
+  signature_url?: string;
+  logo_url?: string;
+};
+export type UpdateInvoiceCompanyInput = Partial<CreateInvoiceCompanyInput>;
+
+export type InvoiceBankDetail = {
+  id: string;
+  legacy_id: string | null;
+  bank_name: string;
+  account_no: string | null;
+  account_type: string | null;
+  branch_name: string | null;
+  ifsc_code: string | null;
+  swift_code: string | null;
+  account_name: string | null;
+  trade_name: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreateInvoiceBankDetailInput = {
+  bank_name: string;
+  account_no?: string;
+  account_type?: string;
+  branch_name?: string;
+  ifsc_code?: string;
+  swift_code?: string;
+  account_name?: string;
+  trade_name?: string;
+};
+export type UpdateInvoiceBankDetailInput = Partial<CreateInvoiceBankDetailInput>;
+
+export type InvoiceClient = {
+  id: string;
+  legacy_id: string | null;
+  client_name: string;
+  company: string | null;
+  address: string | null;
+  address1: string | null;
+  address2: string | null;
+  email: string | null;
+  mobile_no: string | null;
+  projects: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreateInvoiceClientInput = {
+  client_name: string;
+  company?: string;
+  address?: string;
+  address1?: string;
+  address2?: string;
+  email?: string;
+  mobile_no?: string;
+  projects?: string[];
+};
+export type UpdateInvoiceClientInput = Partial<CreateInvoiceClientInput>;
+
+export type InvoiceLineItem = {
+  project: string;
+  description: string;
+  amount: number;
+};
+
+export type InvoicePaymentOptions = {
+  paytm?: { name: string; id: string };
+  paypal?: { name: string; id: string };
+  wise?: { name: string; id: string };
+  payoneer?: { name: string; id: string };
+};
+
+export type InvoicePaymentStatus = "draft" | "unpaid" | "paid" | "overdue";
+
+export type Invoice = {
+  id: string;
+  legacy_id: string | null;
+  invoice_no: string;
+  invoice_date: string;
+  client_id: string | null;
+  company_id: string | null;
+  bank_id: string | null;
+  line_items: InvoiceLineItem[];
+  currency: string;
+  client_gst_no: string | null;
+  company_gst_no: string | null;
+  amount: number;
+  cgst: number;
+  sgst: number;
+  cgst_percent: number;
+  sgst_percent: number;
+  advance_amount: number;
+  enable_gst: boolean;
+  payment_status: InvoicePaymentStatus;
+  pay_method: string | null;
+  payment_options: InvoicePaymentOptions;
+  signature_url: string | null;
+  company_logo_url: string | null;
+  // Per-invoice bank-detail snapshot — see supabase/invoicing.sql for why these are
+  // real columns rather than always resolved live from invoicing_bank_details (bank
+  // names aren't unique, so a live join can't reliably tell two same-named banks apart).
+  bank_name: string | null;
+  bank_account_no: string | null;
+  bank_branch_name: string | null;
+  bank_account_name: string | null;
+  bank_account_type: string | null;
+  bank_ifsc_code: string | null;
+  bank_swift_code: string | null;
+  created_at: string;
+  updated_at: string;
+  // Resolved client-side for display — not stored columns.
+  client_name?: string;
+  client_company?: string;
+  company_name?: string;
+  company_address?: string;
+  company_pan_no?: string;
+  company_ifsc?: string;
+};
+
+export type CreateInvoiceInput = {
+  invoice_no?: string;
+  invoice_date?: string;
+  client_id?: string;
+  company_id?: string;
+  bank_id?: string;
+  line_items?: InvoiceLineItem[];
+  currency?: string;
+  client_gst_no?: string;
+  company_gst_no?: string;
+  amount?: number;
+  cgst?: number;
+  sgst?: number;
+  cgst_percent?: number;
+  sgst_percent?: number;
+  advance_amount?: number;
+  enable_gst?: boolean;
+  payment_status?: InvoicePaymentStatus;
+  pay_method?: string;
+  payment_options?: InvoicePaymentOptions;
+  signature_url?: string;
+  company_logo_url?: string;
+  bank_name?: string;
+  bank_account_no?: string;
+  bank_branch_name?: string;
+  bank_account_name?: string;
+  bank_account_type?: string;
+  bank_ifsc_code?: string;
+  bank_swift_code?: string;
+};
+export type UpdateInvoiceInput = Partial<CreateInvoiceInput>;
+
+/** Generate a display invoice number, format preserved from the legacy app: B2B/{date}/D{timestamp}. */
+function generateInvoiceNo(invoiceDate?: string): string {
+  const date = invoiceDate || new Date().toISOString().slice(0, 10);
+  return `B2B/${date}/D${Date.now()}`;
+}
+
+// ---- Companies ----
+
+export async function fetchInvoiceCompanies(): Promise<InvoiceCompany[]> {
+  const { data, error } = await supabase
+    .from("invoicing_companies")
+    .select("*")
+    .order("trade_name", { ascending: true });
+  if (error) {
+    console.error("fetchInvoiceCompanies error:", error);
+    return [];
+  }
+  return (data as InvoiceCompany[]) ?? [];
+}
+
+export async function createInvoiceCompany(input: CreateInvoiceCompanyInput): Promise<InvoiceCompany | null> {
+  const { data, error } = await supabase.from("invoicing_companies").insert(input).select("*").single();
+  if (error || !data) {
+    console.error("createInvoiceCompany error:", error);
+    return null;
+  }
+  invalidateDataCache("invoicing_companies");
+  return data as InvoiceCompany;
+}
+
+export async function updateInvoiceCompany(id: string, input: UpdateInvoiceCompanyInput): Promise<boolean> {
+  const { error } = await supabase
+    .from("invoicing_companies")
+    .update({ ...input, updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) {
+    console.error("updateInvoiceCompany error:", error);
+    return false;
+  }
+  invalidateDataCache("invoicing_companies");
+  return true;
+}
+
+export async function deleteInvoiceCompany(id: string): Promise<boolean> {
+  const { error } = await supabase.from("invoicing_companies").delete().eq("id", id);
+  if (error) {
+    console.error("deleteInvoiceCompany error:", error);
+    return false;
+  }
+  invalidateDataCache("invoicing_companies");
+  return true;
+}
+
+// ---- Bank Details ----
+
+export async function fetchInvoiceBankDetails(): Promise<InvoiceBankDetail[]> {
+  const { data, error } = await supabase
+    .from("invoicing_bank_details")
+    .select("*")
+    .order("bank_name", { ascending: true });
+  if (error) {
+    console.error("fetchInvoiceBankDetails error:", error);
+    return [];
+  }
+  return (data as InvoiceBankDetail[]) ?? [];
+}
+
+export async function createInvoiceBankDetail(input: CreateInvoiceBankDetailInput): Promise<InvoiceBankDetail | null> {
+  const { data, error } = await supabase.from("invoicing_bank_details").insert(input).select("*").single();
+  if (error || !data) {
+    console.error("createInvoiceBankDetail error:", error);
+    return null;
+  }
+  invalidateDataCache("invoicing_bank_details");
+  return data as InvoiceBankDetail;
+}
+
+export async function updateInvoiceBankDetail(id: string, input: UpdateInvoiceBankDetailInput): Promise<boolean> {
+  const { error } = await supabase
+    .from("invoicing_bank_details")
+    .update({ ...input, updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) {
+    console.error("updateInvoiceBankDetail error:", error);
+    return false;
+  }
+  invalidateDataCache("invoicing_bank_details");
+  return true;
+}
+
+export async function deleteInvoiceBankDetail(id: string): Promise<boolean> {
+  const { error } = await supabase.from("invoicing_bank_details").delete().eq("id", id);
+  if (error) {
+    console.error("deleteInvoiceBankDetail error:", error);
+    return false;
+  }
+  invalidateDataCache("invoicing_bank_details");
+  return true;
+}
+
+// ---- Clients ----
+
+export async function fetchInvoiceClients(): Promise<InvoiceClient[]> {
+  const { data, error } = await supabase
+    .from("invoicing_clients")
+    .select("*")
+    .order("client_name", { ascending: true });
+  if (error) {
+    console.error("fetchInvoiceClients error:", error);
+    return [];
+  }
+  return (data as InvoiceClient[]) ?? [];
+}
+
+export async function createInvoiceClient(input: CreateInvoiceClientInput): Promise<InvoiceClient | null> {
+  const { data, error } = await supabase
+    .from("invoicing_clients")
+    .insert({ ...input, projects: input.projects ?? [] })
+    .select("*")
+    .single();
+  if (error || !data) {
+    console.error("createInvoiceClient error:", error);
+    return null;
+  }
+  invalidateDataCache("invoicing_clients");
+  return data as InvoiceClient;
+}
+
+export async function updateInvoiceClient(id: string, input: UpdateInvoiceClientInput): Promise<boolean> {
+  const { error } = await supabase
+    .from("invoicing_clients")
+    .update({ ...input, updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) {
+    console.error("updateInvoiceClient error:", error);
+    return false;
+  }
+  invalidateDataCache("invoicing_clients");
+  return true;
+}
+
+export async function deleteInvoiceClient(id: string): Promise<boolean> {
+  const { error } = await supabase.from("invoicing_clients").delete().eq("id", id);
+  if (error) {
+    console.error("deleteInvoiceClient error:", error);
+    return false;
+  }
+  invalidateDataCache("invoicing_clients");
+  return true;
+}
+
+// ---- Invoices ----
+
+/** Fetch all invoices with client/company/bank names resolved for display. */
+export async function fetchInvoices(): Promise<Invoice[]> {
+  const { data, error } = await supabase
+    .from("invoicing_invoices")
+    .select("*")
+    .order("invoice_date", { ascending: false });
+  if (error) {
+    console.error("fetchInvoices error:", error);
+    return [];
+  }
+  const rows = (data as Invoice[]) ?? [];
+  if (rows.length === 0) return [];
+
+  const [clients, companies, banks] = await Promise.all([
+    fetchInvoiceClients(),
+    fetchInvoiceCompanies(),
+    fetchInvoiceBankDetails(),
+  ]);
+  const clientMap = new Map(clients.map(c => [c.id, c]));
+  const companyMap = new Map(companies.map(c => [c.id, c]));
+  const bankMap = new Map(banks.map(b => [b.id, b]));
+
+  return rows.map(row => {
+    const client = row.client_id ? clientMap.get(row.client_id) : undefined;
+    const company = row.company_id ? companyMap.get(row.company_id) : undefined;
+    const bank = row.bank_id ? bankMap.get(row.bank_id) : undefined;
+    return {
+      ...row,
+      client_name: client?.client_name,
+      client_company: client?.company ?? undefined,
+      company_name: company?.trade_name,
+      company_address: company?.company_address ?? undefined,
+      company_pan_no: company?.pan_no ?? undefined,
+      company_ifsc: company?.ifsc ?? undefined,
+      // Prefer this invoice's own snapshot (set at creation/migration time) over the
+      // linked bank record's current values — bank names aren't unique (e.g. multiple
+      // "HDFC Bank" rows), so the live join is only a fallback for older rows without one.
+      bank_name: row.bank_name ?? bank?.bank_name ?? null,
+      bank_account_no: row.bank_account_no ?? bank?.account_no ?? null,
+      bank_branch_name: row.bank_branch_name ?? bank?.branch_name ?? null,
+      bank_account_name: row.bank_account_name ?? bank?.account_name ?? null,
+      bank_account_type: row.bank_account_type ?? bank?.account_type ?? null,
+      bank_ifsc_code: row.bank_ifsc_code ?? bank?.ifsc_code ?? null,
+      bank_swift_code: row.bank_swift_code ?? bank?.swift_code ?? null,
+    };
+  });
+}
+
+export async function createInvoice(input: CreateInvoiceInput): Promise<Invoice | null> {
+  const invoice_date = input.invoice_date || new Date().toISOString().slice(0, 10);
+  const payload = {
+    ...input,
+    invoice_no: input.invoice_no || generateInvoiceNo(invoice_date),
+    invoice_date,
+    line_items: input.line_items ?? [],
+    payment_options: input.payment_options ?? {},
+  };
+  const { data, error } = await supabase.from("invoicing_invoices").insert(payload).select("*").single();
+  if (error || !data) {
+    console.error("createInvoice error:", error);
+    return null;
+  }
+  invalidateDataCache("invoicing_invoices");
+  return data as Invoice;
+}
+
+export async function updateInvoice(id: string, input: UpdateInvoiceInput): Promise<boolean> {
+  const { error } = await supabase
+    .from("invoicing_invoices")
+    .update({ ...input, updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) {
+    console.error("updateInvoice error:", error);
+    return false;
+  }
+  invalidateDataCache("invoicing_invoices");
+  return true;
+}
+
+export async function deleteInvoice(id: string): Promise<boolean> {
+  const { error } = await supabase.from("invoicing_invoices").delete().eq("id", id);
+  if (error) {
+    console.error("deleteInvoice error:", error);
+    return false;
+  }
+  invalidateDataCache("invoicing_invoices");
+  return true;
+}
+
+// ---- Wages / Salary Slips ----
+
+export type InvoiceWage = {
+  id: string;
+  legacy_id: string | null;
+  employee_id: string | null;
+  legacy_employee_name: string | null;
+  legacy_department: string | null;
+  legacy_designation: string | null;
+  legacy_join_date: string | null;
+  legacy_family_member: string | null;
+  legacy_employee_code: string | null;
+  company_id: string | null;
+  basic: number;
+  med: number;
+  children: number;
+  house: number;
+  conveyance: number;
+  earning: number;
+  arrear: number;
+  reimbursement: number;
+  health: number;
+  proftax: number;
+  epf: number;
+  tds: number;
+  days_in_month: number | null;
+  working_days: number | null;
+  casual_leave: number;
+  medical_leave: number;
+  absent: number;
+  salary_period: string;
+  net_salary: number;
+  created_at: string;
+  updated_at: string;
+  // Resolved client-side for display — not stored columns.
+  employee_name?: string;
+  employee_dept?: string;
+  employee_designation?: string;
+  employee_joined?: string;
+  employee_family_member?: string | null;
+  employee_code?: string | null;
+  company_name?: string;
+  company_logo_url?: string | null;
+};
+
+export type CreateInvoiceWageInput = {
+  employee_id?: string;
+  company_id?: string;
+  basic?: number;
+  med?: number;
+  children?: number;
+  house?: number;
+  conveyance?: number;
+  earning?: number;
+  arrear?: number;
+  reimbursement?: number;
+  health?: number;
+  proftax?: number;
+  epf?: number;
+  tds?: number;
+  days_in_month?: number;
+  working_days?: number;
+  casual_leave?: number;
+  medical_leave?: number;
+  absent?: number;
+  salary_period?: string;
+  net_salary?: number;
+  company_logo_url?: string;
+  legacy_department?: string;
+  legacy_designation?: string;
+  legacy_join_date?: string;
+  legacy_family_member?: string;
+  legacy_employee_code?: string;
+};
+export type UpdateInvoiceWageInput = Partial<CreateInvoiceWageInput>;
+
+/** Fetch all wage records with employee/company details resolved for display. */
+export async function fetchInvoiceWages(): Promise<InvoiceWage[]> {
+  const { data, error } = await supabase
+    .from("invoicing_wages")
+    .select("*")
+    .order("salary_period", { ascending: false });
+  if (error) {
+    console.error("fetchInvoiceWages error:", error);
+    return [];
+  }
+  const rows = (data as InvoiceWage[]) ?? [];
+  if (rows.length === 0) return [];
+
+  const employeeIds = [...new Set(rows.map(r => r.employee_id).filter(Boolean))] as string[];
+  const [{ data: profiles }, companies] = await Promise.all([
+    employeeIds.length > 0
+      ? supabase
+          .from("employee_profiles")
+          .select("id, name, dept, role, joined, family_member, employee_code")
+          .in("id", employeeIds)
+      : Promise.resolve({ data: [] as Record<string, unknown>[] }),
+    fetchInvoiceCompanies(),
+  ]);
+  const profileMap = new Map((profiles ?? []).map((p: Record<string, unknown>) => [p.id as string, p]));
+  const companyMap = new Map(companies.map(c => [c.id, c]));
+
+  return rows.map(row => {
+    const profile = row.employee_id ? profileMap.get(row.employee_id) : undefined;
+    const company = row.company_id ? companyMap.get(row.company_id) : undefined;
+    return {
+      ...row,
+      // Prefer this record's own snapshot over the live-linked profile everywhere —
+      // a payslip should reflect what was true at the time, and the snapshot is the
+      // only data available at all for the 76/92 migrated records with no current
+      // employee_profiles match. Live profile is only a defensive fallback.
+      employee_name: row.legacy_employee_name ?? (profile?.name as string) ?? undefined,
+      employee_dept: row.legacy_department ?? (profile?.dept as string) ?? undefined,
+      employee_designation: row.legacy_designation ?? (profile?.role as string) ?? undefined,
+      employee_joined: row.legacy_join_date ?? (profile?.joined as string) ?? undefined,
+      employee_family_member: row.legacy_family_member ?? (profile?.family_member as string | null) ?? null,
+      employee_code: row.legacy_employee_code ?? (profile?.employee_code as string | null) ?? null,
+      company_name: company?.trade_name,
+      // Prefer this record's own snapshot (set at creation/migration time) over the
+      // linked company's current logo, matching invoicing_invoices' per-document pattern.
+      company_logo_url: row.company_logo_url ?? company?.logo_url ?? null,
+    };
+  });
+}
+
+export async function createInvoiceWages(input: CreateInvoiceWageInput): Promise<InvoiceWage | null> {
+  const { data, error } = await supabase.from("invoicing_wages").insert(input).select("*").single();
+  if (error || !data) {
+    console.error("createInvoiceWages error:", error);
+    return null;
+  }
+  invalidateDataCache("invoicing_wages");
+  return data as InvoiceWage;
+}
+
+export async function updateInvoiceWages(id: string, input: UpdateInvoiceWageInput): Promise<boolean> {
+  const { error } = await supabase
+    .from("invoicing_wages")
+    .update({ ...input, updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) {
+    console.error("updateInvoiceWages error:", error);
+    return false;
+  }
+  invalidateDataCache("invoicing_wages");
+  return true;
+}
+
+export async function deleteInvoiceWages(id: string): Promise<boolean> {
+  const { error } = await supabase.from("invoicing_wages").delete().eq("id", id);
+  if (error) {
+    console.error("deleteInvoiceWages error:", error);
+    return false;
+  }
+  invalidateDataCache("invoicing_wages");
+  return true;
+}
+
+/** Narrow update for the two wage-slip-only fields added to employee_profiles. */
+export async function updateEmployeeWageFields(
+  employeeId: string,
+  input: { family_member?: string; employee_code?: string }
+): Promise<boolean> {
+  const { error } = await supabase.from("employee_profiles").update(input).eq("id", employeeId);
+  if (error) {
+    console.error("updateEmployeeWageFields error:", error);
+    return false;
+  }
+  return true;
+}
