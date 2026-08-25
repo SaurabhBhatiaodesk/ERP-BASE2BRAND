@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
   ChevronLeft, Mail, Phone, MapPin, Calendar, Plus, Camera,
-  Target, Activity, Clock, Monitor, Users, Briefcase, Layers,
+  Target, Activity, Clock, Monitor, Users, Briefcase, Layers, ShieldAlert,
 } from "lucide-react";
 import { Avatar, Badge } from "../ui";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
@@ -13,7 +13,7 @@ import {
 } from "@/lib/database";
 import { SHIFT_START_OPTIONS, formatShiftStartLabel } from "@/lib/shiftTimeline";
 import { ProfilePhotoUpload } from "../ProfilePhotoUpload";
-import { APP_ROLE_OPTIONS, isAdminRole, isExecutiveProfile, signUpWithRole } from "@/lib/auth";
+import { APP_ROLE_OPTIONS, isAdminRole, isExecutiveProfile, signUpWithRole, canSeeClientRevenue } from "@/lib/auth";
 import { isPersonalTaskRole } from "@/lib/database";
 import {
   isValidEmail,
@@ -200,7 +200,7 @@ export function EmployeeProfilePage({
   const [editForm, setEditForm] = useState({
     name: "", role: "", dept: "", email: "", phone: "", location: "",
     joined: "", salary: "", manager: "", bio: "", score: 85,
-    profileImageUrl: "", shiftStart: "10:00",
+    profileImageUrl: "", shiftStart: "10:00", appRole: "",
   });
 
   useEffect(() => {
@@ -264,6 +264,7 @@ export function EmployeeProfilePage({
       salary: emp.salary, manager: emp.manager, bio: emp.bio, score: emp.score,
       profileImageUrl: emp.profileImageUrl || "",
       shiftStart: emp.shiftStart || "10:00",
+      appRole: emp.appRole || "",
     });
     setOpenPhotoPicker(!!opts?.pickPhoto);
     setEditing(true);
@@ -439,6 +440,13 @@ export function EmployeeProfilePage({
                         {SHIFT_START_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                       </select>
                     </div>
+                    <div>
+                      <label className={labelCls}>App Access Role</label>
+                      <select value={editForm.appRole} onChange={e => setEditForm({ ...editForm, appRole: e.target.value })} className={inputCls}>
+                        <option value="">— Unset —</option>
+                        {APP_ROLE_OPTIONS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+                      </select>
+                    </div>
                   </>
                 ) : (
                   <>
@@ -592,15 +600,35 @@ export function EmployeeProfilePage({
   );
 }
 
+const CLIENT_DETAIL_ROLES = new Set(["teamlead", "ceo", "hr", "superadmin"]);
+
 export function ClientDetailPage({
   onBack,
   onNavigate,
+  userRole,
 }: {
   onBack: () => void;
   onNavigate?: (view: string, tab?: "employee" | "client" | "project" | "assign") => void;
+  userRole: string;
 }) {
   const { data: clientProfiles, loading, error } = useLeadsAsClients();
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  if (!CLIENT_DETAIL_ROLES.has(userRole)) {
+    return (
+      <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-8 max-w-lg mx-auto text-center">
+        <div className="w-12 h-12 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center mx-auto mb-4">
+          <ShieldAlert size={22} className="text-rose-400" />
+        </div>
+        <h3 className="text-base font-bold text-white mb-1.5 font-['Plus_Jakarta_Sans']">
+          Client Profiles is restricted
+        </h3>
+        <p className="text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans']">
+          This view is visible to Team Leaders, HR, CEO and Superadmin accounts only.
+        </p>
+      </div>
+    );
+  }
 
   if (loading) return <DataLoading label="Loading leads as clients..." />;
   if (error) return <DataError message={error} />;
@@ -695,10 +723,12 @@ export function ClientDetailPage({
                   ))}
                 </div>
               </div>
-              <div className="text-right shrink-0">
-                <p className="text-2xl font-bold text-emerald-400 font-['Geist_Mono']">{client.value}</p>
-                <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono']">Deal Value</p>
-              </div>
+              {canSeeClientRevenue(userRole) && (
+                <div className="text-right shrink-0">
+                  <p className="text-2xl font-bold text-emerald-400 font-['Geist_Mono']">{client.value}</p>
+                  <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono']">Revenue</p>
+                </div>
+              )}
             </div>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-5 pt-5 border-t border-[rgba(99,102,241,0.08)]">
               {[

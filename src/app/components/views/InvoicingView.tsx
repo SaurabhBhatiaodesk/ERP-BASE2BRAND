@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FileText, Plus, Search, X, Building2, Landmark, Users,
-  Download, Pencil, Trash2, ShieldAlert, Loader2, Camera, Wallet,
+  Download, Pencil, Trash2, ShieldAlert, Loader2, Camera, Wallet, Lock, KeyRound,
 } from "lucide-react";
 import { usePDF } from "react-to-pdf";
 // @ts-expect-error — number-to-words ships no type declarations; matches the exact
@@ -9,7 +9,8 @@ import { usePDF } from "react-to-pdf";
 import numberToWordsLib from "number-to-words";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
-import { isPayrollRole } from "@/lib/auth";
+import { isInvoicingRole } from "@/lib/auth";
+import bcrypt from "bcryptjs";
 import { isCloudinaryConfigured, uploadToCloudinary } from "@/lib/cloudinary";
 import { useEmployeeProfiles } from "@/hooks/useSupabaseData";
 import {
@@ -18,6 +19,7 @@ import {
   fetchInvoiceCompanies, createInvoiceCompany, updateInvoiceCompany, deleteInvoiceCompany,
   fetchInvoiceBankDetails, createInvoiceBankDetail, updateInvoiceBankDetail, deleteInvoiceBankDetail,
   fetchInvoiceWages, createInvoiceWages, updateInvoiceWages, deleteInvoiceWages, updateEmployeeWageFields,
+  fetchInvoicingLockHash, setInvoicingLockHash,
   type Invoice, type InvoiceClient, type InvoiceCompany, type InvoiceBankDetail,
   type InvoiceLineItem, type InvoicePaymentStatus, type InvoiceWage,
 } from "@/lib/database";
@@ -63,9 +65,104 @@ function lineItemsTotal(items: InvoiceLineItem[]) {
   return items.reduce((sum, li) => sum + (Number(li.amount) || 0), 0);
 }
 
+// ── Module password gate ─────────────────────────────────────
+// One shared password/PIN for the whole Invoicing module (not per-user login) — the
+// first CEO/superadmin to open it sets the password; unlocked state is in-memory only
+// for the current app session, so it re-prompts after a restart.
+function ModuleLockGate({ onUnlock }: { onUnlock: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [existingHash, setExistingHash] = useState<string | null>(null);
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      const hash = await fetchInvoicingLockHash();
+      setExistingHash(hash);
+      setLoading(false);
+    })();
+  }, []);
+
+  async function handleSetPassword(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    if (password.length < 4) { setError("Password must be at least 4 characters."); return; }
+    if (password !== confirmPassword) { setError("Passwords do not match."); return; }
+    setSubmitting(true);
+    const hash = await bcrypt.hash(password, 10);
+    const ok = await setInvoicingLockHash(hash);
+    setSubmitting(false);
+    if (!ok) { setError("Could not save the password. Please try again."); return; }
+    toast.success("Invoicing module password set.");
+    onUnlock();
+  }
+
+  async function handleEnterPassword(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    if (!existingHash) return;
+    setSubmitting(true);
+    const matches = await bcrypt.compare(password, existingHash);
+    setSubmitting(false);
+    if (!matches) { setError("Incorrect password."); return; }
+    onUnlock();
+  }
+
+  if (loading) {
+    return (
+      <div className={`${cardCls} p-8 max-w-md mx-auto text-center`}>
+        <Loader2 size={22} className="animate-spin text-indigo-400 mx-auto" />
+      </div>
+    );
+  }
+
+  return (
+    <div className={`${cardCls} p-8 max-w-md mx-auto`}>
+      <div className="w-12 h-12 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mx-auto mb-4">
+        {existingHash ? <Lock size={22} className="text-indigo-400" /> : <KeyRound size={22} className="text-indigo-400" />}
+      </div>
+      <h3 className="text-base font-bold text-white mb-1.5 text-center font-['Plus_Jakarta_Sans']">
+        {existingHash ? "Invoicing is locked" : "Set an Invoicing password"}
+      </h3>
+      <p className="text-xs text-[#6b7fa8] mb-5 text-center font-['Plus_Jakarta_Sans']">
+        {existingHash
+          ? "Enter the shared module password to continue."
+          : "No password has been set yet. Choose one to protect this module — anyone with CEO/Superadmin access will need it."}
+      </p>
+      <form onSubmit={existingHash ? handleEnterPassword : handleSetPassword} className="space-y-3">
+        <input
+          type="password"
+          autoFocus
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          placeholder={existingHash ? "Module password" : "New module password"}
+          className={inputCls}
+        />
+        {!existingHash && (
+          <input
+            type="password"
+            value={confirmPassword}
+            onChange={e => setConfirmPassword(e.target.value)}
+            placeholder="Confirm password"
+            className={inputCls}
+          />
+        )}
+        {error && <p className="text-xs text-red-400 font-['Plus_Jakarta_Sans']">{error}</p>}
+        <button type="submit" disabled={submitting} className={`${btnPrimary} w-full justify-center disabled:opacity-60`}>
+          {submitting ? <Loader2 size={15} className="animate-spin" /> : existingHash ? "Unlock" : "Set Password"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 // ── Root ──────────────────────────────────────────────────────
 export function InvoicingView({ userRole = "" }: { userRole?: string }) {
-  const allowed = isPayrollRole(userRole);
+  const allowed = isInvoicingRole(userRole);
+  const [unlocked, setUnlocked] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
 
   const [tab, setTab] = useState<Tab>("invoices");
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -93,10 +190,10 @@ export function InvoicingView({ userRole = "" }: { userRole?: string }) {
     setLoading(false);
   }, []);
 
-  useEffect(() => { if (allowed) void load(); }, [load, allowed]);
+  useEffect(() => { if (allowed && unlocked) void load(); }, [load, allowed, unlocked]);
 
   useEffect(() => {
-    if (!allowed) return;
+    if (!allowed || !unlocked) return;
     const channel = supabase
       .channel("invoicing-module")
       .on("postgres_changes", { event: "*", schema: "public", table: "invoicing_invoices" }, () => { void load(); })
@@ -106,7 +203,7 @@ export function InvoicingView({ userRole = "" }: { userRole?: string }) {
       .on("postgres_changes", { event: "*", schema: "public", table: "invoicing_wages" }, () => { void load(); })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [load, allowed]);
+  }, [load, allowed, unlocked]);
 
   if (!allowed) {
     return (
@@ -116,10 +213,14 @@ export function InvoicingView({ userRole = "" }: { userRole?: string }) {
         </div>
         <h3 className="text-base font-bold text-white mb-1.5 font-['Plus_Jakarta_Sans']">Invoicing is restricted</h3>
         <p className="text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans']">
-          Invoicing data is visible to HR and CEO accounts only. Contact your HR administrator if you need access.
+          Invoicing data is visible to CEO and Superadmin accounts only. Contact your administrator if you need access.
         </p>
       </div>
     );
+  }
+
+  if (!unlocked) {
+    return <ModuleLockGate onUnlock={() => setUnlocked(true)} />;
   }
 
   const filteredInvoices = invoices.filter(i =>
@@ -185,6 +286,13 @@ export function InvoicingView({ userRole = "" }: { userRole?: string }) {
               className="bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl pl-9 pr-4 py-2 text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-indigo-500/50 font-['Plus_Jakarta_Sans']"
             />
           </div>
+          <button
+            onClick={() => setChangePasswordOpen(true)}
+            title="Change Invoicing module password"
+            className={`${btnSecondary} !px-3`}
+          >
+            <Lock size={14} />
+          </button>
           {tab === "invoices" && (
             <button onClick={() => setInvoiceModal({ open: true, editing: null })} className={btnPrimary}>
               <Plus size={15} /> New Invoice
@@ -296,6 +404,9 @@ export function InvoicingView({ userRole = "" }: { userRole?: string }) {
       )}
       {previewWage && (
         <WageSlipPreviewModal wage={previewWage} onClose={() => setPreviewWage(null)} />
+      )}
+      {changePasswordOpen && (
+        <ChangeInvoicingPasswordModal onClose={() => setChangePasswordOpen(false)} />
       )}
     </div>
   );
@@ -523,6 +634,46 @@ function ClientFormModal({ editing, onClose, onSaved }: { editing: InvoiceClient
         <div><label className={labelCls}>Mobile No.</label><input className={inputCls} value={mobileNo} onChange={e => setMobileNo(e.target.value)} /></div>
       </div>
       <div><label className={labelCls}>Projects (comma-separated)</label><input className={inputCls} value={projectsText} onChange={e => setProjectsText(e.target.value)} placeholder="Website Revamp, SEO Retainer" /></div>
+      <div className="flex justify-end gap-2 pt-2">
+        <button onClick={onClose} className={btnSecondary}>Cancel</button>
+        <button onClick={handleSave} disabled={saving} className={btnPrimary}>{saving ? <Loader2 size={14} className="animate-spin" /> : null} Save</button>
+      </div>
+    </ModalShell>
+  );
+}
+
+// ── Change module password ───────────────────────────────────
+function ChangeInvoicingPasswordModal({ onClose }: { onClose: () => void }) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave() {
+    setError("");
+    const existingHash = await fetchInvoicingLockHash();
+    if (existingHash) {
+      const matches = await bcrypt.compare(currentPassword, existingHash);
+      if (!matches) { setError("Current password is incorrect."); return; }
+    }
+    if (newPassword.length < 4) { setError("New password must be at least 4 characters."); return; }
+    if (newPassword !== confirmPassword) { setError("New passwords do not match."); return; }
+    setSaving(true);
+    const hash = await bcrypt.hash(newPassword, 10);
+    const ok = await setInvoicingLockHash(hash);
+    setSaving(false);
+    if (!ok) { setError("Could not save the new password."); return; }
+    toast.success("Invoicing module password updated.");
+    onClose();
+  }
+
+  return (
+    <ModalShell title="Change Invoicing Password" onClose={onClose}>
+      <div><label className={labelCls}>Current Password</label><input type="password" className={inputCls} value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} /></div>
+      <div><label className={labelCls}>New Password</label><input type="password" className={inputCls} value={newPassword} onChange={e => setNewPassword(e.target.value)} /></div>
+      <div><label className={labelCls}>Confirm New Password</label><input type="password" className={inputCls} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} /></div>
+      {error && <p className="text-xs text-red-400 font-['Plus_Jakarta_Sans']">{error}</p>}
       <div className="flex justify-end gap-2 pt-2">
         <button onClick={onClose} className={btnSecondary}>Cancel</button>
         <button onClick={handleSave} disabled={saving} className={btnPrimary}>{saving ? <Loader2 size={14} className="animate-spin" /> : null} Save</button>

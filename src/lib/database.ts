@@ -6948,3 +6948,37 @@ export async function updateEmployeeWageFields(
   }
   return true;
 }
+
+/** Single shared password/PIN gating the whole Invoicing module (see invoicing_module_lock.sql). */
+export async function fetchInvoicingLockHash(): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("invoicing_module_lock")
+    .select("password_hash")
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.error("fetchInvoicingLockHash error:", error);
+    return null;
+  }
+  return data?.password_hash ?? null;
+}
+
+export async function setInvoicingLockHash(passwordHash: string): Promise<boolean> {
+  const { error } = await supabase
+    .from("invoicing_module_lock")
+    .delete()
+    .not("id", "is", null);
+  if (error) {
+    console.error("setInvoicingLockHash clear error:", error);
+    return false;
+  }
+  const { error: insertError } = await supabase
+    .from("invoicing_module_lock")
+    .insert({ password_hash: passwordHash });
+  if (insertError) {
+    console.error("setInvoicingLockHash insert error:", insertError);
+    return false;
+  }
+  return true;
+}

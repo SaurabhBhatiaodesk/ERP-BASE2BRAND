@@ -42,7 +42,7 @@ import { useNotifications } from "@/hooks/useNotifications";
 import { playBeep } from "@/lib/audio";
 import { FloatingQuickActions } from "./components/FloatingQuickActions";
 
-type RoleId = "ceo" | "teamlead" | "employee" | "developer" | "designer" | "marketing" | "hr";
+type RoleId = "superadmin" | "ceo" | "teamlead" | "employee" | "developer" | "designer" | "marketing" | "hr";
 
 type NavItem = {
   id: string;
@@ -52,6 +52,34 @@ type NavItem = {
 };
 
 const roleNavMap: Record<RoleId, NavItem[]> = {
+  // Superadmin mirrors CEO's full nav — a role above CEO shouldn't be missing
+  // anything CEO already has. Kept as a separate literal array (not a reference
+  // to `ceo`) so either can be edited independently later without surprises.
+  superadmin: [
+    { id: "dashboard", label: "Command Center", icon: LayoutDashboard },
+    { id: "shifts", label: "Shift Tracker", icon: Timer, badge: 1 },
+    { id: "crm", label: "CRM", icon: Briefcase, badge: 6 },
+    { id: "clientdetail", label: "Client Profiles", icon: Building2 },
+    { id: "tasks", label: "Tasks", icon: CheckSquare, badge: 2 },
+    { id: "hr", label: "HR & People", icon: Users },
+    { id: "hrms", label: "HRMS", icon: Award },
+    { id: "payroll", label: "Payroll Dashboard", icon: Wallet },
+    { id: "profiles", label: "Employee Profiles", icon: UserCheck },
+    { id: "timesheet", label: "Time Sheet", icon: Clock },
+    { id: "timereports", label: "Time Reports", icon: Calendar },
+    { id: "meetings", label: "Meetings", icon: Video },
+    { id: "productivity", label: "AI Productivity", icon: Monitor },
+    { id: "analytics", label: "Analytics", icon: BarChart3 },
+    { id: "revenue", label: "Revenue & KPI", icon: DollarSign },
+    { id: "register", label: "Register / Add", icon: Plus },
+    { id: "broadcast", label: "Broadcast", icon: Send },
+    { id: "projects", label: "Projects", icon: Layers },
+    { id: "invoices", label: "Invoices", icon: DollarSign },
+    { id: "copilot", label: "AI Copilot", icon: Brain },
+    { id: "notifications", label: "Notifications", icon: Bell, badge: 4 },
+    { id: "chat", label: "Chat", icon: MessageSquare, badge: 4 },
+    { id: "settings", label: "Settings", icon: Settings },
+  ],
   ceo: [
     { id: "dashboard", label: "Command Center", icon: LayoutDashboard },
     { id: "shifts", label: "Shift Tracker", icon: Timer, badge: 1 },
@@ -83,6 +111,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "projects", label: "Projects", icon: Layers },
     { id: "tasks", label: "Tasks", icon: CheckSquare, badge: 2 },
     { id: "shifts", label: "Shift Tracker", icon: Timer },
+    { id: "clientdetail", label: "Client Profiles", icon: Building2 },
     { id: "meetings", label: "Meetings", icon: Video },
     { id: "register", label: "Register / Add", icon: Plus },
     { id: "timesheet", label: "Time Sheet", icon: Clock },
@@ -129,7 +158,6 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "timesheet", label: "Time Sheet", icon: Clock },
     { id: "hrms", label: "HRMS", icon: Award },
     { id: "payroll", label: "Payroll Dashboard", icon: Wallet },
-    { id: "invoices", label: "Invoices", icon: DollarSign },
     { id: "meetings", label: "Meetings", icon: Video },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
@@ -284,6 +312,7 @@ const SUB_VIEWS = new Set([
 
 function defaultViewForRole(role: string) {
   const defaults: Record<string, string> = {
+    superadmin: "dashboard",
     ceo: "dashboard",
     teamlead: "employee",
     employee: "employee",
@@ -821,6 +850,7 @@ export default function App() {
       );
       case "clientdetail": return (
         <ClientDetailPage
+          userRole={userRole}
           onBack={() => setActiveView("crm")}
           onNavigate={(view, tab) => {
             if (tab) setRegisterTab(tab);

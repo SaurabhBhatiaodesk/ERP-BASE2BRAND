@@ -17,6 +17,7 @@ type AuthTokenResponse = {
 };
 
 export type AppRoleId =
+  | "superadmin"
   | "ceo"
   | "teamlead"
   | "employee"
@@ -26,6 +27,7 @@ export type AppRoleId =
   | "hr";
 
 export const APP_ROLE_OPTIONS: { id: AppRoleId; label: string }[] = [
+  { id: "superadmin", label: "Super Admin" },
   { id: "ceo", label: "CEO / Admin" },
   { id: "teamlead", label: "Team Leader" },
   { id: "employee", label: "Employee" },
@@ -54,6 +56,7 @@ export function resolveRoleFromProfile(
 }
 
 export const ROLE_SIGNUP_DEFAULTS: Record<AppRoleId, { designation: string; department: string }> = {
+  superadmin: { designation: "Super Admin", department: "Executive" },
   ceo: { designation: "Administrator", department: "Executive" },
   teamlead: { designation: "Team Leader", department: "Development" },
   employee: { designation: "Employee", department: "Development" },
@@ -456,7 +459,7 @@ export async function resolveLoginUser(
   return finalizeAuthUser(user, resolvedRole, { ...options, profile });
 }
 
-const ADMIN_ROLES = new Set(["ceo", "teamlead", "hr"]);
+const ADMIN_ROLES = new Set(["ceo", "superadmin", "teamlead", "hr"]);
 
 /** CEO / Team Lead / HR — company-wide projects list */
 export function canSeeAllProjects(role: string) {
@@ -467,14 +470,24 @@ export function isAdminRole(role: string) {
   return ADMIN_ROLES.has(role);
 }
 
-/** Team Shift Tracker — CEO & Team Lead only */
+/** Team Shift Tracker — CEO, Superadmin & Team Lead only */
 export function isShiftTrackerRole(role: string) {
-  return role === "ceo" || role === "teamlead";
+  return role === "ceo" || role === "superadmin" || role === "teamlead";
 }
 
-/** Payroll Dashboard — salary data is HR & CEO only */
+/** Payroll Dashboard — salary data is HR & CEO (and Superadmin) only */
 export function isPayrollRole(role: string) {
-  return role === "ceo" || role === "hr";
+  return role === "ceo" || role === "superadmin" || role === "hr";
+}
+
+/** Invoicing module — CEO & Superadmin only (HR no longer included, unlike Payroll). */
+export function isInvoicingRole(role: string) {
+  return role === "ceo" || role === "superadmin";
+}
+
+/** Client Details "Revenue" (Deal Value) figure — CEO & Superadmin only, not Team Lead/HR. */
+export function canSeeClientRevenue(role: string) {
+  return role === "ceo" || role === "superadmin";
 }
 
 export function isExecutiveProfile(profile: { name: string; role: string; dept: string }) {
