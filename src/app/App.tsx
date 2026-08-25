@@ -10,7 +10,7 @@ import {
   AlertTriangle, ArrowUpRight, Clock, Star, GitBranch,
   DollarSign, UserCheck, Plus, X, Send, Activity,
   Globe, Hash, ChevronRight, Building2, Award, Layers,
-  Timer, Monitor, ChevronLeft, Settings, TrendingUp, LogOut, User, Calendar, Wallet, Video
+  Timer, Monitor, ChevronLeft, Settings, TrendingUp, LogOut, User, Calendar, Wallet, Video, Gauge
 } from "lucide-react";
 
 // Imported views
@@ -23,6 +23,7 @@ import { AuthScreen, roleColorMap, roleLabelMap } from "./components/AuthScreen"
 import { EmployeeProfilePage, ClientDetailPage, ProductivityTimelineView, RegistrationFormsView } from "./components/views/ProfileViews";
 import { RecruitmentView } from "./components/views/RecruitmentView";
 import { PayrollView } from "./components/views/PayrollView";
+import { PerformanceView } from "./components/views/PerformanceView";
 import { TimesheetView } from "./components/views/TimesheetView";
 import { ProjectsView } from "./components/views/ProjectsView";
 import { ProjectWorkspaceView } from "./components/views/ProjectWorkspaceView";
@@ -69,6 +70,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "timereports", label: "Time Reports", icon: Calendar },
     { id: "meetings", label: "Meetings", icon: Video },
     { id: "productivity", label: "AI Productivity", icon: Monitor },
+    { id: "performance", label: "KPI/Performance", icon: Gauge },
     { id: "analytics", label: "Analytics", icon: BarChart3 },
     { id: "revenue", label: "Revenue & KPI", icon: DollarSign },
     { id: "register", label: "Register / Add", icon: Plus },
@@ -94,6 +96,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "timereports", label: "Time Reports", icon: Calendar },
     { id: "meetings", label: "Meetings", icon: Video },
     { id: "productivity", label: "AI Productivity", icon: Monitor },
+    { id: "performance", label: "KPI/Performance", icon: Gauge },
     { id: "analytics", label: "Analytics", icon: BarChart3 },
     { id: "revenue", label: "Revenue & KPI", icon: DollarSign },
     { id: "register", label: "Register / Add", icon: Plus },
@@ -113,6 +116,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "shifts", label: "Shift Tracker", icon: Timer },
     { id: "clientdetail", label: "Client Profiles", icon: Building2 },
     { id: "meetings", label: "Meetings", icon: Video },
+    { id: "performance", label: "KPI/Performance", icon: Gauge },
     { id: "register", label: "Register / Add", icon: Plus },
     { id: "timesheet", label: "Time Sheet", icon: Clock },
     { id: "chat", label: "Chat", icon: MessageSquare, badge: 4 },
@@ -122,6 +126,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "projects", label: "Projects & Work", icon: Layers },
     { id: "meetings", label: "Meetings", icon: Video },
+    { id: "performance", label: "KPI/Performance", icon: Gauge },
     { id: "timesheet", label: "Time Reports", icon: Clock },
     { id: "chat", label: "Chat", icon: MessageSquare, badge: 2 },
   ],
@@ -130,6 +135,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "projects", label: "Projects & Work", icon: Layers },
     { id: "meetings", label: "Meetings", icon: Video },
+    { id: "performance", label: "KPI/Performance", icon: Gauge },
     { id: "timesheet", label: "Time Reports", icon: Clock },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
@@ -139,6 +145,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "designer", label: "Design Hub", icon: Star },
     { id: "projects", label: "Projects & Work", icon: Layers },
     { id: "meetings", label: "Meetings", icon: Video },
+    { id: "performance", label: "KPI/Performance", icon: Gauge },
     { id: "timesheet", label: "Time Reports", icon: Clock },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
@@ -148,6 +155,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "marketing", label: "Marketing Hub", icon: TrendingUp },
     { id: "crm", label: "CRM", icon: Briefcase, badge: 3 },
     { id: "meetings", label: "Meetings", icon: Video },
+    { id: "performance", label: "KPI/Performance", icon: Gauge },
     { id: "analytics", label: "Analytics", icon: BarChart3 },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
@@ -159,6 +167,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "hrms", label: "HRMS", icon: Award },
     { id: "payroll", label: "Payroll Dashboard", icon: Wallet },
     { id: "meetings", label: "Meetings", icon: Video },
+    { id: "performance", label: "KPI/Performance", icon: Gauge },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
 };
@@ -170,7 +179,7 @@ const viewTitles: Record<string, string> = {
   tasks: "Tasks", hr: "HR & People", analytics: "Analytics",
   chat: "Chat", teamlead: "My Team", employee: "My Dashboard",
   developer: "Dev Hub", designer: "Design Hub", marketing: "Marketing Hub",
-  revenue: "Revenue & KPI", hrms: "HRMS", payroll: "Payroll Dashboard",
+  revenue: "Revenue & KPI", performance: "KPI/Performance", hrms: "HRMS", payroll: "Payroll Dashboard",
   profiles: "Employee Profiles", clientdetail: "Client Profiles",
   timesheet: "Time Sheet", timereports: "Time Reports", productivity: "AI Productivity", register: "Register & Add",
   projects: "Projects & Work", leaves: "Apply Leave",
@@ -832,6 +841,7 @@ export default function App() {
       case "marketing": return <MarketingDashboard />;
       case "recruitment": return <RecruitmentView />;
       case "revenue": return <RevenueKPIView />;
+      case "performance": return <PerformanceView userRole={userRole} userName={userName} userEmail={userEmail} />;
       case "hrms": return <HRMSView />;
       case "payroll": return <PayrollView userRole={userRole} />;
       case "profiles": return (
