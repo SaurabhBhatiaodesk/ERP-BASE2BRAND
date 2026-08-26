@@ -283,6 +283,10 @@ export function useEmployeeScreenshotCapture(
       return;
     }
 
+    if (import.meta.env.VITE_DISABLE_SCREENSHOT_CAPTURE === "true") {
+      return;
+    }
+
     const state: CaptureState = {
       userName,
       employeeId: userProfile?.id,
