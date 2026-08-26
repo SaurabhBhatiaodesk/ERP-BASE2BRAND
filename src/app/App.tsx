@@ -10,7 +10,7 @@ import {
   AlertTriangle, ArrowUpRight, Clock, Star, GitBranch,
   DollarSign, UserCheck, Plus, X, Send, Activity,
   Globe, Hash, ChevronRight, Building2, Award, Layers,
-  Timer, Monitor, ChevronLeft, Settings, TrendingUp, LogOut, User, Calendar, Wallet, Video, Gauge
+  Timer, Monitor, ChevronLeft, Settings, TrendingUp, LogOut, User, Calendar, Wallet, Video, Gauge, IndianRupee
 } from "lucide-react";
 
 // Imported views
@@ -24,6 +24,7 @@ import { EmployeeProfilePage, ClientDetailPage, ProductivityTimelineView, Regist
 import { RecruitmentView } from "./components/views/RecruitmentView";
 import { PayrollView } from "./components/views/PayrollView";
 import { PerformanceView } from "./components/views/PerformanceView";
+import { MyPayrollView } from "./components/views/MyPayrollView";
 import { TimesheetView } from "./components/views/TimesheetView";
 import { ProjectsView } from "./components/views/ProjectsView";
 import { ProjectWorkspaceView } from "./components/views/ProjectWorkspaceView";
@@ -117,6 +118,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "clientdetail", label: "Client Profiles", icon: Building2 },
     { id: "meetings", label: "Meetings", icon: Video },
     { id: "performance", label: "KPI/Performance", icon: Gauge },
+    { id: "mypayroll", label: "My Payroll", icon: IndianRupee },
     { id: "register", label: "Register / Add", icon: Plus },
     { id: "timesheet", label: "Time Sheet", icon: Clock },
     { id: "chat", label: "Chat", icon: MessageSquare, badge: 4 },
@@ -127,6 +129,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "projects", label: "Projects & Work", icon: Layers },
     { id: "meetings", label: "Meetings", icon: Video },
     { id: "performance", label: "KPI/Performance", icon: Gauge },
+    { id: "mypayroll", label: "My Payroll", icon: IndianRupee },
     { id: "timesheet", label: "Time Reports", icon: Clock },
     { id: "chat", label: "Chat", icon: MessageSquare, badge: 2 },
   ],
@@ -136,6 +139,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "projects", label: "Projects & Work", icon: Layers },
     { id: "meetings", label: "Meetings", icon: Video },
     { id: "performance", label: "KPI/Performance", icon: Gauge },
+    { id: "mypayroll", label: "My Payroll", icon: IndianRupee },
     { id: "timesheet", label: "Time Reports", icon: Clock },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
@@ -146,6 +150,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "projects", label: "Projects & Work", icon: Layers },
     { id: "meetings", label: "Meetings", icon: Video },
     { id: "performance", label: "KPI/Performance", icon: Gauge },
+    { id: "mypayroll", label: "My Payroll", icon: IndianRupee },
     { id: "timesheet", label: "Time Reports", icon: Clock },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
@@ -156,6 +161,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "crm", label: "CRM", icon: Briefcase, badge: 3 },
     { id: "meetings", label: "Meetings", icon: Video },
     { id: "performance", label: "KPI/Performance", icon: Gauge },
+    { id: "mypayroll", label: "My Payroll", icon: IndianRupee },
     { id: "analytics", label: "Analytics", icon: BarChart3 },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
@@ -168,6 +174,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "payroll", label: "Payroll Dashboard", icon: Wallet },
     { id: "meetings", label: "Meetings", icon: Video },
     { id: "performance", label: "KPI/Performance", icon: Gauge },
+    { id: "mypayroll", label: "My Payroll", icon: IndianRupee },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
 };
@@ -179,7 +186,7 @@ const viewTitles: Record<string, string> = {
   tasks: "Tasks", hr: "HR & People", analytics: "Analytics",
   chat: "Chat", teamlead: "My Team", employee: "My Dashboard",
   developer: "Dev Hub", designer: "Design Hub", marketing: "Marketing Hub",
-  revenue: "Revenue & KPI", performance: "KPI/Performance", hrms: "HRMS", payroll: "Payroll Dashboard",
+  revenue: "Revenue & KPI", performance: "KPI/Performance", mypayroll: "My Payroll", hrms: "HRMS", payroll: "Payroll Dashboard",
   profiles: "Employee Profiles", clientdetail: "Client Profiles",
   timesheet: "Time Sheet", timereports: "Time Reports", productivity: "AI Productivity", register: "Register & Add",
   projects: "Projects & Work", leaves: "Apply Leave",
@@ -378,7 +385,7 @@ export default function App() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [showAI, setShowAI] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [registerTab, setRegisterTab] = useState<"employee" | "client" | "project" | "assign">("employee");
+  const [registerTab, setRegisterTab] = useState<"employee" | "client" | "project" | "assign" | "manage">("employee");
   const [taskNav, setTaskNav] = useState<{
     taskId?: string;
     status?: string;
@@ -842,6 +849,7 @@ export default function App() {
       case "recruitment": return <RecruitmentView />;
       case "revenue": return <RevenueKPIView />;
       case "performance": return <PerformanceView userRole={userRole} userName={userName} userEmail={userEmail} />;
+      case "mypayroll": return <MyPayrollView userRole={userRole} userName={userName} userEmail={userEmail} />;
       case "hrms": return <HRMSView />;
       case "payroll": return <PayrollView userRole={userRole} />;
       case "profiles": return (
@@ -870,7 +878,16 @@ export default function App() {
       );
 
       case "productivity": return <ProductivityTimelineView />;
-      case "register": return <RegistrationFormsView initialTab={registerTab} />;
+      case "register": return (
+        <RegistrationFormsView
+          initialTab={registerTab}
+          onNavigate={(view, tabOrOptions) => {
+            if (typeof tabOrOptions === "string") setRegisterTab(tabOrOptions as any);
+            else if (typeof tabOrOptions === "object") setTaskNav(tabOrOptions);
+            setActiveView(view);
+          }}
+        />
+      );
       case "settings": return <SettingsPage />;
       case "notifications": return (
         <NotificationsCenterView 
@@ -938,7 +955,7 @@ export default function App() {
           }}
         />
       );
-      case "invoices": return <InvoicingView userRole={userRole} />;
+      case "invoices": return <InvoicingView userRole={userRole} userEmail={userEmail} />;
       case "copilot": return <AICopilotView />;
       case "meetings": return (
         <MeetingView

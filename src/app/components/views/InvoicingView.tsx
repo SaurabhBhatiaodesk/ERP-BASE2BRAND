@@ -69,11 +69,14 @@ function lineItemsTotal(items: InvoiceLineItem[]) {
 // One shared password/PIN for the whole Invoicing module (not per-user login) — the
 // first CEO/superadmin to open it sets the password; unlocked state is in-memory only
 // for the current app session, so it re-prompts after a restart.
-function ModuleLockGate({ onUnlock }: { onUnlock: () => void }) {
-  const [loading, setLoading] = useState(true);
+type GateStep = "loading" | "set" | "enter" | "forgot-verify" | "forgot-set";
+
+function ModuleLockGate({ userEmail, onUnlock }: { userEmail: string; onUnlock: () => void }) {
+  const [step, setStep] = useState<GateStep>("loading");
   const [existingHash, setExistingHash] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [accountPassword, setAccountPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -81,7 +84,7 @@ function ModuleLockGate({ onUnlock }: { onUnlock: () => void }) {
     void (async () => {
       const hash = await fetchInvoicingLockHash();
       setExistingHash(hash);
-      setLoading(false);
+      setStep(hash ? "enter" : "set");
     })();
   }, []);
 
@@ -95,7 +98,7 @@ function ModuleLockGate({ onUnlock }: { onUnlock: () => void }) {
     const ok = await setInvoicingLockHash(hash);
     setSubmitting(false);
     if (!ok) { setError("Could not save the password. Please try again."); return; }
-    toast.success("Invoicing module password set.");
+    toast.success(step === "forgot-set" ? "Invoicing module password reset." : "Invoicing module password set.");
     onUnlock();
   }
 
@@ -110,7 +113,21 @@ function ModuleLockGate({ onUnlock }: { onUnlock: () => void }) {
     onUnlock();
   }
 
-  if (loading) {
+  async function handleVerifyAccountPassword(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    if (!userEmail) { setError("Your account email isn't available — please reload and try again."); return; }
+    setSubmitting(true);
+    const { error: authError } = await supabase.auth.signInWithPassword({ email: userEmail, password: accountPassword });
+    setSubmitting(false);
+    if (authError) { setError("Incorrect account password."); return; }
+    setPassword("");
+    setConfirmPassword("");
+    setAccountPassword("");
+    setStep("forgot-set");
+  }
+
+  if (step === "loading") {
     return (
       <div className={`${cardCls} p-8 max-w-md mx-auto text-center`}>
         <Loader2 size={22} className="animate-spin text-indigo-400 mx-auto" />
@@ -118,29 +135,68 @@ function ModuleLockGate({ onUnlock }: { onUnlock: () => void }) {
     );
   }
 
+  if (step === "forgot-verify") {
+    return (
+      <div className={`${cardCls} p-8 max-w-md mx-auto`}>
+        <div className="w-12 h-12 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mx-auto mb-4">
+          <KeyRound size={22} className="text-indigo-400" />
+        </div>
+        <h3 className="text-base font-bold text-white mb-1.5 text-center font-['Plus_Jakarta_Sans']">Confirm your account password</h3>
+        <p className="text-xs text-[#6b7fa8] mb-5 text-center font-['Plus_Jakarta_Sans']">
+          Enter your regular ERP login password to reset the shared Invoicing module password.
+        </p>
+        <form onSubmit={handleVerifyAccountPassword} className="space-y-3">
+          <input
+            type="password"
+            autoFocus
+            value={accountPassword}
+            onChange={e => setAccountPassword(e.target.value)}
+            placeholder="Account password"
+            className={inputCls}
+          />
+          {error && <p className="text-xs text-red-400 font-['Plus_Jakarta_Sans']">{error}</p>}
+          <button type="submit" disabled={submitting} className={`${btnPrimary} w-full justify-center disabled:opacity-60`}>
+            {submitting ? <Loader2 size={15} className="animate-spin" /> : "Verify"}
+          </button>
+          <button
+            type="button"
+            onClick={() => { setError(""); setAccountPassword(""); setStep("enter"); }}
+            className="w-full text-xs text-[#8fa0c4] hover:text-white transition-colors font-['Plus_Jakarta_Sans']"
+          >
+            Back
+          </button>
+        </form>
+      </div>
+    );
+  }
+
+  const isSetMode = step === "set" || step === "forgot-set";
+
   return (
     <div className={`${cardCls} p-8 max-w-md mx-auto`}>
       <div className="w-12 h-12 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mx-auto mb-4">
-        {existingHash ? <Lock size={22} className="text-indigo-400" /> : <KeyRound size={22} className="text-indigo-400" />}
+        {isSetMode ? <KeyRound size={22} className="text-indigo-400" /> : <Lock size={22} className="text-indigo-400" />}
       </div>
       <h3 className="text-base font-bold text-white mb-1.5 text-center font-['Plus_Jakarta_Sans']">
-        {existingHash ? "Invoicing is locked" : "Set an Invoicing password"}
+        {step === "forgot-set" ? "Set a new module password" : isSetMode ? "Set an Invoicing password" : "Invoicing is locked"}
       </h3>
       <p className="text-xs text-[#6b7fa8] mb-5 text-center font-['Plus_Jakarta_Sans']">
-        {existingHash
-          ? "Enter the shared module password to continue."
-          : "No password has been set yet. Choose one to protect this module — anyone with CEO/Superadmin access will need it."}
+        {step === "forgot-set"
+          ? "Choose a new shared module password."
+          : isSetMode
+          ? "No password has been set yet. Choose one to protect this module — anyone with CEO/Superadmin access will need it."
+          : "Enter the shared module password to continue."}
       </p>
-      <form onSubmit={existingHash ? handleEnterPassword : handleSetPassword} className="space-y-3">
+      <form onSubmit={isSetMode ? handleSetPassword : handleEnterPassword} className="space-y-3">
         <input
           type="password"
           autoFocus
           value={password}
           onChange={e => setPassword(e.target.value)}
-          placeholder={existingHash ? "Module password" : "New module password"}
+          placeholder={isSetMode ? "New module password" : "Module password"}
           className={inputCls}
         />
-        {!existingHash && (
+        {isSetMode && (
           <input
             type="password"
             value={confirmPassword}
@@ -151,15 +207,24 @@ function ModuleLockGate({ onUnlock }: { onUnlock: () => void }) {
         )}
         {error && <p className="text-xs text-red-400 font-['Plus_Jakarta_Sans']">{error}</p>}
         <button type="submit" disabled={submitting} className={`${btnPrimary} w-full justify-center disabled:opacity-60`}>
-          {submitting ? <Loader2 size={15} className="animate-spin" /> : existingHash ? "Unlock" : "Set Password"}
+          {submitting ? <Loader2 size={15} className="animate-spin" /> : isSetMode ? "Save Password" : "Unlock"}
         </button>
+        {step === "enter" && (
+          <button
+            type="button"
+            onClick={() => { setError(""); setPassword(""); setStep("forgot-verify"); }}
+            className="w-full text-xs text-[#8fa0c4] hover:text-white transition-colors font-['Plus_Jakarta_Sans']"
+          >
+            Forgot password?
+          </button>
+        )}
       </form>
     </div>
   );
 }
 
 // ── Root ──────────────────────────────────────────────────────
-export function InvoicingView({ userRole = "" }: { userRole?: string }) {
+export function InvoicingView({ userRole = "", userEmail = "" }: { userRole?: string; userEmail?: string }) {
   const allowed = isInvoicingRole(userRole);
   const [unlocked, setUnlocked] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
@@ -220,7 +285,7 @@ export function InvoicingView({ userRole = "" }: { userRole?: string }) {
   }
 
   if (!unlocked) {
-    return <ModuleLockGate onUnlock={() => setUnlocked(true)} />;
+    return <ModuleLockGate userEmail={userEmail} onUnlock={() => setUnlocked(true)} />;
   }
 
   const filteredInvoices = invoices.filter(i =>

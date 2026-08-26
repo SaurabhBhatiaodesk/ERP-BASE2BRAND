@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import {
   ChevronLeft, Mail, Phone, MapPin, Calendar, Plus, Camera,
   Target, Activity, Clock, Monitor, Users, Briefcase, Layers, ShieldAlert,
+  UserCog, UserX, UserCheck, Pencil, Search,
 } from "lucide-react";
 import { Avatar, Badge } from "../ui";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
@@ -10,6 +11,7 @@ import {
   createEmployee, createLead, createProject, assignProjectTeam,
   updateEmployeeProfile, getEmployeeProjects, getEmployeeRecentTasks,
   buildWeeklyHoursFromAttendance, initialsFromName, findProfileForUser,
+  type EmployeeProfile,
 } from "@/lib/database";
 import { SHIFT_START_OPTIONS, formatShiftStartLabel } from "@/lib/shiftTimeline";
 import { ProfilePhotoUpload } from "../ProfilePhotoUpload";
@@ -172,12 +174,15 @@ export function EmployeeProfilePage({
   userRole?: string;
   initialProfileId?: string;
 }) {
-  const { data: employeeProfiles, loading, error, refresh } = useEmployeeProfiles();
+  const canManageAll = isAdminRole(userRole);
+  // Admins also need to reach a disabled employee's profile (e.g. to re-enable
+  // them from the "All Employees" tab) — a filtered fetch would make
+  // `initialProfileId` fail to resolve against a disabled person entirely.
+  const { data: employeeProfiles, loading, error, refresh } = useEmployeeProfiles({ includeDisabled: canManageAll });
   const { data: projects, refresh: refreshProjects } = useProjects();
   const { data: tasks } = useProjectTasks();
   const { data: attendance } = useAttendance();
   const { data: dbLeaves } = useLeaveRequests();
-  const canManageAll = isAdminRole(userRole);
   const myProfile = useMemo(
     () => findProfileForUser(employeeProfiles, userName, userEmail),
     [employeeProfiles, userName, userEmail]
@@ -200,7 +205,7 @@ export function EmployeeProfilePage({
   const [editForm, setEditForm] = useState({
     name: "", role: "", dept: "", email: "", phone: "", location: "",
     joined: "", salary: "", manager: "", bio: "", score: 85,
-    profileImageUrl: "", shiftStart: "10:00", appRole: "",
+    profileImageUrl: "", shiftStart: "10:00", appRole: "", joinDate: "",
   });
 
   useEffect(() => {
@@ -265,6 +270,7 @@ export function EmployeeProfilePage({
       profileImageUrl: emp.profileImageUrl || "",
       shiftStart: emp.shiftStart || "10:00",
       appRole: emp.appRole || "",
+      joinDate: emp.joinDate || "",
     });
     setOpenPhotoPicker(!!opts?.pickPhoto);
     setEditing(true);
@@ -405,7 +411,7 @@ export function EmployeeProfilePage({
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-3 flex-wrap mb-1">
                   <h2 className="text-lg font-bold text-white font-['Plus_Jakarta_Sans']">{emp.name}</h2>
-                  <Badge variant="green">{emp.status}</Badge>
+                  <Badge variant={emp.status === "Disabled" ? "red" : "green"}>{emp.status}</Badge>
                   <span className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8]">{emp.id}</span>
                 </div>
                 <p className="text-sm text-[#a8b5d1] font-['Plus_Jakarta_Sans'] mb-2">{emp.role} · {emp.dept}</p>
@@ -430,6 +436,10 @@ export function EmployeeProfilePage({
                     <div><label className={labelCls}>Phone</label><input value={editForm.phone} onChange={e => setEditForm({ ...editForm, phone: e.target.value })} className={inputCls} /></div>
                     <div><label className={labelCls}>Location</label><input value={editForm.location} onChange={e => setEditForm({ ...editForm, location: e.target.value })} className={inputCls} /></div>
                     <div><label className={labelCls}>Joined</label><input value={editForm.joined} onChange={e => setEditForm({ ...editForm, joined: e.target.value })} className={inputCls} /></div>
+                    <div>
+                      <label className={labelCls}>Join Date (exact)</label>
+                      <input type="date" value={editForm.joinDate} onChange={e => setEditForm({ ...editForm, joinDate: e.target.value })} className={inputCls} />
+                    </div>
                     <div><label className={labelCls}>Role</label><input value={editForm.role} onChange={e => setEditForm({ ...editForm, role: e.target.value })} className={inputCls} /></div>
                     <div><label className={labelCls}>Department</label><input value={editForm.dept} onChange={e => setEditForm({ ...editForm, dept: e.target.value })} className={inputCls} /></div>
                     <div><label className={labelCls}>Manager</label><input value={editForm.manager} onChange={e => setEditForm({ ...editForm, manager: e.target.value })} className={inputCls} /></div>
@@ -921,14 +931,18 @@ export function ProductivityTimelineView() {
 
 export function RegistrationFormsView({
   initialTab = "employee",
+  onNavigate,
 }: {
-  initialTab?: "employee" | "client" | "project" | "assign";
+  initialTab?: "employee" | "client" | "project" | "assign" | "manage";
+  onNavigate?: (view: string, options?: any) => void;
 }) {
   const { data: profiles, refresh: refreshProfiles } = useEmployeeProfiles();
+  const { data: allProfiles, refresh: refreshAllProfiles } = useEmployeeProfiles({ includeDisabled: true });
   const { data: leads, refresh: refreshLeads } = useLeadsAsClients();
   const { data: projects, refresh: refreshProjects } = useProjects();
 
-  const [activeForm, setActiveForm] = useState<"employee" | "client" | "project" | "assign">(initialTab);
+  const [activeForm, setActiveForm] = useState<"employee" | "client" | "project" | "assign" | "manage">(initialTab);
+  const [manageSearch, setManageSearch] = useState("");
 
   useEffect(() => {
     setActiveForm(initialTab);
@@ -959,6 +973,34 @@ export function RegistrationFormsView({
     [profiles]
   );
   const employeeOptions = assignableEmployees;
+
+  // "All Employees" tab — every regular employee (excludes CEO/Superadmin/HR/Team Lead).
+  const manageableEmployees = useMemo(
+    () => allProfiles.filter(p => !isAdminRole(p.appRole)),
+    [allProfiles]
+  );
+  const visibleManageableEmployees = useMemo(() => {
+    const q = manageSearch.trim().toLowerCase();
+    if (!q) return manageableEmployees;
+    return manageableEmployees.filter(
+      p => p.name.toLowerCase().includes(q) || p.role.toLowerCase().includes(q) || p.dept.toLowerCase().includes(q)
+    );
+  }, [manageableEmployees, manageSearch]);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+
+  async function toggleEmployeeStatus(profile: EmployeeProfile) {
+    const nextStatus = profile.status === "Disabled" ? "Active" : "Disabled";
+    const verb = nextStatus === "Disabled" ? "disable" : "re-enable";
+    if (!window.confirm(`Are you sure you want to ${verb} ${profile.name}?`)) return;
+    setTogglingId(profile.id);
+    try {
+      await updateEmployeeProfile(profile.id, { status: nextStatus });
+      refreshAllProfiles();
+      refreshProfiles();
+    } finally {
+      setTogglingId(null);
+    }
+  }
 
   function clearErrors() {
     setFormError("");
@@ -1106,6 +1148,7 @@ export function RegistrationFormsView({
           { id: "client" as const, label: "Add Client / Lead", icon: Briefcase },
           { id: "project" as const, label: "New Project", icon: Layers },
           { id: "assign" as const, label: "Assign Project", icon: Target },
+          { id: "manage" as const, label: "All Employees", icon: UserCog },
         ].map(t => (
           <button key={t.id} onClick={() => { setActiveForm(t.id); setSubmitted(false); setSuccessMsg(""); clearErrors(); }}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-['Plus_Jakarta_Sans'] transition-all ${activeForm === t.id ? "bg-indigo-600 text-white" : "text-[#6b7fa8] hover:text-[#a8b5d1]"}`}>
@@ -1448,6 +1491,76 @@ export function RegistrationFormsView({
               {submitting ? "Assigning..." : "Assign to Project →"}
             </button>
           </div>
+        </div>
+      )}
+
+      {/* All Employees — manage regular employees, edit / disable / enable */}
+      {activeForm === "manage" && (
+        <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-6">
+          <div className="flex items-center justify-between gap-3 mb-6 flex-wrap">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-gradient-to-br from-indigo-600 to-violet-600 rounded-xl flex items-center justify-center shrink-0">
+                <UserCog size={18} className="text-white" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white font-['Plus_Jakarta_Sans']">All Employees</h3>
+                <p className="text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans']">Edit or disable a regular employee's account</p>
+              </div>
+            </div>
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#6b7fa8]" />
+              <input
+                value={manageSearch}
+                onChange={e => setManageSearch(e.target.value)}
+                placeholder="Search employee..."
+                className="bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl pl-9 pr-4 py-2 text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-indigo-500/50 font-['Plus_Jakarta_Sans']"
+              />
+            </div>
+          </div>
+
+          {visibleManageableEmployees.length === 0 ? (
+            <p className="text-sm text-[#6b7fa8] font-['Plus_Jakarta_Sans'] text-center py-8">No employees found.</p>
+          ) : (
+            <div className="bg-[#131a35]/70 border border-[rgba(99,102,241,0.12)] rounded-xl divide-y divide-[rgba(99,102,241,0.08)]">
+              {visibleManageableEmployees.map(p => {
+                const disabled = p.status === "Disabled";
+                return (
+                  <div key={p.id} className="flex items-center gap-3 px-4 py-3 flex-wrap">
+                    <Avatar initials={p.avatar || initialsFromName(p.name)} src={p.profileImageUrl || undefined} size="sm" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans'] truncate">{p.name}</p>
+                        <Badge variant={disabled ? "red" : "green"}>{disabled ? "Disabled" : "Active"}</Badge>
+                      </div>
+                      <p className="text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans'] truncate">{p.role} · {p.dept}</p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => onNavigate?.("profiles", { profileId: p.id })}
+                        className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold font-['Plus_Jakarta_Sans'] text-[#a8b5d1] bg-white/5 hover:bg-white/10 rounded-lg transition-colors border border-white/5"
+                      >
+                        <Pencil size={13} /> Edit
+                      </button>
+                      <button
+                        type="button"
+                        disabled={togglingId === p.id}
+                        onClick={() => toggleEmployeeStatus(p)}
+                        className={`flex items-center gap-1.5 px-3 py-2 text-xs font-semibold font-['Plus_Jakarta_Sans'] rounded-lg transition-colors border disabled:opacity-60 ${
+                          disabled
+                            ? "text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 border-emerald-500/20"
+                            : "text-rose-400 bg-rose-500/10 hover:bg-rose-500/20 border-rose-500/20"
+                        }`}
+                      >
+                        {disabled ? <UserCheck size={13} /> : <UserX size={13} />}
+                        {togglingId === p.id ? "Saving..." : disabled ? "Enable" : "Disable"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -178,13 +178,15 @@ export function useProjects() {
   return useQuery(CACHE_KEYS.projects, fetchProjects, [] as Project[]);
 }
 
-export function useEmployeeProfiles() {
+export function useEmployeeProfiles(options?: { includeDisabled?: boolean }) {
+  const includeDisabled = options?.includeDisabled ?? false;
   const instanceId = useId();
+  const cacheKey = includeDisabled ? `${CACHE_KEYS.employeeProfiles}:all` : CACHE_KEYS.employeeProfiles;
   const result = useQuery(
-    CACHE_KEYS.employeeProfiles,
-    fetchEmployeeProfiles,
+    cacheKey,
+    () => fetchEmployeeProfiles({ includeDisabled }),
     [] as EmployeeProfile[],
-    [],
+    [includeDisabled],
     60_000
   );
 
@@ -195,7 +197,7 @@ export function useEmployeeProfiles() {
         "postgres_changes",
         { event: "*", schema: "public", table: "employee_profiles" },
         () => {
-          invalidateDataCache(CACHE_KEYS.employeeProfiles);
+          invalidateDataCachePrefix(CACHE_KEYS.employeeProfiles);
           invalidateDataCache(CACHE_KEYS.employees);
           result.refresh();
         }

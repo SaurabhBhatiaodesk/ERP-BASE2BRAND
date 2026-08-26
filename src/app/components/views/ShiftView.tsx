@@ -5,6 +5,7 @@ import {
   Users, WifiOff, Coffee, MapPin, X, ChevronLeft, ChevronRight, Search,
   Crown, LayoutGrid,
 } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 import { Avatar } from "../ui";
 import { DataEmpty, DataError, DataLoading } from "../ui/DataStatus";
 import { useEmployeeProfiles, useProjectTasks } from "@/hooks/useSupabaseData";
@@ -1329,10 +1330,37 @@ export function ShiftView({
   useEffect(() => {
     void refresh(false);
 
+    // The Electron idle tracker retroactively splits a session's open
+    // "working" segment into working/idle/working once it detects a
+    // sleep/lid-close gap on the EMPLOYEE'S OWN device (see
+    // useElectronIdleTracker.ts). Whoever is viewing Shift Tracker is almost
+    // always a different person on a different device, so until that
+    // correction is fetched here, the still-open stale segment gets
+    // stretched all the way to "now" by the 15s clock tick below — briefly
+    // over-counting the sleep gap as active work — then "snaps back" once
+    // the correction lands. Without a push signal this only self-heals on
+    // the next 30s poll, which is what produced the ~1-minute forward/back
+    // glitch. `clock_session_segments` already has Realtime enabled
+    // (supabase/clock_session_segments.sql), so subscribing to it here
+    // shrinks that stale window to near-instant instead of up to 30s.
+    const segmentsChannel = supabase
+      .channel(`shift-tracker-segments:${targetDate}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "clock_session_segments" }, () => {
+        void refresh(true);
+      })
+      .subscribe();
+
+    // Same-window fallback (e.g. an admin viewing their own row) — cheap to keep alongside Realtime.
+    const onClockSessionChanged = () => { void refresh(true); };
+    window.addEventListener("clock-session-changed", onClockSessionChanged);
+
     const isToday = targetDate === new Date().toLocaleDateString("en-CA");
     if (!isToday) {
       setNowMin(timelineAxis.duration);
-      return;
+      return () => {
+        supabase.removeChannel(segmentsChannel);
+        window.removeEventListener("clock-session-changed", onClockSessionChanged);
+      };
     }
 
     setNowMin(currentTimelineNowMin(timelineAxis));
@@ -1341,6 +1369,8 @@ export function ShiftView({
     return () => {
       clearInterval(refreshId);
       clearInterval(clockId);
+      supabase.removeChannel(segmentsChannel);
+      window.removeEventListener("clock-session-changed", onClockSessionChanged);
     };
   }, [refresh, targetDate, timelineAxis]);
 

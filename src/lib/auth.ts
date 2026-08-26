@@ -143,6 +143,10 @@ export async function loginWithRole(
     profile = null;
   }
 
+  if (profile?.status === "Disabled") {
+    throw new Error("Your account has been disabled. Please contact your administrator.");
+  }
+
   const roleForAuth: AppRoleId = profile
     ? resolveRoleFromProfile(profile, options?.roleHint)
     : options?.roleHint && isAppRoleId(options.roleHint)
@@ -398,6 +402,10 @@ async function finalizeAuthUser(
     } catch {
       profile = null;
     }
+  }
+
+  if (profile?.status === "Disabled") {
+    throw new Error("Your account has been disabled. Please contact your administrator.");
   }
 
   const resolvedRole = profile

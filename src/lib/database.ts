@@ -197,6 +197,8 @@ export type DbEmployeeProfile = {
   shift_start?: string | null;
   last_active_at?: string | null;
   created_at?: string;
+  /** Precise date-of-joining ("YYYY-MM-DD") — separate from `joined`, which is only a month/year display string. */
+  join_date?: string | null;
 };
 
 export type DbLeaveRequest = {
@@ -313,6 +315,10 @@ export type EmployeeProfile = {
   avatar: string;
   /** HH:MM — e.g. 10:00, 11:00, 12:00 */
   shiftStart: string;
+  /** Full timestamp the profile row was created — NOT necessarily the real start date (migrated/admin-created profiles can differ). */
+  createdAt: string | null;
+  /** Precise date-of-joining ("YYYY-MM-DD"), HR-set — the trustworthy source for day-precise join calculations. Null until set. */
+  joinDate: string | null;
 };
 
 export type LeaveRequest = {
@@ -1268,6 +1274,8 @@ export function mapEmployeeProfile(row: DbEmployeeProfile): EmployeeProfile {
     profileImageUrl: row.profile_image_url || "",
     avatar: row.avatar || initialsFromName(row.name),
     shiftStart: row.shift_start?.trim() || "10:00",
+    createdAt: row.created_at || null,
+    joinDate: row.join_date || null,
   };
 }
 
@@ -1713,6 +1721,7 @@ export async function fetchEmployees(): Promise<Employee[]> {
   return getCached(CACHE_KEYS.employees, async () => {
     const data = await getDbEmployeeProfiles();
     return data
+      .filter(row => row.status !== "Disabled")
       .map(profileToEmployee)
       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
   }, PROFILE_CACHE_TTL);
@@ -1873,11 +1882,12 @@ export async function updateProjectDetails(
   invalidateTaskCaches();
 }
 
-export async function fetchEmployeeProfiles(): Promise<EmployeeProfile[]> {
-  return getCached(CACHE_KEYS.employeeProfiles, async () => {
+export async function fetchEmployeeProfiles(options?: { includeDisabled?: boolean }): Promise<EmployeeProfile[]> {
+  const all = await getCached(CACHE_KEYS.employeeProfiles, async () => {
     const data = await getDbEmployeeProfiles();
     return data.map(mapEmployeeProfile);
   }, PROFILE_CACHE_TTL);
+  return options?.includeDisabled ? all : all.filter(p => p.status !== "Disabled");
 }
 
 export async function fetchEmployeeProfileByEmail(email: string): Promise<EmployeeProfile | null> {
@@ -2152,6 +2162,10 @@ export async function createEmployee(input: {
     phone: input.phone || "—",
     location: input.location || "Remote",
     joined: formatJoinDate(input.joining || ""),
+    // `input.joining` is already an exact "YYYY-MM-DD" from the Register/Add
+    // form's date picker — persist it raw instead of only the lossy display
+    // string above, so day-precise calculations have a real date to read.
+    join_date: input.joining || null,
     score: 85,
     status: "Active",
     salary: input.salary ? formatCurrency(input.salary) : "₹0",
@@ -2183,6 +2197,7 @@ export async function updateEmployeeProfile(id: string, input: Partial<{
   phone: string;
   location: string;
   joined: string;
+  joinDate: string;
   salary: string;
   manager: string;
   skills: string[];
@@ -2201,6 +2216,7 @@ export async function updateEmployeeProfile(id: string, input: Partial<{
   if (input.phone !== undefined) payload.phone = input.phone;
   if (input.location !== undefined) payload.location = input.location;
   if (input.joined !== undefined) payload.joined = input.joined;
+  if (input.joinDate !== undefined) payload.join_date = input.joinDate || null;
   if (input.salary !== undefined) payload.salary = input.salary;
   if (input.manager !== undefined) payload.manager = input.manager;
   if (input.skills !== undefined) payload.skills = input.skills;
@@ -6978,6 +6994,31 @@ export async function setInvoicingLockHash(passwordHash: string): Promise<boolea
     .insert({ password_hash: passwordHash });
   if (insertError) {
     console.error("setInvoicingLockHash insert error:", insertError);
+    return false;
+  }
+  return true;
+}
+
+/** Per-employee PIN gating "My Payroll" (see payroll_pin_lock.sql) — one row per employee, unlike Invoicing's single shared row. */
+export async function fetchPayrollPinHash(employeeId: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("payroll_pin_lock")
+    .select("password_hash")
+    .eq("employee_id", employeeId)
+    .maybeSingle();
+  if (error) {
+    console.error("fetchPayrollPinHash error:", error);
+    return null;
+  }
+  return data?.password_hash ?? null;
+}
+
+export async function setPayrollPinHash(employeeId: string, passwordHash: string): Promise<boolean> {
+  const { error } = await supabase
+    .from("payroll_pin_lock")
+    .upsert({ employee_id: employeeId, password_hash: passwordHash, updated_at: new Date().toISOString() });
+  if (error) {
+    console.error("setPayrollPinHash error:", error);
     return false;
   }
   return true;
