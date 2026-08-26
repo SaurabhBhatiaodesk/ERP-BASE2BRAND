@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Calendar, ChevronLeft, ChevronRight, IndianRupee, KeyRound, Loader2, Lock, Wallet } from "lucide-react";
+import { Calendar, ChevronLeft, ChevronRight, IndianRupee, KeyRound, Loader2, Lock, Pencil, Wallet } from "lucide-react";
 import bcrypt from "bcryptjs";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import { Avatar } from "../ui";
 import { DataEmpty, DataError, DataLoading } from "../ui/DataStatus";
 import { useAttendanceReport, useEmployeeProfiles, useLeaveRequests, usePublicHolidays } from "@/hooks/useSupabaseData";
-import { findProfileForUser, fetchPayrollPinHash, setPayrollPinHash, initialsFromName } from "@/lib/database";
+import { findProfileForUser, fetchPayrollPinHash, setPayrollPinHash, initialsFromName, updateEmployeeProfile } from "@/lib/database";
 import {
   buildHolidayCalendar,
   buildPayrollForEmployee,
@@ -14,8 +14,10 @@ import {
   formatDayLabel,
   formatDays,
   formatMoney,
+  formatSalaryForStorage,
   monthLabel,
   parseJoinedDate,
+  parseSalaryAmount,
   toDateKey,
   SANDWICH_WINDOW_PAD_DAYS,
   type PayrollResult,
@@ -229,8 +231,30 @@ export function MyPayrollView({
   const today = useMemo(() => new Date(), []);
   const [cursor, setCursor] = useState(() => ({ year: today.getFullYear(), monthIndex: today.getMonth() }));
 
-  const { data: profiles, loading: profilesLoading, error: profilesError } = useEmployeeProfiles();
+  const { data: profiles, loading: profilesLoading, error: profilesError, refresh: refreshProfiles } = useEmployeeProfiles();
   const viewerProfile = useMemo(() => findProfileForUser(profiles, userName, userEmail), [profiles, userName, userEmail]);
+  const [editingSalary, setEditingSalary] = useState(false);
+  const [salaryDraft, setSalaryDraft] = useState("");
+  const [savingSalary, setSavingSalary] = useState(false);
+  const [salaryError, setSalaryError] = useState("");
+
+  async function handleSaveSalary() {
+    if (!viewerProfile) return;
+    const amount = parseSalaryAmount(salaryDraft);
+    if (amount === null) { setSalaryError("Enter a valid monthly salary."); return; }
+    setSavingSalary(true);
+    setSalaryError("");
+    try {
+      await updateEmployeeProfile(viewerProfile.id, { salary: formatSalaryForStorage(amount) });
+      refreshProfiles();
+      setEditingSalary(false);
+      toast.success("Salary updated.");
+    } catch (err) {
+      setSalaryError(err instanceof Error ? err.message : "Failed to save salary.");
+    } finally {
+      setSavingSalary(false);
+    }
+  }
 
   const range = useMemo(() => {
     const { year, monthIndex } = cursor;
@@ -391,16 +415,65 @@ export function MyPayrollView({
           </div>
         </div>
 
-        {payroll.baseSalary === null && (
-          <div className="mb-5 bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3">
+        {payroll.baseSalary === null && !editingSalary && (
+          <div className="mb-5 bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
             <p className="text-xs text-amber-400 font-['Plus_Jakarta_Sans']">
-              HR hasn't set your monthly salary yet, so net pay can't be calculated. Contact HR to get this set up.
+              No monthly salary set yet, so net pay can't be calculated.
             </p>
+            <button
+              type="button"
+              onClick={() => { setSalaryDraft(""); setSalaryError(""); setEditingSalary(true); }}
+              className="text-xs font-semibold text-amber-300 hover:text-amber-200 underline transition-colors font-['Plus_Jakarta_Sans']"
+            >
+              Set it now
+            </button>
           </div>
         )}
 
         <div className="bg-[#131a35]/70 border border-[rgba(99,102,241,0.12)] rounded-xl divide-y divide-[rgba(99,102,241,0.08)]">
-          <Line label="Base Salary (Monthly)" value={formatMoney(payroll.baseSalary ?? 0)} />
+          {editingSalary ? (
+            <div className="px-4 py-3.5">
+              <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono'] uppercase tracking-wide mb-2">Base Salary (Monthly)</p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  autoFocus
+                  value={salaryDraft}
+                  onChange={e => setSalaryDraft(e.target.value)}
+                  placeholder="e.g. 30000"
+                  className="flex-1 bg-[#0d1326] border border-[rgba(99,102,241,0.15)] rounded-lg px-3 py-2 text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-indigo-500/50 font-['Plus_Jakarta_Sans']"
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveSalary}
+                  disabled={savingSalary}
+                  className="px-4 py-2 shrink-0 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 disabled:opacity-60 text-white text-xs font-semibold rounded-lg transition-all font-['Plus_Jakarta_Sans']"
+                >
+                  {savingSalary ? "Saving..." : "Save"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setEditingSalary(false); setSalaryError(""); }}
+                  className="px-3 py-2 shrink-0 text-xs text-[#8fa0c4] hover:text-white transition-colors font-['Plus_Jakarta_Sans']"
+                >
+                  Cancel
+                </button>
+              </div>
+              {salaryError && <p className="text-xs text-red-400 font-['Plus_Jakarta_Sans'] mt-2">{salaryError}</p>}
+            </div>
+          ) : (
+            <div className="flex items-center justify-between gap-3 px-4 py-3.5">
+              <span className="text-sm text-[#8fa0c4] font-['Plus_Jakarta_Sans']">Base Salary (Monthly)</span>
+              <button
+                type="button"
+                onClick={() => { setSalaryDraft(payroll.baseSalary !== null ? String(payroll.baseSalary) : ""); setSalaryError(""); setEditingSalary(true); }}
+                className="flex items-center gap-1.5 text-sm font-semibold text-white font-['Plus_Jakarta_Sans'] hover:text-indigo-300 transition-colors"
+              >
+                {formatMoney(payroll.baseSalary ?? 0)}
+                <Pencil size={12} className="text-[#6b7fa8]" />
+              </button>
+            </div>
+          )}
           <Line label="Payable Days" value={`${formatDays(payroll.payableDays)} / ${payroll.daysInMonth}`} />
           <Line
             label="Paid Leave Used"
