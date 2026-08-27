@@ -4,6 +4,8 @@ import {
   BarChart3, Target,
 } from "lucide-react";
 import { ArrowUpRight } from "lucide-react";
+import { askOpenAICopilot, type ChatHistoryMessage } from "@/lib/copilotAi";
+import { CopilotMessageContent } from "../CopilotMarkdown";
 
 const copilotSuggestions = [
   { id: "s1", category: "Revenue", icon: TrendingUp, color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/15", title: "TechCorp deal at risk", body: "No activity for 3 days on ₹18.4L proposal. Recommend a follow-up call today.", action: "Draft follow-up email" },
@@ -21,20 +23,6 @@ const copilotCommands = [
   { label: "Risk report", prompt: "List all active risks across projects, clients, and team right now." },
 ];
 
-const copilotResponses: Record<string, string> = {
-  "Give me a complete summary of today's operations, productivity, and any risks.":
-    "📊 **Today's Operations Brief**\n\n✅ Team productivity: 86.4% avg (↑4.2% vs yesterday)\n💰 Revenue pipeline: ₹52L active, ₹18.4L at risk (TechCorp idle)\n⚠️ Risks: Dev team at 140% sprint capacity · Rahul Gupta 4th late login · Sprint #14 has 3 blockers\n🌟 Highlight: Kavya Nair delivered Brand Identity v3 — client approved\n\nRecommended actions: (1) Call TechCorp today (2) Redistribute 2 dev tasks to Amit Kumar (3) 1:1 with Rahul Gupta",
-  "Who is underperforming this week and why? What should I do?":
-    "📉 **Underperformance Report — Week of May 19**\n\n1. **Rahul Gupta** (Marketing) — 71% productivity, 4 late logins, 22+ min idle/day. Possible personal issue or disengagement. Action: Private 1:1, check workload alignment.\n\n2. **Amit Kumar** (Dev) — 79% productivity, 2 missed task deadlines. Sprint overload may be the cause — currently at 120% capacity. Action: Reduce sprint allocation by 2 tasks.",
-  "Based on current pipeline, what is my revenue forecast for next month?":
-    "💰 **Revenue Forecast — June 2025**\n\nHigh confidence closes: ₹9.6L (FinEdge) + ₹3.8L (GreenLeaf milestone) = ₹13.4L\nMedium confidence: ₹18.4L (TechCorp) — requires follow-up this week\nNew pipeline expected: ₹6–8L based on current lead velocity\n\n📈 **Forecast range: ₹19–31L** (base: ₹22L)\nVs May actuals: ₹18.2L — projected ↑21% if TechCorp closes",
-  "What are the top 3 wins across the team this week?":
-    "🏆 **Top 3 Wins — Week of May 19**\n\n1. **Kavya Nair** closed Brand Identity v3 for FinEdge Capital — approved on first review round, saving 2 revision cycles (est. ₹40K saved).\n\n2. **Priya Sharma** completed the Auth & Roles module 3 days ahead of schedule — unblocking 4 downstream tasks in the ERP project.\n\n3. **Marketing team** delivered Q2 campaign — 103 leads generated this month, highest ever, at ₹592 CPL (↓28% vs last quarter).",
-  "Analyse workload and tell me which roles I should hire for urgently.":
-    "👥 **Hiring Recommendations — Urgency Ranked**\n\n🔴 **Urgent: Content Strategist** — Marketing output down 22% QoQ. Current team producing 60% of needed content. Revenue impact: est. ₹3.2L/quarter.\n\n🟠 **High: Junior Developer** — Dev team consistently at 120–140% sprint capacity. 2 projects at risk of delay. Onboarding time: ~6 weeks.\n\n🟡 **Medium: QA Engineer** — No dedicated QA currently. Bug resolution time up 3x since Q4. Would reduce client delivery risk significantly.",
-  "List all active risks across projects, clients, and team right now.":
-    "🚨 **Active Risk Register**\n\n**Projects**\n• ERP Platform — Payment gateway + DB migration blocked (High)\n• Brand Identity v3 — Collateral templates not started, due May 30 (Medium)\n\n**Clients**\n• TechCorp — Deal idle 3 days, competitor may be engaged (High)\n• FinEdge Capital — Legal hold on contract, delay risk (Medium)\n\n**Team**\n• Dev team at 140% capacity — sprint slip likely (High)\n• Rahul Gupta attendance pattern — retention risk (Medium)\n• No QA engineer — quality risk on all deliverables (Medium)",
-};
 
 export function AICopilotView() {
   const [messages, setMessages] = useState<{ role: "user" | "ai" | "system"; text: string }[]>([
@@ -49,16 +37,21 @@ export function AICopilotView() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, typing]);
 
-  function send(text: string) {
+  async function send(text: string) {
     if (!text.trim() || typing) return;
+    const history: ChatHistoryMessage[] = messages
+      .filter(m => m.role !== "system")
+      .slice(-8)
+      .map(m => ({ role: m.role === "ai" ? "assistant" : "user", content: m.text }));
     setMessages(prev => [...prev, { role: "user", text }]);
     setInput("");
     setTyping(true);
-    setTimeout(() => {
-      const reply = copilotResponses[text] ?? "I've analysed the latest data across your team, pipeline, and operations. Based on current patterns, the highest-impact action right now is following up on the TechCorp deal and redistributing the Dev team's sprint load. Want me to draft specific action items?";
-      setMessages(prev => [...prev, { role: "ai", text: reply }]);
+    try {
+      const result = await askOpenAICopilot(text, history);
+      setMessages(prev => [...prev, { role: "ai", text: result.content }]);
+    } finally {
       setTyping(false);
-    }, 1400);
+    }
   }
 
   const visibleSuggestions = copilotSuggestions.filter(s => !dismissed.includes(s.id));
@@ -82,7 +75,7 @@ export function AICopilotView() {
               <span className="text-red-500 font-bold flex items-center gap-1">
                 <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse inline-block" />
                 Live
-              </span> · Analysing 38 employees · ₹52L pipeline · 24 leads
+              </span> · Connected to your live company data
             </p>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
@@ -128,12 +121,12 @@ export function AICopilotView() {
                   <Brain size={12} className="text-white" />
                 </div>
               )}
-              <div className={`max-w-[85%] px-4 py-3 rounded-2xl text-xs font-['Plus_Jakarta_Sans'] leading-relaxed whitespace-pre-line ${
+              <div className={`max-w-[85%] px-4 py-3 rounded-2xl text-xs font-['Plus_Jakarta_Sans'] leading-relaxed ${
                 m.role === "ai"
                   ? "bg-[#131a35] border border-[rgba(99,102,241,0.1)] text-[#e2e8f7] rounded-tl-sm"
-                  : "bg-gradient-to-br from-indigo-600 to-violet-600 text-white rounded-tr-sm shadow-lg shadow-indigo-600/20"
+                  : "bg-gradient-to-br from-indigo-600 to-violet-600 text-white rounded-tr-sm shadow-lg shadow-indigo-600/20 whitespace-pre-line"
               }`}>
-                {m.text}
+                {m.role === "ai" ? <CopilotMessageContent content={m.text} /> : m.text}
               </div>
             </div>
           ))}
@@ -181,9 +174,8 @@ export function AICopilotView() {
           </div>
           {[
             { label: "Data freshness", value: "Live", color: "text-red-500 animate-pulse" },
-            { label: "Employees tracked", value: "38", color: "text-indigo-400" },
-            { label: "Pipeline monitored", value: "₹52L", color: "text-violet-400" },
-            { label: "Active alerts", value: "4", color: "text-amber-400" },
+            { label: "Data source", value: "Supabase", color: "text-indigo-400" },
+            { label: "Model", value: "GPT-4o mini", color: "text-violet-400" },
           ].map(s => (
             <div key={s.label} className="flex items-center justify-between py-1.5 border-b border-[rgba(99,102,241,0.06)] last:border-0">
               <span className="text-[11px] text-[#6b7fa8] font-['Plus_Jakarta_Sans']">{s.label}</span>
