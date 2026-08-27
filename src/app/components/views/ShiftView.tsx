@@ -377,14 +377,16 @@ function TaskStageDetail({
   large = false,
   assigneeId,
   attendanceSessions,
+  targetDate,
 }: {
   task: ShiftActiveTask;
   compact?: boolean;
   large?: boolean;
   assigneeId?: string;
   attendanceSessions?: AttendanceTimeWindow[];
+  targetDate?: string;
 }) {
-  const totals = cumulativeTaskStageTotals(task, assigneeId, attendanceSessions);
+  const totals = dailyTaskStageTotals(task, targetDate, assigneeId, attendanceSessions);
 
   const rows = getAllStageEntries(task.status, totals);
 
@@ -529,14 +531,20 @@ function TaskStageBar({
   nowMin,
   assigneeId,
   attendanceSessions,
+  targetDate,
 }: {
   task: ShiftActiveTask;
   shiftWindow: { left: number; width: number };
   nowMin: number;
   assigneeId?: string;
   attendanceSessions?: AttendanceTimeWindow[];
+  targetDate?: string;
 }) {
-  const totals = cumulativeTaskStageTotals(task, assigneeId, attendanceSessions);
+  // Scoped to targetDate (today), not cumulativeTaskStageTotals — a task can
+  // stay "in-progress" across many days/weekends, and summing its raw
+  // duration_seconds since creation would show days of stale wall-clock gaps
+  // as if they were the current live session.
+  const totals = dailyTaskStageTotals(task, targetDate, assigneeId, attendanceSessions);
 
   const segments = buildProportionalStageSegments(totals);
   const currentStageMeta = stageMeta[task.status as (typeof STAGE_ORDER)[number]];
@@ -722,6 +730,7 @@ export function StageTimelineBar({
             nowMin={nowMin}
             assigneeId={emp.id}
             attendanceSessions={attendanceSessions}
+            targetDate={targetDate}
           />
         ))
       ) : (
@@ -1152,6 +1161,7 @@ export function EmployeeDetailPanel({
                 large
                 assigneeId={emp.id}
                 attendanceSessions={attendanceSessions}
+                targetDate={taskStageDate}
               />
             ))
           ) : (
@@ -1775,7 +1785,7 @@ export function ShiftView({
                 </div>
               </div>
 
-              <div className="flex-1 px-4 py-4">
+              <div className="flex-1 min-w-0 px-4 py-4">
                 <StageTimelineBar
                   emp={emp}
                   nowMin={nowMin}
@@ -1839,8 +1849,9 @@ export function ShiftView({
 
               const currentWorkTask = emp.status === "working" && emp.workTasks[0] ? emp.workTasks[0] : null;
               const currentWorkTaskTotals = currentWorkTask
-                ? cumulativeTaskStageTotals(
+                ? dailyTaskStageTotals(
                     currentWorkTask,
+                    targetDate,
                     emp.id,
                     taskTimerWindows,
                   )
