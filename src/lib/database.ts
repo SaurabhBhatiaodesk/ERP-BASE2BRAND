@@ -386,6 +386,10 @@ export type DbProjectTaskRow = {
   created_at?: string;
   updated_at?: string;
   status_entered_at?: string | null;
+  /** When the task most recently, genuinely entered "Ready for QA" — unlike
+   *  status_entered_at, this is NOT reset by attendance pause/resume splitting,
+   *  so the QA-reminder cron can rely on it for a stable 30-minute countdown. */
+  ready_for_qa_since?: string | null;
 };
 
 export type DbTimesheetEntryRow = {
@@ -2585,9 +2589,11 @@ export async function updateProjectTask(input: {
     const current = existing as DbProjectTaskRow;
     const previousStatus = normalizeTaskStatusForStorage(current.status);
     let statusEnteredAt = current.status_entered_at || current.created_at || new Date().toISOString();
+    let readyForQaSince = current.ready_for_qa_since ?? null;
     const taskDate = input.taskDate ? normalizeTaskDateInput(input.taskDate) : undefined;
+    const isGenuineStatusChange = previousStatus !== taskStatus;
 
-    if (previousStatus !== taskStatus && (await probeTaskStageTracking())) {
+    if (isGenuineStatusChange && (await probeTaskStageTracking())) {
       statusEnteredAt = await recordTaskStatusChange({
         taskId: input.taskId,
         projectId: input.projectId,
@@ -2597,12 +2603,18 @@ export async function updateProjectTask(input: {
         fallbackEnteredAt: statusEnteredAt,
       });
     }
+    if (isGenuineStatusChange) {
+      // Only a real stage transition should (re)start or clear the QA-reminder
+      // countdown — attendance pause/resume must never touch this.
+      readyForQaSince = taskStatus === TASK_STATUS_READY_FOR_QA ? new Date().toISOString() : null;
+    }
 
     const updated: DbProjectTaskRow = input.statusOnly
       ? {
           ...current,
           status: taskStatus,
           status_entered_at: statusEnteredAt,
+          ready_for_qa_since: readyForQaSince,
           ...(taskDate ? { task_date: taskDate } : {}),
           ...(!current.assignee_id && input.movedById ? { assignee_id: input.movedById } : {}),
           updated_at: new Date().toISOString(),
@@ -2617,6 +2629,7 @@ export async function updateProjectTask(input: {
           est: input.est ? `${input.est.replace(/h$/i, "")}h` : current.est,
           work_notes: input.workNotes !== undefined ? input.workNotes.trim() : current.work_notes,
           status_entered_at: statusEnteredAt,
+          ready_for_qa_since: readyForQaSince,
           task_date: taskDate ?? current.task_date ?? normalizeTaskDateInput(current.created_at),
           updated_at: new Date().toISOString(),
         };

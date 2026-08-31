@@ -395,7 +395,6 @@ export default function App() {
     profileId?: string;
   } | null>(null);
   const [chatNav, setChatNav] = useState<{ channelId?: string } | null>(null);
-  const [meetingNav, setMeetingNav] = useState<{ autoOpenCreate?: boolean } | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [timesheetNav, setTimesheetNav] = useState<{ projectId?: string; tab?: "office" | "project" } | null>(null);
   const [showHeaderMenu, setShowHeaderMenu] = useState(false);
@@ -822,9 +821,6 @@ export default function App() {
               setActiveView("projectworkspace");
               return;
             }
-            if (options?.autoOpenCreateMeeting) {
-              setMeetingNav({ autoOpenCreate: true });
-            }
             setActiveView(view);
           }}
         />
@@ -969,8 +965,6 @@ export default function App() {
           userId={currentProfile?.id ?? ""}
           userName={userName}
           userEmail={userEmail}
-          autoOpenCreate={meetingNav?.autoOpenCreate}
-          onNavConsumed={() => setMeetingNav(null)}
         />
       );
       default: return <CEODashboard userName={userName} userEmail={userEmail} />;

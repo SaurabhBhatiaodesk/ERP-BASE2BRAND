@@ -41,6 +41,7 @@ import {
 } from "@/lib/database";
 import { sessionStatusToActivity } from "@/lib/shiftTimeline";
 import { EmployeeDailyTimeline } from "./EmployeeDailyTimeline";
+import { ScheduleModal, getEffectiveStatus } from "./MeetingView";
 
 function employeeTimerSession(
   activeClock: ClockSessionRecord | null,
@@ -329,7 +330,7 @@ export function TeamLeaderDashboard() {
   );
 }
 
-export type EmployeeNavigateOptions = { projectId?: string; autoOpenCreateMeeting?: boolean };
+export type EmployeeNavigateOptions = { projectId?: string };
 
 export function LeavesView({ userName, userEmail = "" }: { userName?: string; userEmail?: string }) {
   const { data: profiles } = useEmployeeProfiles();
@@ -776,6 +777,7 @@ export function EmployeeDashboard({
   const [showClockOutMenu, setShowClockOutMenu] = useState(false);
   const [showMeetingPicker, setShowMeetingPicker] = useState(false);
   const [pickerMeetings, setPickerMeetings] = useState<Meeting[] | null>(null);
+  const [showCreateMeetingForm, setShowCreateMeetingForm] = useState(false);
   const [todayAttendanceSeconds, setTodayAttendanceSeconds] = useState(0);
   const [weekHours, setWeekHours] = useState<{ day: string; h: number }[]>([
     { day: "Mon", h: 0 },
@@ -1035,11 +1037,13 @@ export function EmployeeDashboard({
     try {
       const all = await fetchMeetings(myProfile.id);
       const pickable = all
-        .filter(m => m.status === "scheduled" || m.status === "ongoing")
+        .map(m => ({ meeting: m, effectiveStatus: getEffectiveStatus(m) }))
+        .filter(({ effectiveStatus }) => effectiveStatus === "scheduled" || effectiveStatus === "ongoing")
         .sort((a, b) => {
-          if (a.status !== b.status) return a.status === "ongoing" ? -1 : 1;
-          return `${a.date}${a.start_time}`.localeCompare(`${b.date}${b.start_time}`);
-        });
+          if (a.effectiveStatus !== b.effectiveStatus) return a.effectiveStatus === "ongoing" ? -1 : 1;
+          return `${a.meeting.date}${a.meeting.start_time}`.localeCompare(`${b.meeting.date}${b.meeting.start_time}`);
+        })
+        .map(({ meeting }) => meeting);
       setPickerMeetings(pickable);
     } catch {
       setPickerMeetings([]);
@@ -1208,7 +1212,7 @@ export function EmployeeDashboard({
                   </div>
                   <button
                     type="button"
-                    onClick={() => { setShowMeetingPicker(false); setShowClockOutMenu(false); onNavigate?.("meetings", { autoOpenCreateMeeting: true }); }}
+                    onClick={() => setShowCreateMeetingForm(true)}
                     className="mt-1 flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold font-['Plus_Jakarta_Sans'] bg-violet-500/20 border border-violet-500/30 text-violet-300 hover:bg-violet-500/30 transition-colors"
                   >
                     <Plus size={15} /> Create Meeting
@@ -1228,7 +1232,7 @@ export function EmployeeDashboard({
                       <span className="flex-1 min-w-0">
                         <span className="flex items-center gap-2">
                           <span className="block text-sm font-semibold text-white font-['Plus_Jakarta_Sans'] truncate">{m.title}</span>
-                          {m.status === "ongoing" && (
+                          {getEffectiveStatus(m) === "ongoing" && (
                             <span className="shrink-0 text-[9px] font-['Geist_Mono'] uppercase tracking-wide px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">Ongoing</span>
                           )}
                         </span>
@@ -1238,10 +1242,26 @@ export function EmployeeDashboard({
                       </span>
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateMeetingForm(true)}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold font-['Plus_Jakarta_Sans'] border border-dashed border-violet-500/30 text-violet-300 hover:bg-violet-500/10 transition-colors"
+                  >
+                    <Plus size={15} /> Create another meeting
+                  </button>
                 </div>
               )}
             </div>
           </div>
+        )}
+        {showCreateMeetingForm && myProfile && (
+          <ScheduleModal
+            profiles={profiles}
+            organizerId={myProfile.id}
+            organizerName={myProfile.name}
+            onClose={() => setShowCreateMeetingForm(false)}
+            onSaved={() => { setShowCreateMeetingForm(false); void openMeetingPicker(); }}
+          />
         )}
         {[
           { label: "Focus Score", value: `${focusScore}%`, icon: Target, color: "text-indigo-400" },

@@ -7,9 +7,25 @@
 -- in that status for at least 30 minutes with no reminder sent yet, notifies:
 --   - the task assignee's manager, if that manager is a Team Lead, else
 --   - every employee with the Team Leader role (app_role = 'teamlead')
--- Run AFTER: project_tasks (task_status_tracking.sql), employee_profiles, notifications.
+--
+-- IMPORTANT: this uses project_tasks.ready_for_qa_since, NOT status_entered_at.
+-- status_entered_at (and the open task_status_history row) gets reset every
+-- time the assignee takes a break/meeting/lunch and resumes (see
+-- pauseEmployeeTaskTimers/resumeEmployeeTaskTimers in database.ts, which
+-- deliberately pause stage-duration tracking during attendance gaps) — using
+-- it here caused the same task to re-qualify and re-notify after every
+-- clock-out/in cycle, flooding Team Leads with duplicate reminders.
+-- ready_for_qa_since is set once by updateProjectTask() on a genuine status
+-- transition into 'ready-for-testing' and cleared on any transition out of
+-- it, so it is stable across attendance pause/resume.
+--
+-- Run AFTER: project_tasks (task_status_tracking.sql), employee_profiles,
+-- notifications, and the `ready_for_qa_since` column (added by this file's
+-- own migration below).
 
 CREATE EXTENSION IF NOT EXISTS pg_cron;
+
+ALTER TABLE public.project_tasks ADD COLUMN IF NOT EXISTS ready_for_qa_since timestamptz;
 
 -- ─── Unschedule old job (safe re-run) ─────────────────────────────────────
 SELECT cron.unschedule(jobname)
@@ -46,19 +62,14 @@ SELECT cron.schedule(
     ) recipient ON true
     WHERE pt.status = 'ready-for-testing'
       AND pt.assignee_id IS NOT NULL
-      AND pt.status_entered_at IS NOT NULL
-      AND pt.status_entered_at <= now() - interval '30 minutes'
-      -- ignore the pre-existing backlog from before this job was deployed,
-      -- so turning this on doesn't instantly blast Team Leads with every task
-      -- that's already been sitting in Ready for QA for days/weeks
-      AND pt.status_entered_at >= '2026-08-31T05:53:00Z'::timestamptz
-      -- skip if already notified for this specific stage-entry (not a stale
-      -- notification from a previous time this same task was in this status)
+      AND pt.ready_for_qa_since IS NOT NULL
+      AND pt.ready_for_qa_since <= now() - interval '30 minutes'
+      -- skip if already notified for this specific stay in Ready for QA
       AND NOT EXISTS (
         SELECT 1 FROM public.notifications n
         WHERE n.reference_id = pt.id
           AND n.type = 'task_ready_for_review'
-          AND n.created_at >= pt.status_entered_at
+          AND n.created_at >= pt.ready_for_qa_since
       );
   $$
 );

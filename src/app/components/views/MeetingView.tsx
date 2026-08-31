@@ -86,7 +86,7 @@ function formatDateLabel(dateStr: string): string {
   return d.toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
 }
 
-function getEffectiveStatus(m: Meeting): MeetingStatus {
+export function getEffectiveStatus(m: Meeting): MeetingStatus {
   if (m.status === "cancelled" || m.status === "completed") return m.status;
   const now = new Date();
   const dateTime = (t: string) => new Date(`${m.date}T${t}:00`);
@@ -526,7 +526,7 @@ function CalendarView({ meetings, onSelect }: { meetings: Meeting[]; onSelect: (
 }
 
 // ── Schedule Meeting Modal ─────────────────────────────────────
-interface ScheduleModalProps {
+export interface ScheduleModalProps {
   profiles: { id: string; name: string; appRole: string }[];
   organizerId: string;
   organizerName: string;
@@ -535,7 +535,7 @@ interface ScheduleModalProps {
   onSaved: () => void;
 }
 
-function ScheduleModal({ profiles, organizerId, organizerName, editingMeeting, onClose, onSaved }: ScheduleModalProps) {
+export function ScheduleModal({ profiles, organizerId, organizerName, editingMeeting, onClose, onSaved }: ScheduleModalProps) {
   const isEditing = !!editingMeeting;
 
   const [title,         setTitle]         = useState(editingMeeting?.title ?? "");
@@ -1003,11 +1003,9 @@ export interface MeetingViewProps {
   userId: string;
   userName: string;
   userEmail: string;
-  autoOpenCreate?: boolean;
-  onNavConsumed?: () => void;
 }
 
-export function MeetingView({ userId, userName, userEmail, autoOpenCreate, onNavConsumed }: MeetingViewProps) {
+export function MeetingView({ userId, userName, userEmail }: MeetingViewProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("board");
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1034,12 +1032,6 @@ export function MeetingView({ userId, userName, userEmail, autoOpenCreate, onNav
   }, [userId]);
 
   useEffect(() => { void load(); }, [load]);
-
-  useEffect(() => {
-    if (!autoOpenCreate) return;
-    setShowSchedule(true);
-    onNavConsumed?.();
-  }, [autoOpenCreate, onNavConsumed]);
 
   // Real-time subscription for new/updated meetings
   useEffect(() => {
