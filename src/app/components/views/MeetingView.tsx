@@ -663,7 +663,7 @@ function ScheduleModal({ profiles, organizerId, organizerName, editingMeeting, o
 
           {/* Link */}
           <div>
-            <label className={labelCls}>Meeting Link *</label>
+            <label className={labelCls}>Meeting Link </label>
             <input
               id="meeting-link"
               className={inputCls}

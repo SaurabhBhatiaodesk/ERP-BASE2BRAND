@@ -6,7 +6,9 @@ release/
 .env
 .env.local
 .env.*.local
+.figma-token
 
 supabase/.temp/
 supabase/.temp/*
 invoice
+client-erp
