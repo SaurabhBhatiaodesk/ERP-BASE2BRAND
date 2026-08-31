@@ -8,8 +8,13 @@ create table if not exists public.clock_session_segments (
   label text not null default '',
   started_at timestamptz not null,
   ended_at timestamptz,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  meeting_id uuid references public.meetings(id) on delete set null
 );
+
+-- Links a "meeting" segment to the specific meeting the employee picked
+-- from the Meetings module, so Shift Tracker can show which meeting they're in.
+alter table public.clock_session_segments add column if not exists meeting_id uuid references public.meetings(id) on delete set null;
 
 create index if not exists clock_session_segments_session_idx
   on public.clock_session_segments (session_id, started_at);

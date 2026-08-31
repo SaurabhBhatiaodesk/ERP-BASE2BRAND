@@ -83,6 +83,7 @@ export function segmentsToTimeline(
       label: isIdle ? "Idle" : seg.label || (kind === "working" ? "Office attendance" : kind),
       start: isoToTimelineMinutes(seg.startedAt, axis),
       end: seg.endedAt ? isoToTimelineMinutes(seg.endedAt, axis) : null,
+      meetingId: kind === "meeting" ? seg.meetingId ?? null : null,
     });
   }
   return blocks;

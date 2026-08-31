@@ -1003,9 +1003,11 @@ export interface MeetingViewProps {
   userId: string;
   userName: string;
   userEmail: string;
+  autoOpenCreate?: boolean;
+  onNavConsumed?: () => void;
 }
 
-export function MeetingView({ userId, userName, userEmail }: MeetingViewProps) {
+export function MeetingView({ userId, userName, userEmail, autoOpenCreate, onNavConsumed }: MeetingViewProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("board");
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1032,6 +1034,12 @@ export function MeetingView({ userId, userName, userEmail }: MeetingViewProps) {
   }, [userId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    if (!autoOpenCreate) return;
+    setShowSchedule(true);
+    onNavConsumed?.();
+  }, [autoOpenCreate, onNavConsumed]);
 
   // Real-time subscription for new/updated meetings
   useEffect(() => {

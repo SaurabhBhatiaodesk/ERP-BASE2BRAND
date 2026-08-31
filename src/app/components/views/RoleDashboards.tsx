@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useId, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useId, useMemo, useCallback, useRef } from "react";
 import {
   Users, Activity, Clock, AlertTriangle, Target, CheckSquare,
   Zap, GitBranch, Layers, Star, TrendingUp, DollarSign, PieChart,
-  Coffee, Utensils, Briefcase, LogOut, X, MapPin,
+  Coffee, Utensils, Briefcase, LogOut, X, MapPin, Video, Calendar, ChevronLeft, Plus,
 } from "lucide-react";
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -34,6 +34,10 @@ import {
   type AppTask,
   type ClockSessionRecord,
   type TimesheetEntry,
+  fetchMeetings,
+  type Meeting,
+  insertNotification,
+  hasNotificationToday,
 } from "@/lib/database";
 import { sessionStatusToActivity } from "@/lib/shiftTimeline";
 import { EmployeeDailyTimeline } from "./EmployeeDailyTimeline";
@@ -325,7 +329,7 @@ export function TeamLeaderDashboard() {
   );
 }
 
-export type EmployeeNavigateOptions = { projectId?: string };
+export type EmployeeNavigateOptions = { projectId?: string; autoOpenCreateMeeting?: boolean };
 
 export function LeavesView({ userName, userEmail = "" }: { userName?: string; userEmail?: string }) {
   const { data: profiles } = useEmployeeProfiles();
@@ -770,6 +774,8 @@ export function EmployeeDashboard({
   const [activeClock, setActiveClock] = useState<ClockSessionRecord | null>(null);
   const [todaySession, setTodaySession] = useState<ClockSessionRecord | null>(null);
   const [showClockOutMenu, setShowClockOutMenu] = useState(false);
+  const [showMeetingPicker, setShowMeetingPicker] = useState(false);
+  const [pickerMeetings, setPickerMeetings] = useState<Meeting[] | null>(null);
   const [todayAttendanceSeconds, setTodayAttendanceSeconds] = useState(0);
   const [weekHours, setWeekHours] = useState<{ day: string; h: number }[]>([
     { day: "Mon", h: 0 },
@@ -817,6 +823,49 @@ export function EmployeeDashboard({
     window.addEventListener("clock-session-changed", onClockSessionChanged);
     return () => window.removeEventListener("clock-session-changed", onClockSessionChanged);
   }, [refreshClockState]);
+
+  // Nudge the employee once per day if, 20 minutes after clocking in, they
+  // still have nothing in To Do or In Progress. `hasNotificationToday` makes
+  // this idempotent across reloads/re-renders — only the first check to find
+  // no open task (and no prior reminder today) actually sends one.
+  const tasksRef = useRef<AppTask[]>(tasks);
+  useEffect(() => { tasksRef.current = tasks; }, [tasks]);
+
+  const clockInIsoForReminder = todaySession?.clockIn || activeClock?.clockIn || null;
+
+  useEffect(() => {
+    if (!clockInIsoForReminder || !myProfile?.id) return;
+    const employeeId = myProfile.id;
+    const GRACE_MS = 20 * 60 * 1000;
+    const remainingMs = GRACE_MS - (Date.now() - new Date(clockInIsoForReminder).getTime());
+
+    let cancelled = false;
+    const runCheck = async () => {
+      if (cancelled) return;
+      const hasOpenTask = tasksRef.current.some(t => t.status === "todo" || t.status === "in-progress");
+      if (hasOpenTask) return;
+      try {
+        const alreadyNotified = await hasNotificationToday(employeeId, "task_reminder");
+        if (cancelled || alreadyNotified) return;
+        await insertNotification({
+          recipientId: employeeId,
+          title: "Add your task",
+          message: "You haven't added any task to your To Do or In Progress list yet today. Please add your task.",
+          type: "task_reminder",
+          sendPush: true,
+        });
+      } catch (err) {
+        console.warn("Task reminder check failed:", err);
+      }
+    };
+
+    if (remainingMs <= 0) {
+      void runCheck();
+      return () => { cancelled = true; };
+    }
+    const timer = setTimeout(() => void runCheck(), remainingMs);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [clockInIsoForReminder, myProfile?.id]);
 
   const timerSession = employeeTimerSession(activeClock, todaySession);
   const timerSessionId = timerSession?.id ?? null;
@@ -949,7 +998,7 @@ export function EmployeeDashboard({
     }
   }, [userName, myProfile, refreshClockState]);
 
-  const handleClockOut = useCallback(async (reason: ClockOutReason) => {
+  const handleClockOut = useCallback(async (reason: ClockOutReason, meeting?: Meeting) => {
     if (!userName || !activeClock) return;
     setClockLoading(true);
     setClockError("");
@@ -959,8 +1008,12 @@ export function EmployeeDashboard({
         employeeName: myProfile?.name || userName,
         employeeId: myProfile?.id,
         reason,
+        meetingId: meeting?.id,
+        meetingTitle: meeting?.title,
       });
       setShowClockOutMenu(false);
+      setShowMeetingPicker(false);
+      setPickerMeetings(null);
       await refreshClockState();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Clock action failed";
@@ -971,6 +1024,27 @@ export function EmployeeDashboard({
       setClockLoading(false);
     }
   }, [activeClock, userName, myProfile, refreshClockState]);
+
+  const openMeetingPicker = useCallback(async () => {
+    setShowMeetingPicker(true);
+    setPickerMeetings(null);
+    if (!myProfile?.id) {
+      setPickerMeetings([]);
+      return;
+    }
+    try {
+      const all = await fetchMeetings(myProfile.id);
+      const pickable = all
+        .filter(m => m.status === "scheduled" || m.status === "ongoing")
+        .sort((a, b) => {
+          if (a.status !== b.status) return a.status === "ongoing" ? -1 : 1;
+          return `${a.date}${a.start_time}`.localeCompare(`${b.date}${b.start_time}`);
+        });
+      setPickerMeetings(pickable);
+    } catch {
+      setPickerMeetings([]);
+    }
+  }, [myProfile?.id]);
 
   const clockOutIcons: Record<ClockOutReason, React.ReactNode> = {
     lunch: <Utensils size={16} />,
@@ -1069,7 +1143,7 @@ export function EmployeeDashboard({
                     key={opt.id}
                     type="button"
                     disabled={clockLoading}
-                    onClick={() => void handleClockOut(opt.id)}
+                    onClick={() => (opt.id === "meeting" ? void openMeetingPicker() : void handleClockOut(opt.id))}
                     className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left transition-colors disabled:opacity-50 ${
                       opt.id === "end_day"
                         ? "bg-red-500/10 border border-red-500/20 hover:bg-red-500/15"
@@ -1088,6 +1162,84 @@ export function EmployeeDashboard({
                   </button>
                 ))}
               </div>
+            </div>
+          </div>
+        )}
+        {showMeetingPicker && activeClock && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
+            onClick={() => !clockLoading && setShowMeetingPicker(false)}
+          >
+            <div
+              className="w-full max-w-md bg-[#0d1326] border border-[rgba(99,102,241,0.2)] rounded-2xl shadow-2xl overflow-hidden"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-2 px-5 py-4 border-b border-[rgba(99,102,241,0.1)]">
+                <button
+                  type="button"
+                  onClick={() => { setShowMeetingPicker(false); setShowClockOutMenu(true); }}
+                  className="p-1.5 -ml-1.5 rounded-lg text-[#6b7fa8] hover:text-white hover:bg-white/5"
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Which meeting?</h3>
+                  <p className="text-[11px] text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mt-0.5">Pick a scheduled or ongoing meeting</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowMeetingPicker(false)}
+                  className="p-1.5 rounded-lg text-[#6b7fa8] hover:text-white hover:bg-white/5"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              {pickerMeetings === null ? (
+                <div className="p-8 text-center text-sm text-[#6b7fa8] font-['Plus_Jakarta_Sans']">Loading your meetings...</div>
+              ) : pickerMeetings.length === 0 ? (
+                <div className="p-6 flex flex-col items-center text-center gap-3">
+                  <div className="w-12 h-12 rounded-full bg-violet-500/10 border border-violet-500/25 flex items-center justify-center">
+                    <Video size={20} className="text-violet-400" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">No scheduled or ongoing meetings</p>
+                    <p className="text-[11px] text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mt-1">Create a meeting first, then come back to step out into it.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { setShowMeetingPicker(false); setShowClockOutMenu(false); onNavigate?.("meetings", { autoOpenCreateMeeting: true }); }}
+                    className="mt-1 flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold font-['Plus_Jakarta_Sans'] bg-violet-500/20 border border-violet-500/30 text-violet-300 hover:bg-violet-500/30 transition-colors"
+                  >
+                    <Plus size={15} /> Create Meeting
+                  </button>
+                </div>
+              ) : (
+                <div className="p-3 space-y-1.5 max-h-96 overflow-y-auto">
+                  {pickerMeetings.map(m => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      disabled={clockLoading}
+                      onClick={() => void handleClockOut("meeting", m)}
+                      className="w-full flex items-start gap-3 px-4 py-3 rounded-xl text-left transition-colors disabled:opacity-50 bg-[#131a35] border border-[rgba(99,102,241,0.08)] hover:bg-[#1a2440]"
+                    >
+                      <span className="text-violet-400 mt-0.5"><Video size={16} /></span>
+                      <span className="flex-1 min-w-0">
+                        <span className="flex items-center gap-2">
+                          <span className="block text-sm font-semibold text-white font-['Plus_Jakarta_Sans'] truncate">{m.title}</span>
+                          {m.status === "ongoing" && (
+                            <span className="shrink-0 text-[9px] font-['Geist_Mono'] uppercase tracking-wide px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">Ongoing</span>
+                          )}
+                        </span>
+                        <span className="flex items-center gap-1.5 text-[11px] text-[#8fa0c4] font-['Geist_Mono'] mt-0.5">
+                          <Calendar size={11} /> {m.date} · {m.start_time}–{m.end_time} · {m.platform}
+                        </span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}

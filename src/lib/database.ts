@@ -2740,6 +2740,7 @@ export type ClockSessionSegment = {
   label: string;
   startedAt: string;
   endedAt: string | null;
+  meetingId?: string | null;
 };
 
 export type ClockSessionRecord = {
@@ -2806,6 +2807,7 @@ function mapClockSegment(row: {
   label: string | null;
   started_at: string;
   ended_at: string | null;
+  meeting_id?: string | null;
 }): ClockSessionSegment {
   return {
     id: row.id,
@@ -2814,6 +2816,7 @@ function mapClockSegment(row: {
     label: row.label || "",
     startedAt: row.started_at,
     endedAt: row.ended_at,
+    meetingId: row.meeting_id ?? null,
   };
 }
 
@@ -2845,6 +2848,7 @@ async function insertClockSegment(input: {
   kind: ClockSessionSegmentKind;
   label: string;
   startedAtMs: number;
+  meetingId?: string | null;
 }) {
   if (!(await probeClockSegments())) return;
   const { error } = await supabase.from("clock_session_segments").insert({
@@ -2853,6 +2857,7 @@ async function insertClockSegment(input: {
     label: input.label,
     started_at: new Date(input.startedAtMs).toISOString(),
     ended_at: null,
+    meeting_id: input.meetingId ?? null,
   });
   if (error) {
     console.error("FAILED TO INSERT SEGMENT:", error);
@@ -2874,6 +2879,7 @@ async function fetchSegmentsForSessions(
       label: string | null;
       started_at: string;
       ended_at: string | null;
+      meeting_id: string | null;
     }>(
       sessionIds,
       (chunk, from, pageSize) =>
@@ -3432,8 +3438,9 @@ async function notifyLeadersOfClockIn(input: {
   }
 }
 
-function clockOutNote(reason: ClockOutReason | string) {
+function clockOutNote(reason: ClockOutReason | string, meetingTitle?: string) {
   if (reason === "end_day") return "End of day";
+  if (reason === "meeting" && meetingTitle) return `Break: Meeting - ${meetingTitle}`;
   const opt = CLOCK_OUT_OPTIONS.find(o => o.id === reason);
   return opt ? `Break: ${opt.label}` : `Break: ${reason}`;
 }
@@ -3446,6 +3453,8 @@ export async function clockOutEmployee(input: {
   projectId?: string;
   notes?: string;
   forceTimeMs?: number;
+  meetingId?: string;
+  meetingTitle?: string;
 }): Promise<{ session: ClockSessionRecord; hours: number }> {
   const { data: session, error: fetchError } = await supabase
     .from("clock_sessions")
@@ -3471,15 +3480,16 @@ export async function clockOutEmployee(input: {
   const totalHours =
     Math.round(((Number(session.hours) || 0) + segmentHours) * 10000) / 10000;
 
-  const notes = input.notes || clockOutNote(reason);
+  const notes = input.notes || clockOutNote(reason, input.meetingTitle);
 
   await closeOpenClockSegment(input.sessionId, clockOutMs);
   if (!endDay) {
     await insertClockSegment({
       sessionId: input.sessionId,
       kind: breakKindFromReason(reason),
-      label: breakLabelFromReason(reason),
+      label: reason === "meeting" && input.meetingTitle ? input.meetingTitle : breakLabelFromReason(reason),
       startedAtMs: clockOutMs,
+      meetingId: reason === "meeting" ? input.meetingId ?? null : null,
     });
   }
 
@@ -6016,6 +6026,23 @@ export async function insertNotification(input: {
   }
 }
 
+/** True if `recipientId` already has a notification of `type` created today (local time). */
+export async function hasNotificationToday(recipientId: string, type: string): Promise<boolean> {
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  const { count, error } = await supabase
+    .from("notifications")
+    .select("id", { count: "exact", head: true })
+    .eq("recipient_id", recipientId)
+    .eq("type", type)
+    .gte("created_at", startOfDay.toISOString());
+  if (error) {
+    console.warn("hasNotificationToday check failed:", error.message);
+    return false;
+  }
+  return (count || 0) > 0;
+}
+
 /** Fire FCM push via Supabase edge function (mobile fcm_token + optional web). */
 export async function dispatchPushNotification(record: AppNotification | Record<string, unknown>) {
   try {
@@ -6085,76 +6112,41 @@ export type UpdateMeetingInput = Partial<Omit<CreateMeetingInput, "organizer_id"
   new_participant_ids?: string[];
 };
 
-/**
- * Fetch all meetings visible to a user (organizer + participant).
- * Returns meetings with their participants joined.
- */
-export async function fetchMeetings(userId: string): Promise<Meeting[]> {
-  if (!userId) return [];
-
-  // Fetch ALL meetings where user is organizer OR in participant_ids jsonb array
-  // We fetch all and filter client-side to avoid complex PostgREST jsonb queries
-  const { data: meetingRows, error: mErr } = await supabase
-    .from("meetings")
-    .select("*")
-    .order("date", { ascending: true });
-
-  if (mErr) {
-    console.error("fetchMeetings query error:", mErr);
-    return [];
+// Helper: normalise start_time to "HH:MM" regardless of "01:00 PM" or "13:00" format
+function normaliseMeetingTime(raw: string | undefined | null): string {
+  if (!raw) return "00:00";
+  const trimmed = raw.trim();
+  // Handle "01:00 PM" / "1:00 AM" style
+  const match12 = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (match12) {
+    let h = parseInt(match12[1], 10);
+    const m = match12[2];
+    const ampm = match12[3].toUpperCase();
+    if (ampm === "PM" && h !== 12) h += 12;
+    if (ampm === "AM" && h === 12) h = 0;
+    return `${String(h).padStart(2, "0")}:${m}`;
   }
-  if (!meetingRows || meetingRows.length === 0) return [];
+  // Already "HH:MM"
+  return trimmed;
+}
 
-  // Filter: user is organizer OR user is in participant_ids array
-  const visibleMeetings = (meetingRows as Record<string, unknown>[]).filter(m => {
-    if (m.organizer_id === userId) return true;
-    const pIds = m.participant_ids as string[] | null;
-    if (Array.isArray(pIds) && pIds.includes(userId)) return true;
-    return false;
-  });
+// Helper: normalise status to lowercase
+function normaliseMeetingStatus(raw: unknown): MeetingStatus {
+  const s = String(raw ?? "scheduled").toLowerCase().trim();
+  if (s === "ongoing") return "ongoing";
+  if (s === "completed") return "completed";
+  if (s === "cancelled" || s === "canceled") return "cancelled";
+  return "scheduled";
+}
 
-  if (visibleMeetings.length === 0) return [];
-
-  // Also try meeting_participants join table for cross-referencing
-  const meetingIds = visibleMeetings.map(m => m.id as string);
-  const { data: allParticipants } = await supabase
-    .from("meeting_participants")
-    .select("*")
-    .in("meeting_id", meetingIds);
-
-  // Fetch profiles to resolve names
-  const profiles = await getDbEmployeeProfiles();
-  const profileMap = new Map(profiles.map(p => [p.id, p]));
-
-  // Helper: normalise start_time to "HH:MM" regardless of "01:00 PM" or "13:00" format
-  function normaliseTime(raw: string | undefined | null): string {
-    if (!raw) return "00:00";
-    const trimmed = raw.trim();
-    // Handle "01:00 PM" / "1:00 AM" style
-    const match12 = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-    if (match12) {
-      let h = parseInt(match12[1], 10);
-      const m = match12[2];
-      const ampm = match12[3].toUpperCase();
-      if (ampm === "PM" && h !== 12) h += 12;
-      if (ampm === "AM" && h === 12) h = 0;
-      return `${String(h).padStart(2, "0")}:${m}`;
-    }
-    // Already "HH:MM"
-    return trimmed;
-  }
-
-  // Helper: normalise status to lowercase
-  function normaliseStatus(raw: unknown): MeetingStatus {
-    const s = String(raw ?? "scheduled").toLowerCase().trim();
-    if (s === "ongoing") return "ongoing";
-    if (s === "completed") return "completed";
-    if (s === "cancelled" || s === "canceled") return "cancelled";
-    return "scheduled";
-  }
-
-  // Assemble
-  return visibleMeetings.map(m => {
+function assembleMeetings(
+  rows: Record<string, unknown>[],
+  allParticipants: MeetingParticipant[] | null,
+  profileMap: Map<string, DbEmployeeProfile>
+): Meeting[] {
+  const normaliseTime = normaliseMeetingTime;
+  const normaliseStatus = normaliseMeetingStatus;
+  return rows.map(m => {
     const organizer = profileMap.get(m.organizer_id as string);
 
     // Build participants from jsonb array (primary) + join table (fallback)
@@ -6201,6 +6193,85 @@ export async function fetchMeetings(userId: string): Promise<Meeting[]> {
       participants,
     } as Meeting;
   });
+}
+
+/**
+ * Fetch all meetings visible to a user (organizer + participant).
+ * Returns meetings with their participants joined.
+ */
+export async function fetchMeetings(userId: string): Promise<Meeting[]> {
+  if (!userId) return [];
+
+  // Fetch ALL meetings where user is organizer OR in participant_ids jsonb array
+  // We fetch all and filter client-side to avoid complex PostgREST jsonb queries
+  const { data: meetingRows, error: mErr } = await supabase
+    .from("meetings")
+    .select("*")
+    .order("date", { ascending: true });
+
+  if (mErr) {
+    console.error("fetchMeetings query error:", mErr);
+    return [];
+  }
+  if (!meetingRows || meetingRows.length === 0) return [];
+
+  // Filter: user is organizer OR user is in participant_ids array
+  const visibleMeetings = (meetingRows as Record<string, unknown>[]).filter(m => {
+    if (m.organizer_id === userId) return true;
+    const pIds = m.participant_ids as string[] | null;
+    if (Array.isArray(pIds) && pIds.includes(userId)) return true;
+    return false;
+  });
+
+  if (visibleMeetings.length === 0) return [];
+
+  // Also try meeting_participants join table for cross-referencing
+  const meetingIds = visibleMeetings.map(m => m.id as string);
+  const { data: allParticipants } = await supabase
+    .from("meeting_participants")
+    .select("*")
+    .in("meeting_id", meetingIds);
+
+  // Fetch profiles to resolve names
+  const profiles = await getDbEmployeeProfiles();
+  const profileMap = new Map(profiles.map(p => [p.id, p]));
+
+  return assembleMeetings(visibleMeetings, allParticipants as MeetingParticipant[] | null, profileMap);
+}
+
+/**
+ * Fetch specific meetings by id (no visibility filtering) — used by Shift
+ * Tracker to hydrate the full meeting record (time/platform/participants)
+ * for whichever meeting an employee is currently checked into.
+ */
+export async function fetchMeetingsByIds(ids: string[]): Promise<Meeting[]> {
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  if (uniqueIds.length === 0) return [];
+
+  const { data: meetingRows, error: mErr } = await supabase
+    .from("meetings")
+    .select("*")
+    .in("id", uniqueIds);
+
+  if (mErr) {
+    console.error("fetchMeetingsByIds query error:", mErr);
+    return [];
+  }
+  if (!meetingRows || meetingRows.length === 0) return [];
+
+  const { data: allParticipants } = await supabase
+    .from("meeting_participants")
+    .select("*")
+    .in("meeting_id", uniqueIds);
+
+  const profiles = await getDbEmployeeProfiles();
+  const profileMap = new Map(profiles.map(p => [p.id, p]));
+
+  return assembleMeetings(
+    meetingRows as Record<string, unknown>[],
+    allParticipants as MeetingParticipant[] | null,
+    profileMap
+  );
 }
 
 /**

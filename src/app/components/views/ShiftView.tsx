@@ -21,7 +21,9 @@ import {
   type AttendanceTimeWindow,
   type ClockSessionRecord,
   type AppTask,
+  type Meeting,
   clockOutEmployee,
+  fetchMeetingsByIds,
 } from "@/lib/database";
 import {
   buildShiftEmployee,
@@ -103,6 +105,7 @@ export type TimelineBlock = {
   start: number;
   end: number | null;
   app?: string;
+  meetingId?: string | null;
 };
 
 export type ShiftEmployee = {
@@ -818,6 +821,7 @@ export function EmployeeDetailPanel({
   allTasks,
   targetDate,
   attendanceSessions,
+  activeMeetingsById,
 }: {
   emp: ShiftEmployee;
   onClose: () => void;
@@ -825,6 +829,7 @@ export function EmployeeDetailPanel({
   allTasks: AppTask[];
   targetDate: string;
   attendanceSessions?: AttendanceTimeWindow[];
+  activeMeetingsById?: Map<string, Meeting>;
 }) {
   const axis = useTimelineAxis();
   const [tab, setTab] = useState<"live" | "history" | "screenshots">("live");
@@ -903,6 +908,13 @@ export function EmployeeDetailPanel({
 
   const fmtMin = formatDurationMinutes;
   const statusMeta = kindMeta[emp.status];
+
+  const currentMeetingBlock = emp.status === "meeting"
+    ? emp.timeline.find(b => b.kind === "meeting" && b.end === null)
+    : null;
+  const currentMeeting = currentMeetingBlock?.meetingId
+    ? activeMeetingsById?.get(currentMeetingBlock.meetingId)
+    : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm p-4 sm:p-8">
@@ -985,6 +997,45 @@ export function EmployeeDetailPanel({
           <>
             <div className="m-6 sm:m-8 mb-0 p-5 sm:p-6 bg-gradient-to-r from-indigo-600/10 to-violet-600/10 border border-indigo-500/25 rounded-2xl">
               <p className="text-xs font-['Geist_Mono'] text-indigo-400 uppercase tracking-widest mb-4">Live Activity</p>
+              {emp.status === "meeting" && (
+                <div className="mb-5 p-4 rounded-xl bg-violet-500/10 border border-violet-500/25 flex items-start gap-3">
+                  <Users size={18} className="text-violet-400 shrink-0 mt-0.5" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">
+                      {currentMeeting?.title || currentMeetingBlock?.label || "In a meeting"}
+                    </p>
+                    {currentMeeting ? (
+                      <>
+                        <p className="text-xs text-[#c5d0ea] font-['Geist_Mono'] mt-1">
+                          {currentMeeting.date} · {currentMeeting.start_time}–{currentMeeting.end_time} · {currentMeeting.platform}
+                          {currentMeeting.status === "ongoing" ? " · Ongoing" : " · Scheduled"}
+                        </p>
+                        {currentMeeting.organizer_name && (
+                          <p className="text-xs text-[#8fa0c4] mt-1">Organizer: {currentMeeting.organizer_name}</p>
+                        )}
+                        {currentMeeting.participants.length > 0 && (
+                          <p className="text-xs text-[#8fa0c4] mt-1 truncate" title={currentMeeting.participants.map(p => p.participant_name).join(", ")}>
+                            With: {currentMeeting.participants.map(p => p.participant_name).join(", ")}
+                          </p>
+                        )}
+                        {currentMeeting.meeting_link && (
+                          <a
+                            href={currentMeeting.meeting_link}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={e => e.stopPropagation()}
+                            className="inline-block text-xs text-violet-300 hover:text-violet-200 underline mt-1.5"
+                          >
+                            Join link
+                          </a>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-xs text-[#8fa0c4] mt-1">No linked meeting record — logged as a generic meeting/outside break.</p>
+                    )}
+                  </div>
+                </div>
+              )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="space-y-3.5">
               <div className="flex items-start gap-3">
@@ -1481,6 +1532,33 @@ export function ShiftView({
     isFirstRender.current = false;
   }, [shiftEmployees]);
 
+  // Which meeting each currently-checked-in employee is attending, keyed by
+  // meeting id — hydrated from the `meetings` table so Shift Tracker can show
+  // real details (time/platform/participants), not just the segment label.
+  const activeMeetingIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const emp of shiftEmployees) {
+      const openMeeting = emp.timeline.find(b => b.kind === "meeting" && b.end === null);
+      if (openMeeting?.meetingId) ids.add(openMeeting.meetingId);
+    }
+    return [...ids].sort();
+  }, [shiftEmployees]);
+
+  const [activeMeetingsById, setActiveMeetingsById] = useState<Map<string, Meeting>>(new Map());
+
+  useEffect(() => {
+    if (activeMeetingIds.length === 0) {
+      setActiveMeetingsById(new Map());
+      return;
+    }
+    let cancelled = false;
+    void fetchMeetingsByIds(activeMeetingIds).then(meetings => {
+      if (cancelled) return;
+      setActiveMeetingsById(new Map(meetings.map(m => [m.id, m])));
+    });
+    return () => { cancelled = true; };
+  }, [activeMeetingIds.join(",")]);
+
   const shiftAiInsights = useMemo(() => buildShiftInsights(shiftEmployees), [shiftEmployees]);
 
   const statusCounts = useMemo(
@@ -1771,11 +1849,18 @@ export function ShiftView({
                         Shift {emp.shiftStartLabel}–{emp.shiftEndLabel}
                       </span>
                     )}
-                    {currentPause && (
-                      <span className="text-[10px] font-['Geist_Mono'] text-amber-400/95">
-                        {currentPause.label} · {formatDurationMinutes(effectiveNow - currentPause.start)}
-                      </span>
-                    )}
+                    {currentPause && (() => {
+                      const meeting = currentPause.meetingId ? activeMeetingsById.get(currentPause.meetingId) : null;
+                      return (
+                        <span
+                          className="text-[10px] font-['Geist_Mono'] text-amber-400/95 truncate"
+                          title={meeting ? `${meeting.title} · ${meeting.start_time}–${meeting.end_time} · ${meeting.platform}` : undefined}
+                        >
+                          {currentPause.label}
+                          {meeting ? ` · ${meeting.platform}` : ""} · {formatDurationMinutes(effectiveNow - currentPause.start)}
+                        </span>
+                      );
+                    })()}
                     {!currentPause && completedPauses.length > 0 && (
                       <span className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8] truncate" title={completedPauses.map(p => `${p.label} ${formatDurationMinutes(p.durationMin)}`).join(", ")}>
                         {completedPauses.length} break{completedPauses.length > 1 ? "s" : ""} · {formatDurationMinutes(completedPauses.reduce((s, p) => s + p.durationMin, 0))}
@@ -1856,10 +1941,17 @@ export function ShiftView({
                     taskTimerWindows,
                   )
                 : null;
-              
+
               let currentWorkTaskTimeSum = currentWorkTaskTotals
                 ? (currentWorkTaskTotals["in-progress"] || 0)
                 : 0;
+
+              const currentMeetingBlock = emp.status === "meeting"
+                ? emp.timeline.find(b => b.kind === "meeting" && b.end === null)
+                : null;
+              const currentMeeting = currentMeetingBlock?.meetingId
+                ? activeMeetingsById.get(currentMeetingBlock.meetingId)
+                : null;
 
               return (
                 <div key={i} className="flex items-center bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl hover:border-indigo-500/30 hover:shadow-[0_4px_20px_-4px_rgba(99,102,241,0.1)] transition-all cursor-pointer overflow-hidden group"
@@ -1881,7 +1973,9 @@ export function ShiftView({
                             emp.status === "working"
                               ? (emp.workTasks[0]?.title
                                 || (emp.trackedTasks.length > 0 ? "Clocked in — task not started" : "Clocked in"))
-                              : (emp.status === "idle" && (emp.idleDurationMins || 0) > 0 ? `Not at desk for ${emp.idleDurationMins}m` : meta.label);
+                              : emp.status === "meeting" && currentMeetingBlock
+                                ? currentMeetingBlock.label
+                                : (emp.status === "idle" && (emp.idleDurationMins || 0) > 0 ? `Not at desk for ${emp.idleDurationMins}m` : meta.label);
                           return (
                             // Clamped: a long task title used to wrap freely here and
                             // stretch the whole row. Full text on hover.
@@ -1897,6 +1991,15 @@ export function ShiftView({
                         {emp.status === "working" && currentWorkTaskTimeSum > 0 && (
                           <span className="text-[10px] font-bold text-indigo-300 mt-2 bg-indigo-500/20 border border-indigo-500/30 px-2 py-1 rounded shadow-sm w-fit tracking-wide uppercase">
                             Task Time: {formatStageDuration(currentWorkTaskTimeSum)}
+                          </span>
+                        )}
+                        {emp.status === "meeting" && currentMeeting && (
+                          <span
+                            className="text-[10px] font-bold text-violet-300 mt-2 bg-violet-500/20 border border-violet-500/30 px-2 py-1 rounded shadow-sm w-fit tracking-wide"
+                            title={currentMeeting.participants.map(p => p.participant_name).join(", ")}
+                          >
+                            {currentMeeting.start_time}–{currentMeeting.end_time} · {currentMeeting.platform}
+                            {currentMeeting.status === "ongoing" ? " · Ongoing" : ""}
                           </span>
                         )}
                       </div>
@@ -1931,6 +2034,7 @@ export function ShiftView({
           allTasks={tasks}
           targetDate={targetDate}
           attendanceSessions={taskTimerWindows}
+          activeMeetingsById={activeMeetingsById}
         />
       )}
     </div>
