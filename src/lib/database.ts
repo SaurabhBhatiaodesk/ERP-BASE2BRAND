@@ -3102,28 +3102,31 @@ async function fetchLatestClockSessionRow(
   return null;
 }
 
-function isClockSessionFromToday(clockInIso: string): boolean {
-  const clockInDate = new Date(clockInIso);
-  const now = new Date();
-  return (
-    clockInDate.getFullYear() === now.getFullYear() &&
-    clockInDate.getMonth() === now.getMonth() &&
-    clockInDate.getDate() === now.getDate()
-  );
+/**
+ * How long a still-open (active/paused) session is trusted before it's
+ * treated as abandoned. NOT a literal midnight cutoff: night-shift employees
+ * legitimately clock in before midnight and work past it, so gating on
+ * "did clock_in fall on today's calendar date" force-clocked-out every
+ * night-shift worker right at 12 AM and made them clock in again. 12h
+ * comfortably covers any real shift plus breaks/overtime while still
+ * catching sessions genuinely left open too long.
+ */
+const STALE_CLOCK_SESSION_MS = 12 * 60 * 60 * 1000;
+
+function isClockSessionStale(clockInIso: string): boolean {
+  return Date.now() - new Date(clockInIso).getTime() > STALE_CLOCK_SESSION_MS;
 }
 
 async function autoCloseStaleClockSession(data: Record<string, unknown>): Promise<void> {
-  if (data.status !== "active") return;
-  const clockInDate = new Date(String(data.clock_in));
-  const endOfDay = new Date(clockInDate);
-  endOfDay.setHours(23, 59, 59, 999);
+  if (data.status !== "active" && data.status !== "paused") return;
+  const clockInMs = new Date(String(data.clock_in)).getTime();
   await clockOutEmployee({
     sessionId: String(data.id),
     employeeName: String(data.employee_name || ""),
     employeeId: data.employee_id ? String(data.employee_id) : undefined,
     reason: "end_day",
-    notes: "Auto-closed at midnight",
-    forceTimeMs: endOfDay.getTime(),
+    notes: "Auto-closed: session left open too long",
+    forceTimeMs: clockInMs + STALE_CLOCK_SESSION_MS,
   });
 }
 
@@ -3141,7 +3144,7 @@ export async function fetchTodayOfficeSession(
   const data = await fetchLatestClockSessionRow(employeeName, employeeId);
   if (!data) return null;
 
-  if (!isClockSessionFromToday(String(data.clock_in))) {
+  if (isClockSessionStale(String(data.clock_in))) {
     await autoCloseStaleClockSession(data);
     return null;
   }
@@ -3156,7 +3159,7 @@ export async function fetchActiveClockSession(
   const data = await fetchLatestClockSessionRow(employeeName, employeeId, { activeOnly: true });
   if (!data) return null;
 
-  if (!isClockSessionFromToday(String(data.clock_in))) {
+  if (isClockSessionStale(String(data.clock_in))) {
     await autoCloseStaleClockSession(data);
     return null;
   }
