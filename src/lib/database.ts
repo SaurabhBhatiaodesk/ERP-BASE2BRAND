@@ -6076,6 +6076,93 @@ export async function dispatchPushNotification(record: AppNotification | Record<
 }
 
 // ==========================================
+// App Updates
+// ==========================================
+
+export type AppUpdateAnnouncement = {
+  id: string;
+  version: string;
+  downloadLink: string;
+  notes: string | null;
+  createdByName: string | null;
+  createdAt: string;
+};
+
+function mapAppUpdateRow(row: Record<string, unknown>): AppUpdateAnnouncement {
+  return {
+    id: row.id as string,
+    version: row.version as string,
+    downloadLink: row.download_link as string,
+    notes: (row.notes as string) || null,
+    createdByName: (row.created_by_name as string) || null,
+    createdAt: row.created_at as string,
+  };
+}
+
+/** Most recently published app-update announcement, if any. */
+export async function fetchLatestAppUpdate(): Promise<AppUpdateAnnouncement | null> {
+  const { data, error } = await supabase
+    .from("app_updates")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.error("fetchLatestAppUpdate error:", error);
+    return null;
+  }
+  return data ? mapAppUpdateRow(data) : null;
+}
+
+/**
+ * Publish a new ERP version announcement (CEO/superadmin, from Broadcast)
+ * and notify every employee with the download link.
+ */
+export async function publishAppUpdate(input: {
+  version: string;
+  downloadLink: string;
+  notes?: string;
+  publishedById: string;
+  publishedByName: string;
+}): Promise<AppUpdateAnnouncement> {
+  const { data, error } = await supabase
+    .from("app_updates")
+    .insert({
+      version: input.version.trim(),
+      download_link: input.downloadLink.trim(),
+      notes: input.notes?.trim() || null,
+      created_by: input.publishedById || null,
+      created_by_name: input.publishedByName || null,
+    })
+    .select("*")
+    .single();
+  if (error) throw error;
+
+  const update = mapAppUpdateRow(data);
+
+  const profiles = await fetchEmployeeProfiles();
+  await Promise.all(
+    profiles
+      .filter(p => p.id && p.id !== input.publishedById)
+      .map(p =>
+        insertNotification({
+          recipientId: p.id,
+          senderId: input.publishedById,
+          title: `New ERP update available: ${update.version}`,
+          message:
+            update.notes ||
+            `A new version (${update.version}) is available. Tap to download and install.`,
+          type: "app_update",
+          referenceId: update.id,
+          sendPush: true,
+        }).catch(err => console.error("publishAppUpdate notify failed:", p.id, err))
+      )
+  );
+
+  return update;
+}
+
+// ==========================================
 // Meetings
 // ==========================================
 

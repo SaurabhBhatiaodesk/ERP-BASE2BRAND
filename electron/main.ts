@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, powerMonitor, desktopCapturer, systemPreferences, screen } from 'electron';
+import { app, BrowserWindow, ipcMain, powerMonitor, desktopCapturer, systemPreferences, screen, shell } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -27,6 +27,13 @@ function createWindow() {
       // In production, load the built index.html
       mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
     }
+
+    // Links opened with target="_blank" (e.g. the app-update download link)
+    // should open in the system browser, not a new Electron window.
+    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+      shell.openExternal(url);
+      return { action: 'deny' };
+    });
 
     // Block Ctrl+W (Windows) and Cmd+W (Mac) from closing the window
     mainWindow.webContents.on('before-input-event', (event, input) => {

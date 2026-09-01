@@ -2,8 +2,11 @@ import { defineConfig } from 'vite'
 import path from 'path'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
+import { createRequire } from 'module'
 
 import electron from 'vite-plugin-electron'
+
+const pkg = createRequire(import.meta.url)('./package.json')
 
 function figmaAssetResolver() {
   return {
@@ -18,6 +21,9 @@ function figmaAssetResolver() {
 }
 
 export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   plugins: [
     figmaAssetResolver(),
     react(),

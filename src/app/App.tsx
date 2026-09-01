@@ -10,7 +10,8 @@ import {
   AlertTriangle, ArrowUpRight, Clock, Star, GitBranch,
   DollarSign, UserCheck, Plus, X, Send, Activity,
   Globe, Hash, ChevronRight, Building2, Award, Layers,
-  Timer, Monitor, ChevronLeft, Settings, TrendingUp, LogOut, User, Calendar, Wallet, Video, Gauge, IndianRupee
+  Timer, Monitor, ChevronLeft, Settings, TrendingUp, LogOut, User, Calendar, Wallet, Video, Gauge, IndianRupee,
+  Rocket, Download,
 } from "lucide-react";
 
 // Imported views
@@ -31,7 +32,7 @@ import { ProjectWorkspaceView } from "./components/views/ProjectWorkspaceView";
 import { MeetingView } from "./components/views/MeetingView";
 import { ThemeSwitcher } from "./components/ThemeSwitcher";
 import { Toaster } from "./components/ui/sonner";
-import { findProfileForUser, isPersonalTaskRole } from "@/lib/database";
+import { findProfileForUser, isPersonalTaskRole, fetchLatestAppUpdate, type AppUpdateAnnouncement } from "@/lib/database";
 import { useEmployeeProfiles } from "@/hooks/useSupabaseData";
 import { Avatar } from "./components/ui";
 import { useChatUnreadCounts } from "@/hooks/useChat";
@@ -428,7 +429,37 @@ export default function App() {
     () => findProfileForUser(profiles, userName, userEmail),
     [profiles, userName, userEmail]
   );
-  
+
+  const [latestUpdate, setLatestUpdate] = useState<AppUpdateAnnouncement | null>(null);
+  const [dismissedUpdateId, setDismissedUpdateId] = useState<string | null>(() => {
+    try { return localStorage.getItem("b2b_dismissed_update_id"); } catch { return null; }
+  });
+
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    let cancelled = false;
+    void fetchLatestAppUpdate().then(update => {
+      if (!cancelled) setLatestUpdate(update);
+    });
+    return () => { cancelled = true; };
+  }, [isLoggedIn]);
+
+  function dismissUpdateBanner() {
+    if (!latestUpdate) return;
+    try { localStorage.setItem("b2b_dismissed_update_id", latestUpdate.id); } catch { /* ignore */ }
+    setDismissedUpdateId(latestUpdate.id);
+  }
+
+  // Strip a leading "v"/"V" so "v2.5.0" (as typed when publishing) matches
+  // "2.5.0" (package.json's actual version, which npm disallows a v-prefix on).
+  const normalizeVersion = (v: string) => v.trim().replace(/^v/i, "");
+  const installedVersion = normalizeVersion(__APP_VERSION__);
+  const isOnLatestVersion =
+    !!latestUpdate && normalizeVersion(latestUpdate.version) === installedVersion;
+
+  const showUpdateBanner =
+    !!latestUpdate && !isOnLatestVersion && latestUpdate.id !== dismissedUpdateId;
+
   const handleNotificationClick = (n: any) => {
     if (n.type === "chat_message") {
       setChatNav({ channelId: n.reference_id });
@@ -442,6 +473,8 @@ export default function App() {
     } else if (n.type === "task_ready_for_review") {
       setTaskNav({ taskId: n.reference_id, status: "ready-for-testing" });
       setActiveView("tasks");
+    } else if (n.type === "app_update" && latestUpdate?.downloadLink) {
+      window.open(latestUpdate.downloadLink, "_blank", "noopener,noreferrer");
     }
   };
 
@@ -903,7 +936,7 @@ export default function App() {
           }}
         />
       );
-      case "broadcast": return <BroadcastView />;
+      case "broadcast": return <BroadcastView userId={currentProfile?.id} userName={currentProfile?.name || userName} />;
       case "projects": return (
         <ProjectsView
           userRole={userRole}
@@ -1198,6 +1231,36 @@ export default function App() {
 
         {/* Content */}
         <main className="flex-1 overflow-y-auto p-4 lg:p-6 relative">
+          {showUpdateBanner && latestUpdate && (
+            <div className="mb-4 bg-emerald-600/10 border border-emerald-500/20 rounded-xl p-4 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3 text-emerald-200 min-w-0">
+                <Rocket className="w-5 h-5 text-emerald-400 shrink-0" />
+                <div className="text-sm font-['Plus_Jakarta_Sans'] min-w-0">
+                  <p className="font-semibold text-white">Update your ERP — {latestUpdate.version} is available</p>
+                  <p className="text-xs text-[#a8b5d1] mt-0.5 truncate">
+                    {latestUpdate.notes || "You're on an older version. Click Download & Install to update."}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <a
+                  href={latestUpdate.downloadLink}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg transition-colors font-['Plus_Jakarta_Sans'] whitespace-nowrap"
+                >
+                  <Download size={13} /> Download & Install
+                </a>
+                <button
+                  onClick={dismissUpdateBanner}
+                  className="p-2 rounded-lg text-[#6b7fa8] hover:text-white hover:bg-white/5"
+                  title="Dismiss"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+            </div>
+          )}
           {notificationPermission === "default" && (
             <div className="mb-4 bg-indigo-600/10 border border-indigo-500/20 rounded-xl p-4 flex items-center justify-between">
               <div className="flex items-center gap-3 text-indigo-200">

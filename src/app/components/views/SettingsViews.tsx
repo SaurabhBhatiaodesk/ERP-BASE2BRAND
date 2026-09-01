@@ -2,12 +2,13 @@ import React, { useState } from "react";
 import {
   UserCheck, Award, Bell, Monitor, Globe, AlertTriangle, Zap,
   Clock, Activity, Brain, DollarSign, Users, Send, Plus,
-  ChevronLeft, X, Layers, MessageSquare, Timer, CheckSquare
+  ChevronLeft, X, Layers, MessageSquare, Timer, CheckSquare,
+  Rocket, Download,
 } from "lucide-react";
 import { Avatar, Badge } from "../ui";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
 import { useProjects, useEmployeeProfiles } from "@/hooks/useSupabaseData";
-import { insertNotification } from "@/lib/database";
+import { insertNotification, publishAppUpdate, type AppUpdateAnnouncement } from "@/lib/database";
 import { saveQuickAction } from "@/lib/quickActions";
 export function SettingsPage() {
   const [section, setSection] = useState("profile");
@@ -212,7 +213,7 @@ export function NotificationsCenterView({
   onNotificationClick: (n: any) => void;
 }) {
   const [filter, setFilter] = useState("All");
-  const categories = ["All", "clock_in", "project_assigned", "chat_message", "task_reminder", "task_ready_for_review"];
+  const categories = ["All", "clock_in", "project_assigned", "chat_message", "task_reminder", "task_ready_for_review", "app_update"];
   const unread = notifications.filter(n => !n.is_read).length;
   const filtered = filter === "All" ? notifications : notifications.filter(n => n.type === filter);
 
@@ -222,6 +223,7 @@ export function NotificationsCenterView({
     if (type === "chat_message") return "Chat";
     if (type === "task_reminder") return "Task Reminder";
     if (type === "task_ready_for_review") return "Ready for QA";
+    if (type === "app_update") return "App Update";
     return type;
   };
 
@@ -260,7 +262,9 @@ export function NotificationsCenterView({
                   ? MessageSquare
                   : n.type === "task_reminder" || n.type === "task_ready_for_review"
                     ? CheckSquare
-                    : Bell;
+                    : n.type === "app_update"
+                      ? Rocket
+                      : Bell;
           return (
             <div key={n.id} onClick={() => { if (!n.is_read) markAsRead(n.id); onNotificationClick(n); }}
               className={`flex items-start gap-4 p-4 rounded-xl border cursor-pointer transition-all hover:border-indigo-500/20 ${n.is_read ? "bg-[#0d1326] border-[rgba(99,102,241,0.08)] opacity-60" : "bg-[#0d1326] border-[rgba(99,102,241,0.18)]"}`}>
@@ -290,7 +294,7 @@ export function NotificationsCenterView({
 
 const pastAnnouncements: any[] = [];
 
-export function BroadcastView() {
+export function BroadcastView({ userId = "", userName = "" }: { userId?: string; userName?: string }) {
   const { data: profiles } = useEmployeeProfiles();
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -299,6 +303,35 @@ export function BroadcastView() {
   const [sent, setSent] = useState(false);
   const [announcements, setAnnouncements] = useState(pastAnnouncements);
   const [sending, setSending] = useState(false);
+
+  const [updateVersion, setUpdateVersion] = useState("");
+  const [updateLink, setUpdateLink] = useState("");
+  const [updateNotes, setUpdateNotes] = useState("");
+  const [publishing, setPublishing] = useState(false);
+  const [published, setPublished] = useState<AppUpdateAnnouncement | null>(null);
+  const [publishError, setPublishError] = useState("");
+
+  async function publishUpdate() {
+    if (!updateVersion.trim() || !updateLink.trim()) return;
+    setPublishing(true);
+    setPublishError("");
+    try {
+      const update = await publishAppUpdate({
+        version: updateVersion.trim(),
+        downloadLink: updateLink.trim(),
+        notes: updateNotes,
+        publishedById: userId,
+        publishedByName: userName || "CEO Admin",
+      });
+      setPublished(update);
+      setUpdateVersion(""); setUpdateLink(""); setUpdateNotes("");
+      setTimeout(() => setPublished(null), 5000);
+    } catch (e) {
+      setPublishError(e instanceof Error ? e.message : "Failed to publish update");
+    } finally {
+      setPublishing(false);
+    }
+  }
 
   async function send() {
     if (!title.trim() || !body.trim()) return;
@@ -343,6 +376,60 @@ export function BroadcastView() {
 
   return (
     <div className="space-y-5">
+      {/* Publish App Update */}
+      <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-6">
+        <div className="flex items-center gap-3 mb-5">
+          <div className="w-10 h-10 bg-gradient-to-br from-emerald-600 to-teal-600 rounded-xl flex items-center justify-center shrink-0">
+            <Rocket size={17} className="text-white" />
+          </div>
+          <div>
+            <h3 className="text-sm font-bold text-white font-['Plus_Jakarta_Sans']">Publish App Update</h3>
+            <p className="text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans']">Notify every employee about a new ERP version, with a download link they can click to update</p>
+          </div>
+        </div>
+
+        {published && (
+          <div className="flex items-center gap-2 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl mb-4">
+            <span className="w-4 h-4 bg-emerald-500 rounded-full flex items-center justify-center text-[9px] text-white font-bold shrink-0">✓</span>
+            <p className="text-xs text-emerald-400 font-['Plus_Jakarta_Sans']">Version {published.version} published — every employee has been notified.</p>
+          </div>
+        )}
+        {publishError && (
+          <p className="text-xs text-red-400 font-['Plus_Jakarta_Sans'] mb-4">{publishError}</p>
+        )}
+
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-['Plus_Jakarta_Sans'] text-[#6b7fa8] mb-1.5">Version *</label>
+              <input value={updateVersion} onChange={e => setUpdateVersion(e.target.value)} placeholder="e.g. v2.5.0"
+                className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-4 py-2.5 text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-emerald-500/50 transition-colors font-['Plus_Jakarta_Sans']" />
+              <p className="text-[10px] text-[#6b7fa8] mt-1 font-['Geist_Mono']">
+                This build is v{__APP_VERSION__} — bump package.json before packaging the new build, and type that same version here so the banner clears once someone updates.
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-['Plus_Jakarta_Sans'] text-[#6b7fa8] mb-1.5">Download Link *</label>
+              <input value={updateLink} onChange={e => setUpdateLink(e.target.value)} placeholder="https://..."
+                className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-4 py-2.5 text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-emerald-500/50 transition-colors font-['Plus_Jakarta_Sans']" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-['Plus_Jakarta_Sans'] text-[#6b7fa8] mb-1.5">What's new (optional)</label>
+            <textarea value={updateNotes} onChange={e => setUpdateNotes(e.target.value)} rows={2}
+              placeholder="Short note about what changed in this version..."
+              className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-4 py-2.5 text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-emerald-500/50 transition-colors font-['Plus_Jakarta_Sans'] resize-none" />
+          </div>
+          <div className="flex items-center justify-between pt-2">
+            <p className="text-[11px] text-[#6b7fa8] font-['Plus_Jakarta_Sans']">Every employee gets a notification and a dashboard banner with this link.</p>
+            <button onClick={publishUpdate} disabled={publishing || !updateVersion.trim() || !updateLink.trim()}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2.5 rounded-xl text-sm font-semibold transition-colors font-['Plus_Jakarta_Sans'] flex items-center gap-2 shadow-lg shadow-emerald-600/20 disabled:opacity-50 whitespace-nowrap">
+              {publishing ? "Publishing..." : "Publish Update"} <Rocket size={14} />
+            </button>
+          </div>
+        </div>
+      </div>
+
       {/* Compose */}
       <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl p-6">
         <div className="flex items-center gap-3 mb-5">
