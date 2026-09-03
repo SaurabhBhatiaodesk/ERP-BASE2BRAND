@@ -255,7 +255,13 @@ export function TaskStageGrid({
   large?: boolean;
   targetDate?: string;
 }) {
-  const totals = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, undefined);
+  // Scoped to targetDate when known — a task's status can stay "in-progress"
+  // across many days, and the raw lifetime-cumulative total (summing every
+  // stay in that status since creation) reads as a bogus huge number here,
+  // wildly inconsistent with the daily total shown right next to it in
+  // TaskStageDetail. Only genuinely falls back to cumulative when no
+  // targetDate is passed at all.
+  const totals = aggregateStageSeconds(task.stageHistory, task.status, task.statusEnteredAt, targetDate);
   const rows = getAllStageEntries(task.status, totals);
 
   function stageUi(status: string) {
@@ -459,7 +465,7 @@ function TaskStageDetail({
           Kanban stage time
         </span>
       </div>
-      {!large && <TaskStageGrid task={task} />}
+      {!large && <TaskStageGrid task={task} targetDate={targetDate} />}
       <div className={`grid gap-3 ${large ? "grid-cols-2 sm:grid-cols-5" : "grid-cols-2 sm:grid-cols-5 gap-2.5"}`}>
         {rows.map(entry => {
           const ui = stageUi(entry.status);

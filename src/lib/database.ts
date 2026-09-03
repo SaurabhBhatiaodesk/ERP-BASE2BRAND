@@ -3820,14 +3820,16 @@ export function calculateSessionAttendanceSeconds(
   session: ClockSessionRecord,
   nowMs = Date.now(),
 ): number {
-  const clockInDay = formatClockDate(new Date(session.clockIn));
-  const today = formatLocalDateIso(new Date(nowMs));
-  const isLiveToday =
-    (session.status === "active" || session.status === "paused") && clockInDay === today;
+  // Whether this session is still genuinely ongoing — NOT whether clock_in
+  // fell on today's calendar date. A night-shift session that clocked in
+  // before midnight is still "live" after midnight, and must keep counting
+  // up to `now` instead of freezing at that day's 23:59:59.
+  const isLive = session.status === "active" || session.status === "paused";
 
   const segmentEndMs = (seg: ClockSessionSegment) => {
     if (seg.endedAt) return new Date(seg.endedAt).getTime();
-    if (isLiveToday) return nowMs;
+    if (isLive) return nowMs;
+    const clockInDay = formatClockDate(new Date(session.clockIn));
     const dayEnd = new Date(`${clockInDay}T23:59:59.999`).getTime();
     return Math.min(nowMs, dayEnd);
   };
@@ -3846,15 +3848,9 @@ export function calculateSessionAttendanceSeconds(
   }
 
   let hours = Number(session.hours) || 0;
-  if (isLiveToday) {
+  if (isLive) {
     const start = session.sessionStart || session.clockIn;
     hours += calculateSessionHours(start, nowMs);
-  } else if (session.status === "paused") {
-    const notes = (session.notes || "").toLowerCase();
-    if (notes.includes("meeting") || notes.includes("idle") || session.notes === "System Idle") {
-      const start = session.sessionStart || session.clockIn;
-      hours += calculateSessionHours(start, segmentEndMs({ startedAt: start } as ClockSessionSegment));
-    }
   }
   return Math.max(0, Math.round(hours * 3600));
 }
@@ -3930,12 +3926,24 @@ export async function fetchTodayAttendanceSeconds(
 
   const { start, end } = todayClockRange();
   const sessions = await fetchEmployeeHistoricalSessions(eId, start, end);
-  if (!sessions || sessions.length === 0) return 0;
+
+  // A night-shift session can still be open past midnight with a clock_in
+  // that falls on YESTERDAY's calendar date, so the range query above misses
+  // it entirely — without this it wrongly drops to 0 right at midnight even
+  // though the employee never clocked out. fetchActiveClockSession already
+  // finds "the current session" regardless of which day it started.
+  const currentSession = await fetchActiveClockSession(employeeName, eId);
+  const allSessions =
+    currentSession && !sessions.some(s => s.id === currentSession.id)
+      ? [...sessions, currentSession]
+      : sessions;
+
+  if (!allSessions.length) return 0;
 
   let totalSeconds = 0;
   const nowMs = Date.now();
 
-  for (const session of sessions) {
+  for (const session of allSessions) {
     totalSeconds += calculateSessionAttendanceSeconds(session, nowMs);
   }
 
@@ -3976,10 +3984,10 @@ export function attendanceEntryToClockSession(entry: AttendanceEntry): ClockSess
 
 /** Match dashboard timer — live hours for active/paused office sessions. */
 export function liveAttendanceHours(entry: AttendanceEntry, nowMs = Date.now()): number {
-  const today = formatLocalDateIso(new Date(nowMs));
-  const isLiveToday =
-    (entry.status === "active" || entry.status === "paused") && entry.date === today;
-  if (!isLiveToday) {
+  // Not date-gated: a night-shift session clocked in "yesterday" is still
+  // live after midnight and must keep ticking up, not freeze at its stored value.
+  const isLive = entry.status === "active" || entry.status === "paused";
+  if (!isLive) {
     return entry.storedHours ?? entry.hours;
   }
   return calculateSessionAttendanceHours(attendanceEntryToClockSession(entry), nowMs);

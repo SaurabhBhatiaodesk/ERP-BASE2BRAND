@@ -99,11 +99,17 @@ function taskStageTotalsForKanban(
   attendanceWindows: AttendanceTimeWindow[],
   assigneeIdOverride?: string | null,
   profiles?: EmployeeProfile[],
+  targetDate?: string,
 ) {
   const assigneeId = resolveTaskAssigneeId(task, assigneeIdOverride, profiles);
+  // Scoped to targetDate — a task can sit in one status across many days,
+  // and without this the total silently jumps from a small live-looking
+  // number to a huge multi-day lifetime sum the moment real stage history
+  // loads in, with nothing on screen explaining the jump.
   return computeTaskStageTotals(task.stageHistory, task.status, effectiveStatusEnteredAt(task), {
     assigneeId,
     attendanceSessions: attendanceWindows,
+    targetDate,
   });
 }
 
@@ -132,6 +138,7 @@ function TaskStageBreakdown({
     attendanceSessions || [],
     assigneeIdOverride,
     profiles,
+    todayIso,
   );
 
   if (compact) {
@@ -622,8 +629,8 @@ function KanbanCard({
   liveTick?: number;
 }) {
   const stageTotals = useMemo(
-    () => taskStageTotalsForKanban(task, attendanceSessions || [], assigneeIdOverride, profiles),
-    [task, attendanceSessions, assigneeIdOverride, profiles, liveTick],
+    () => taskStageTotalsForKanban(task, attendanceSessions || [], assigneeIdOverride, profiles, targetDate),
+    [task, attendanceSessions, assigneeIdOverride, profiles, liveTick, targetDate],
   );
   const trackedSeconds = taskWorkStageSeconds(stageTotals);
   const [{ isDragging }, drag] = useDrag(
