@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { DndProvider, useDrag, useDrop } from "react-dnd";
+import { HTML5Backend } from "react-dnd-html5-backend";
 import {
   Video, Plus, Search, SlidersHorizontal, X, Copy, Check,
   Clock, Users, Calendar, LayoutDashboard, List,
@@ -143,12 +145,26 @@ function StatusBadge({ status }: { status: MeetingStatus }) {
 }
 
 // ── Meeting Card ───────────────────────────────────────────────
-function MeetingCard({ meeting, onClick }: { meeting: Meeting; onClick: () => void }) {
+const MEETING_CARD_DRAG_TYPE = "MEETING_CARD";
+
+function MeetingCard({ meeting, onClick, draggable = false }: { meeting: Meeting; onClick: () => void; draggable?: boolean }) {
   const status = getEffectiveStatus(meeting);
+  const [{ isDragging }, drag] = useDrag(
+    () => ({
+      type: MEETING_CARD_DRAG_TYPE,
+      item: { meetingId: meeting.id },
+      canDrag: draggable,
+      collect: monitor => ({ isDragging: monitor.isDragging() }),
+    }),
+    [meeting.id, draggable]
+  );
   return (
     <button
+      ref={draggable ? (node => { drag(node); }) : undefined}
       onClick={onClick}
-      className={`w-full text-left ${cardCls} p-4 hover:border-indigo-500/30 hover:bg-[#101830] transition-all duration-200 group cursor-pointer`}
+      className={`w-full text-left ${cardCls} p-4 hover:border-indigo-500/30 hover:bg-[#101830] transition-all duration-200 group cursor-pointer ${
+        draggable ? "cursor-grab active:cursor-grabbing" : ""
+      } ${isDragging ? "opacity-50 border-indigo-500/40" : ""}`}
     >
       <div className="flex items-start justify-between gap-2 mb-3">
         <span className="text-sm font-bold text-[#e2e8f7] font-['Plus_Jakarta_Sans'] truncate group-hover:text-white transition-colors">
@@ -191,45 +207,76 @@ function MeetingCard({ meeting, onClick }: { meeting: Meeting; onClick: () => vo
 }
 
 // ── Board View ─────────────────────────────────────────────────
-function BoardView({ meetings, onSelect }: { meetings: Meeting[]; onSelect: (m: Meeting) => void }) {
-  const columns: { key: MeetingStatus; label: string; color: string }[] = [
-    { key: "scheduled", label: "Scheduled", color: "text-blue-400" },
-    { key: "ongoing",   label: "Ongoing",   color: "text-emerald-400" },
-    { key: "completed", label: "Completed", color: "text-violet-400" },
-    { key: "cancelled", label: "Cancelled", color: "text-red-400" },
-  ];
+const BOARD_COLUMNS: { key: MeetingStatus; label: string; color: string }[] = [
+  { key: "scheduled", label: "Scheduled", color: "text-blue-400" },
+  { key: "ongoing",   label: "Ongoing",   color: "text-emerald-400" },
+  { key: "completed", label: "Completed", color: "text-violet-400" },
+  { key: "cancelled", label: "Cancelled", color: "text-red-400" },
+];
 
-  const grouped = useMemo(() => {
-    const map: Record<MeetingStatus, Meeting[]> = { scheduled: [], ongoing: [], completed: [], cancelled: [] };
-    for (const m of meetings) {
-      const s = getEffectiveStatus(m);
-      map[s].push(m);
-    }
-    return map;
-  }, [meetings]);
+function BoardColumn({
+  col,
+  meetings,
+  onSelect,
+  onMoved,
+}: {
+  col: { key: MeetingStatus; label: string; color: string };
+  meetings: Meeting[];
+  onSelect: (m: Meeting) => void;
+  onMoved: () => void;
+}) {
+  const [{ isOver }, drop] = useDrop(
+    () => ({
+      accept: MEETING_CARD_DRAG_TYPE,
+      drop: (item: { meetingId: string }) => {
+        const dropped = meetings.find(m => m.id === item.meetingId);
+        if (dropped && getEffectiveStatus(dropped) !== col.key) {
+          void updateMeetingStatus(item.meetingId, col.key).then(() => {
+            toast.success(`Moved to ${col.label}.`);
+            onMoved();
+          });
+        }
+      },
+      collect: monitor => ({ isOver: monitor.isOver({ shallow: true }) }),
+    }),
+    [col.key, meetings, onMoved]
+  );
+
+  const colMeetings = meetings.filter(m => getEffectiveStatus(m) === col.key);
 
   return (
-    <div className="flex gap-4 overflow-x-auto pb-4 min-h-[400px]">
-      {columns.map(col => (
-        <div key={col.key} className="shrink-0 w-[280px]">
-          <div className="flex items-center justify-between mb-3 px-1">
-            <span className={`text-sm font-bold ${col.color} font-['Plus_Jakarta_Sans']`}>{col.label}</span>
-            <span className="text-[11px] font-['Geist_Mono'] text-[#6b7fa8] bg-[#131a35] px-2 py-0.5 rounded-full">
-              {grouped[col.key].length}
-            </span>
-          </div>
-          <div className="space-y-3">
-            {grouped[col.key].length === 0 ? (
-              <div className="text-center py-8 text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans']">No meetings</div>
-            ) : (
-              grouped[col.key].map(m => (
-                <MeetingCard key={m.id} meeting={m} onClick={() => onSelect(m)} />
-              ))
-            )}
-          </div>
-        </div>
-      ))}
+    <div className="shrink-0 w-[280px]">
+      <div className="flex items-center justify-between mb-3 px-1">
+        <span className={`text-sm font-bold ${col.color} font-['Plus_Jakarta_Sans']`}>{col.label}</span>
+        <span className="text-[11px] font-['Geist_Mono'] text-[#6b7fa8] bg-[#131a35] px-2 py-0.5 rounded-full">
+          {colMeetings.length}
+        </span>
+      </div>
+      <div
+        ref={node => { drop(node); }}
+        className={`space-y-3 min-h-[120px] rounded-xl transition-colors ${isOver ? "bg-indigo-500/5 ring-1 ring-inset ring-indigo-500/30" : ""}`}
+      >
+        {colMeetings.length === 0 ? (
+          <div className="text-center py-8 text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans']">No meetings</div>
+        ) : (
+          colMeetings.map(m => (
+            <MeetingCard key={m.id} meeting={m} onClick={() => onSelect(m)} draggable />
+          ))
+        )}
+      </div>
     </div>
+  );
+}
+
+function BoardView({ meetings, onSelect, onMoved }: { meetings: Meeting[]; onSelect: (m: Meeting) => void; onMoved: () => void }) {
+  return (
+    <DndProvider backend={HTML5Backend}>
+      <div className="flex gap-4 overflow-x-auto pb-4 min-h-[400px]">
+        {BOARD_COLUMNS.map(col => (
+          <BoardColumn key={col.key} col={col} meetings={meetings} onSelect={onSelect} onMoved={onMoved} />
+        ))}
+      </div>
+    </DndProvider>
   );
 }
 
@@ -1145,7 +1192,7 @@ export function MeetingView({ userId, userName, userEmail }: MeetingViewProps) {
           </div>
         ) : (
           <>
-            {viewMode === "board"    && <BoardView    meetings={filteredMeetings} onSelect={handleSelectMeeting} />}
+            {viewMode === "board"    && <BoardView    meetings={filteredMeetings} onSelect={handleSelectMeeting} onMoved={load} />}
             {viewMode === "list"     && <ListView     meetings={filteredMeetings} onSelect={handleSelectMeeting} />}
             {viewMode === "calendar" && <CalendarView meetings={filteredMeetings} onSelect={handleSelectMeeting} />}
           </>

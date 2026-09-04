@@ -9,6 +9,7 @@ import { usePDF } from "react-to-pdf";
 import numberToWordsLib from "number-to-words";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
+import { supabaseInvoice } from "@/lib/supabaseInvoice";
 import { isInvoicingRole } from "@/lib/auth";
 import bcrypt from "bcryptjs";
 import { isCloudinaryConfigured, uploadToCloudinary } from "@/lib/cloudinary";
@@ -259,7 +260,7 @@ export function InvoicingView({ userRole = "", userEmail = "" }: { userRole?: st
 
   useEffect(() => {
     if (!allowed || !unlocked) return;
-    const channel = supabase
+    const channel = supabaseInvoice
       .channel("invoicing-module")
       .on("postgres_changes", { event: "*", schema: "public", table: "invoicing_invoices" }, () => { void load(); })
       .on("postgres_changes", { event: "*", schema: "public", table: "invoicing_clients" }, () => { void load(); })
@@ -267,7 +268,7 @@ export function InvoicingView({ userRole = "", userEmail = "" }: { userRole?: st
       .on("postgres_changes", { event: "*", schema: "public", table: "invoicing_bank_details" }, () => { void load(); })
       .on("postgres_changes", { event: "*", schema: "public", table: "invoicing_wages" }, () => { void load(); })
       .subscribe();
-    return () => { supabase.removeChannel(channel); };
+    return () => { supabaseInvoice.removeChannel(channel); };
   }, [load, allowed, unlocked]);
 
   if (!allowed) {

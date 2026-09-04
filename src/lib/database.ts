@@ -2,6 +2,7 @@ import type { PostgrestSingleResponse, RealtimeChannel } from "@supabase/supabas
 import { CACHE_KEYS, getCached, invalidateDataCache, invalidateDataCachePrefix, setCachedData } from "./dataCache";
 import { normalizeCloudinaryDeliveryUrl } from "./cloudinary";
 import { supabase } from "./supabase";
+import { supabaseInvoice } from "./supabaseInvoice";
 import type { TaskStageHistoryRow } from "./taskStageTime";
 import {
   formatStageDuration,
@@ -1886,10 +1887,58 @@ export async function updateProjectDetails(
   invalidateTaskCaches();
 }
 
+/**
+ * Salary is stored in the isolated Finance/Invoicing Supabase project
+ * (employee_salaries), not on employee_profiles — see database.ts's
+ * updateEmployeeProfile/createEmployee for the write side. The
+ * employee_profiles.salary column is left in place but no longer read
+ * from or written to; these functions are the sole source of truth.
+ */
+export async function fetchAllEmployeeSalaries(): Promise<Map<string, string>> {
+  try {
+    const rows = await fetchAllPaginated<{ employee_id: string; salary: string }>((from, pageSize) =>
+      supabaseInvoice
+        .from("employee_salaries")
+        .select("employee_id, salary")
+        .range(from, from + pageSize - 1)
+    );
+    return new Map(rows.map(r => [r.employee_id, r.salary]));
+  } catch (error) {
+    console.error("fetchAllEmployeeSalaries error:", error);
+    return new Map();
+  }
+}
+
+export async function fetchEmployeeSalary(employeeId: string): Promise<string | null> {
+  const { data, error } = await supabaseInvoice
+    .from("employee_salaries")
+    .select("salary")
+    .eq("employee_id", employeeId)
+    .maybeSingle();
+  if (error) {
+    console.error("fetchEmployeeSalary error:", error);
+    return null;
+  }
+  return data?.salary ?? null;
+}
+
+export async function setEmployeeSalary(employeeId: string, salary: string): Promise<void> {
+  const { error } = await supabaseInvoice
+    .from("employee_salaries")
+    .upsert({ employee_id: employeeId, salary, updated_at: new Date().toISOString() }, { onConflict: "employee_id" });
+  if (error) throw error;
+}
+
 export async function fetchEmployeeProfiles(options?: { includeDisabled?: boolean }): Promise<EmployeeProfile[]> {
   const all = await getCached(CACHE_KEYS.employeeProfiles, async () => {
     const data = await getDbEmployeeProfiles();
-    return data.map(mapEmployeeProfile);
+    const profiles = data.map(mapEmployeeProfile);
+    const salaries = await fetchAllEmployeeSalaries();
+    for (const profile of profiles) {
+      const salary = salaries.get(profile.id);
+      if (salary !== undefined) profile.salary = salary;
+    }
+    return profiles;
   }, PROFILE_CACHE_TTL);
   return options?.includeDisabled ? all : all.filter(p => p.status !== "Disabled");
 }
@@ -1905,7 +1954,12 @@ export async function fetchEmployeeProfileByEmail(email: string): Promise<Employ
     .maybeSingle();
 
   if (error) throw error;
-  return data ? mapEmployeeProfile(data as DbEmployeeProfile) : null;
+  if (!data) return null;
+
+  const profile = mapEmployeeProfile(data as DbEmployeeProfile);
+  const salary = await fetchEmployeeSalary(profile.id);
+  if (salary !== null) profile.salary = salary;
+  return profile;
 }
 
 export async function fetchATSVacancies(): Promise<ATSVacancy[]> {
@@ -2172,7 +2226,6 @@ export async function createEmployee(input: {
     join_date: input.joining || null,
     score: 85,
     status: "Active",
-    salary: input.salary ? formatCurrency(input.salary) : "₹0",
     manager: input.manager || "CEO Admin",
     skills: input.skills?.length ? input.skills : [input.role],
     bio: `${input.role} at Base2Brand. Dedicated to project success and team collaboration.`,
@@ -2187,6 +2240,8 @@ export async function createEmployee(input: {
     app_role: input.appRole || "employee",
     shift_start: input.shiftStart || "10:00",
   });
+
+  await setEmployeeSalary(profileId, input.salary ? formatCurrency(input.salary) : "₹0");
 
   invalidateProfileCaches();
   return profileId;
@@ -2221,7 +2276,6 @@ export async function updateEmployeeProfile(id: string, input: Partial<{
   if (input.location !== undefined) payload.location = input.location;
   if (input.joined !== undefined) payload.joined = input.joined;
   if (input.joinDate !== undefined) payload.join_date = input.joinDate || null;
-  if (input.salary !== undefined) payload.salary = input.salary;
   if (input.manager !== undefined) payload.manager = input.manager;
   if (input.skills !== undefined) payload.skills = input.skills;
   if (input.bio !== undefined) payload.bio = input.bio;
@@ -2236,7 +2290,12 @@ export async function updateEmployeeProfile(id: string, input: Partial<{
     payload.avatar = initialsFromName(input.name);
   }
 
-  await updateEmployeeProfileRow(id, payload);
+  if (Object.keys(payload).length > 0) {
+    await updateEmployeeProfileRow(id, payload);
+  }
+  if (input.salary !== undefined) {
+    await setEmployeeSalary(id, input.salary);
+  }
   invalidateProfileCaches();
 }
 
@@ -6743,7 +6802,7 @@ function generateInvoiceNo(invoiceDate?: string): string {
 // ---- Companies ----
 
 export async function fetchInvoiceCompanies(): Promise<InvoiceCompany[]> {
-  const { data, error } = await supabase
+  const { data, error } = await supabaseInvoice
     .from("invoicing_companies")
     .select("*")
     .order("trade_name", { ascending: true });
@@ -6755,7 +6814,7 @@ export async function fetchInvoiceCompanies(): Promise<InvoiceCompany[]> {
 }
 
 export async function createInvoiceCompany(input: CreateInvoiceCompanyInput): Promise<InvoiceCompany | null> {
-  const { data, error } = await supabase.from("invoicing_companies").insert(input).select("*").single();
+  const { data, error } = await supabaseInvoice.from("invoicing_companies").insert(input).select("*").single();
   if (error || !data) {
     console.error("createInvoiceCompany error:", error);
     return null;
@@ -6765,7 +6824,7 @@ export async function createInvoiceCompany(input: CreateInvoiceCompanyInput): Pr
 }
 
 export async function updateInvoiceCompany(id: string, input: UpdateInvoiceCompanyInput): Promise<boolean> {
-  const { error } = await supabase
+  const { error } = await supabaseInvoice
     .from("invoicing_companies")
     .update({ ...input, updated_at: new Date().toISOString() })
     .eq("id", id);
@@ -6778,7 +6837,7 @@ export async function updateInvoiceCompany(id: string, input: UpdateInvoiceCompa
 }
 
 export async function deleteInvoiceCompany(id: string): Promise<boolean> {
-  const { error } = await supabase.from("invoicing_companies").delete().eq("id", id);
+  const { error } = await supabaseInvoice.from("invoicing_companies").delete().eq("id", id);
   if (error) {
     console.error("deleteInvoiceCompany error:", error);
     return false;
@@ -6790,7 +6849,7 @@ export async function deleteInvoiceCompany(id: string): Promise<boolean> {
 // ---- Bank Details ----
 
 export async function fetchInvoiceBankDetails(): Promise<InvoiceBankDetail[]> {
-  const { data, error } = await supabase
+  const { data, error } = await supabaseInvoice
     .from("invoicing_bank_details")
     .select("*")
     .order("bank_name", { ascending: true });
@@ -6802,7 +6861,7 @@ export async function fetchInvoiceBankDetails(): Promise<InvoiceBankDetail[]> {
 }
 
 export async function createInvoiceBankDetail(input: CreateInvoiceBankDetailInput): Promise<InvoiceBankDetail | null> {
-  const { data, error } = await supabase.from("invoicing_bank_details").insert(input).select("*").single();
+  const { data, error } = await supabaseInvoice.from("invoicing_bank_details").insert(input).select("*").single();
   if (error || !data) {
     console.error("createInvoiceBankDetail error:", error);
     return null;
@@ -6812,7 +6871,7 @@ export async function createInvoiceBankDetail(input: CreateInvoiceBankDetailInpu
 }
 
 export async function updateInvoiceBankDetail(id: string, input: UpdateInvoiceBankDetailInput): Promise<boolean> {
-  const { error } = await supabase
+  const { error } = await supabaseInvoice
     .from("invoicing_bank_details")
     .update({ ...input, updated_at: new Date().toISOString() })
     .eq("id", id);
@@ -6825,7 +6884,7 @@ export async function updateInvoiceBankDetail(id: string, input: UpdateInvoiceBa
 }
 
 export async function deleteInvoiceBankDetail(id: string): Promise<boolean> {
-  const { error } = await supabase.from("invoicing_bank_details").delete().eq("id", id);
+  const { error } = await supabaseInvoice.from("invoicing_bank_details").delete().eq("id", id);
   if (error) {
     console.error("deleteInvoiceBankDetail error:", error);
     return false;
@@ -6837,7 +6896,7 @@ export async function deleteInvoiceBankDetail(id: string): Promise<boolean> {
 // ---- Clients ----
 
 export async function fetchInvoiceClients(): Promise<InvoiceClient[]> {
-  const { data, error } = await supabase
+  const { data, error } = await supabaseInvoice
     .from("invoicing_clients")
     .select("*")
     .order("client_name", { ascending: true });
@@ -6849,7 +6908,7 @@ export async function fetchInvoiceClients(): Promise<InvoiceClient[]> {
 }
 
 export async function createInvoiceClient(input: CreateInvoiceClientInput): Promise<InvoiceClient | null> {
-  const { data, error } = await supabase
+  const { data, error } = await supabaseInvoice
     .from("invoicing_clients")
     .insert({ ...input, projects: input.projects ?? [] })
     .select("*")
@@ -6863,7 +6922,7 @@ export async function createInvoiceClient(input: CreateInvoiceClientInput): Prom
 }
 
 export async function updateInvoiceClient(id: string, input: UpdateInvoiceClientInput): Promise<boolean> {
-  const { error } = await supabase
+  const { error } = await supabaseInvoice
     .from("invoicing_clients")
     .update({ ...input, updated_at: new Date().toISOString() })
     .eq("id", id);
@@ -6876,7 +6935,7 @@ export async function updateInvoiceClient(id: string, input: UpdateInvoiceClient
 }
 
 export async function deleteInvoiceClient(id: string): Promise<boolean> {
-  const { error } = await supabase.from("invoicing_clients").delete().eq("id", id);
+  const { error } = await supabaseInvoice.from("invoicing_clients").delete().eq("id", id);
   if (error) {
     console.error("deleteInvoiceClient error:", error);
     return false;
@@ -6889,7 +6948,7 @@ export async function deleteInvoiceClient(id: string): Promise<boolean> {
 
 /** Fetch all invoices with client/company/bank names resolved for display. */
 export async function fetchInvoices(): Promise<Invoice[]> {
-  const { data, error } = await supabase
+  const { data, error } = await supabaseInvoice
     .from("invoicing_invoices")
     .select("*")
     .order("invoice_date", { ascending: false });
@@ -6944,7 +7003,7 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<Invoice 
     line_items: input.line_items ?? [],
     payment_options: input.payment_options ?? {},
   };
-  const { data, error } = await supabase.from("invoicing_invoices").insert(payload).select("*").single();
+  const { data, error } = await supabaseInvoice.from("invoicing_invoices").insert(payload).select("*").single();
   if (error || !data) {
     console.error("createInvoice error:", error);
     return null;
@@ -6954,7 +7013,7 @@ export async function createInvoice(input: CreateInvoiceInput): Promise<Invoice 
 }
 
 export async function updateInvoice(id: string, input: UpdateInvoiceInput): Promise<boolean> {
-  const { error } = await supabase
+  const { error } = await supabaseInvoice
     .from("invoicing_invoices")
     .update({ ...input, updated_at: new Date().toISOString() })
     .eq("id", id);
@@ -6967,7 +7026,7 @@ export async function updateInvoice(id: string, input: UpdateInvoiceInput): Prom
 }
 
 export async function deleteInvoice(id: string): Promise<boolean> {
-  const { error } = await supabase.from("invoicing_invoices").delete().eq("id", id);
+  const { error } = await supabaseInvoice.from("invoicing_invoices").delete().eq("id", id);
   if (error) {
     console.error("deleteInvoice error:", error);
     return false;
@@ -7054,7 +7113,7 @@ export type UpdateInvoiceWageInput = Partial<CreateInvoiceWageInput>;
 
 /** Fetch all wage records with employee/company details resolved for display. */
 export async function fetchInvoiceWages(): Promise<InvoiceWage[]> {
-  const { data, error } = await supabase
+  const { data, error } = await supabaseInvoice
     .from("invoicing_wages")
     .select("*")
     .order("salary_period", { ascending: false });
@@ -7068,7 +7127,7 @@ export async function fetchInvoiceWages(): Promise<InvoiceWage[]> {
   const employeeIds = [...new Set(rows.map(r => r.employee_id).filter(Boolean))] as string[];
   const [{ data: profiles }, companies] = await Promise.all([
     employeeIds.length > 0
-      ? supabase
+      ? supabaseInvoice
           .from("employee_profiles")
           .select("id, name, dept, role, joined, family_member, employee_code")
           .in("id", employeeIds)
@@ -7102,7 +7161,7 @@ export async function fetchInvoiceWages(): Promise<InvoiceWage[]> {
 }
 
 export async function createInvoiceWages(input: CreateInvoiceWageInput): Promise<InvoiceWage | null> {
-  const { data, error } = await supabase.from("invoicing_wages").insert(input).select("*").single();
+  const { data, error } = await supabaseInvoice.from("invoicing_wages").insert(input).select("*").single();
   if (error || !data) {
     console.error("createInvoiceWages error:", error);
     return null;
@@ -7112,7 +7171,7 @@ export async function createInvoiceWages(input: CreateInvoiceWageInput): Promise
 }
 
 export async function updateInvoiceWages(id: string, input: UpdateInvoiceWageInput): Promise<boolean> {
-  const { error } = await supabase
+  const { error } = await supabaseInvoice
     .from("invoicing_wages")
     .update({ ...input, updated_at: new Date().toISOString() })
     .eq("id", id);
@@ -7125,7 +7184,7 @@ export async function updateInvoiceWages(id: string, input: UpdateInvoiceWageInp
 }
 
 export async function deleteInvoiceWages(id: string): Promise<boolean> {
-  const { error } = await supabase.from("invoicing_wages").delete().eq("id", id);
+  const { error } = await supabaseInvoice.from("invoicing_wages").delete().eq("id", id);
   if (error) {
     console.error("deleteInvoiceWages error:", error);
     return false;
@@ -7149,7 +7208,7 @@ export async function updateEmployeeWageFields(
 
 /** Single shared password/PIN gating the whole Invoicing module (see invoicing_module_lock.sql). */
 export async function fetchInvoicingLockHash(): Promise<string | null> {
-  const { data, error } = await supabase
+  const { data, error } = await supabaseInvoice
     .from("invoicing_module_lock")
     .select("password_hash")
     .order("updated_at", { ascending: false })
@@ -7163,7 +7222,7 @@ export async function fetchInvoicingLockHash(): Promise<string | null> {
 }
 
 export async function setInvoicingLockHash(passwordHash: string): Promise<boolean> {
-  const { error } = await supabase
+  const { error } = await supabaseInvoice
     .from("invoicing_module_lock")
     .delete()
     .not("id", "is", null);
@@ -7171,7 +7230,7 @@ export async function setInvoicingLockHash(passwordHash: string): Promise<boolea
     console.error("setInvoicingLockHash clear error:", error);
     return false;
   }
-  const { error: insertError } = await supabase
+  const { error: insertError } = await supabaseInvoice
     .from("invoicing_module_lock")
     .insert({ password_hash: passwordHash });
   if (insertError) {

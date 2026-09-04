@@ -2,7 +2,7 @@ import React, { useState, useEffect, useId, useMemo, useCallback, useRef } from 
 import {
   Users, Activity, Clock, AlertTriangle, Target, CheckSquare,
   Zap, GitBranch, Layers, Star, TrendingUp, DollarSign, PieChart,
-  Coffee, Utensils, Briefcase, LogOut, X, MapPin, Video, Calendar, ChevronLeft, Plus,
+  Coffee, Utensils, Briefcase, LogOut, X, MapPin, Video, Calendar, ChevronLeft, Plus, Search,
 } from "lucide-react";
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -35,6 +35,7 @@ import {
   type ClockSessionRecord,
   type TimesheetEntry,
   fetchMeetings,
+  createMeeting,
   type Meeting,
   insertNotification,
   hasNotificationToday,
@@ -778,6 +779,13 @@ export function EmployeeDashboard({
   const [showMeetingPicker, setShowMeetingPicker] = useState(false);
   const [pickerMeetings, setPickerMeetings] = useState<Meeting[] | null>(null);
   const [showCreateMeetingForm, setShowCreateMeetingForm] = useState(false);
+  const [showQuickMeetingForm, setShowQuickMeetingForm] = useState(false);
+  const [quickMeetingType, setQuickMeetingType] = useState<"internal" | "external">("internal");
+  const [quickMeetingTitle, setQuickMeetingTitle] = useState("");
+  const [quickMeetingParticipantIds, setQuickMeetingParticipantIds] = useState<string[]>([]);
+  const [quickMeetingParticipantSearch, setQuickMeetingParticipantSearch] = useState("");
+  const [startingQuickMeeting, setStartingQuickMeeting] = useState(false);
+  const [quickMeetingError, setQuickMeetingError] = useState("");
   const [todayAttendanceSeconds, setTodayAttendanceSeconds] = useState(0);
   const [weekHours, setWeekHours] = useState<{ day: string; h: number }[]>([
     { day: "Mon", h: 0 },
@@ -792,22 +800,36 @@ export function EmployeeDashboard({
   const [tick, setTick] = useState(0);
   const [attendanceFetchTime, setAttendanceFetchTime] = useState(Date.now());
 
-  const refreshClockState = useCallback(async () => {
+  // Split from stats on purpose: activeClock/todaySession gate the
+  // Clock In / Step Out / Resume Work button and status label, so they
+  // must never sit behind the slower attendance-seconds/week-hours
+  // queries — that used to force a single Promise.all to wait for the
+  // slowest of four queries before the button could visibly update.
+  const refreshClockStatus = useCallback(async () => {
     if (!userName) return;
-    const [session, today, todaySeconds, week] = await Promise.all([
+    const [session, today] = await Promise.all([
       fetchActiveClockSession(userName, myProfile?.id),
       fetchTodayOfficeSession(userName, myProfile?.id),
+    ]);
+    setActiveClock(session);
+    setTodaySession(today);
+    setClockSetupNeeded(!isClockSessionsTableReady());
+  }, [userName, myProfile?.id]);
+
+  const refreshClockStats = useCallback(async () => {
+    if (!userName) return;
+    const [todaySeconds, week] = await Promise.all([
       fetchTodayAttendanceSeconds(userName, myProfile?.id),
       fetchWeekAttendanceHours(userName, myProfile?.id),
     ]);
-    const now = Date.now();
-    setActiveClock(session);
-    setTodaySession(today);
     setTodayAttendanceSeconds(todaySeconds);
-    setAttendanceFetchTime(now);
+    setAttendanceFetchTime(Date.now());
     setWeekHours(week);
-    setClockSetupNeeded(!isClockSessionsTableReady());
   }, [userName, myProfile?.id]);
+
+  const refreshClockState = useCallback(async () => {
+    await Promise.all([refreshClockStatus(), refreshClockStats()]);
+  }, [refreshClockStatus, refreshClockStats]);
 
   useEffect(() => {
     if (!userName || pLoading) return;
@@ -984,12 +1006,19 @@ export function EmployeeDashboard({
     setClockLoading(true);
     setClockError("");
     try {
-      await clockInEmployee({
+      const session = await clockInEmployee({
         employeeName: myProfile?.name || userName,
         employeeId: myProfile?.id,
       });
+      // Use the session the write call already returned instead of firing a
+      // second round-trip read just to learn what we already know — the
+      // button/status flips the instant the write resolves, not after an
+      // extra fetch.
+      setActiveClock(session);
+      setTodaySession(session);
+      setClockSetupNeeded(!isClockSessionsTableReady());
       setShowClockOutMenu(false);
-      await refreshClockState();
+      void refreshClockStats().catch(() => {});
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Clock action failed";
       const needsSetup = msg === CLOCK_SESSIONS_SETUP_MSG || /clock_sessions/i.test(msg);
@@ -998,14 +1027,14 @@ export function EmployeeDashboard({
     } finally {
       setClockLoading(false);
     }
-  }, [userName, myProfile, refreshClockState]);
+  }, [userName, myProfile, refreshClockStats]);
 
   const handleClockOut = useCallback(async (reason: ClockOutReason, meeting?: Meeting) => {
     if (!userName || !activeClock) return;
     setClockLoading(true);
     setClockError("");
     try {
-      await clockOutEmployee({
+      const { session } = await clockOutEmployee({
         sessionId: activeClock.id,
         employeeName: myProfile?.name || userName,
         employeeId: myProfile?.id,
@@ -1013,10 +1042,15 @@ export function EmployeeDashboard({
         meetingId: meeting?.id,
         meetingTitle: meeting?.title,
       });
+      // clockOutEmployee always leaves the session non-active (paused or
+      // completed), so activeClock is always null from here — no need to
+      // wait on a second read to learn that.
+      setActiveClock(null);
+      setTodaySession(session);
       setShowClockOutMenu(false);
       setShowMeetingPicker(false);
       setPickerMeetings(null);
-      await refreshClockState();
+      void refreshClockStats().catch(() => {});
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Clock action failed";
       const needsSetup = msg === CLOCK_SESSIONS_SETUP_MSG || /clock_sessions/i.test(msg);
@@ -1025,7 +1059,7 @@ export function EmployeeDashboard({
     } finally {
       setClockLoading(false);
     }
-  }, [activeClock, userName, myProfile, refreshClockState]);
+  }, [activeClock, userName, myProfile, refreshClockStats]);
 
   const openMeetingPicker = useCallback(async () => {
     setShowMeetingPicker(true);
@@ -1049,6 +1083,45 @@ export function EmployeeDashboard({
       setPickerMeetings([]);
     }
   }, [myProfile?.id]);
+
+  function toggleQuickMeetingParticipant(id: string) {
+    setQuickMeetingParticipantIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  }
+
+  async function startQuickMeeting() {
+    if (!myProfile?.id) return;
+    setStartingQuickMeeting(true);
+    setQuickMeetingError("");
+    try {
+      const now = new Date();
+      const title = quickMeetingTitle.trim() || (quickMeetingType === "internal" ? "Quick Internal Meeting" : "Quick External Meeting");
+      const meeting = await createMeeting({
+        title,
+        type: quickMeetingType === "internal" ? "Internal Meeting" : "External Meeting",
+        platform: "In-Person",
+        date: now.toLocaleDateString("en-CA"),
+        start_time: `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`,
+        duration_mins: 30,
+        organizer_id: myProfile.id,
+        organizer_name: myProfile.name,
+        participant_ids: quickMeetingParticipantIds,
+      });
+      if (!meeting) {
+        setQuickMeetingError("Failed to start meeting. Please try again.");
+        return;
+      }
+      setShowQuickMeetingForm(false);
+      setQuickMeetingType("internal");
+      setQuickMeetingTitle("");
+      setQuickMeetingParticipantIds([]);
+      setQuickMeetingParticipantSearch("");
+      await handleClockOut("meeting", meeting);
+    } catch (e) {
+      setQuickMeetingError(e instanceof Error ? e.message : "Failed to start meeting.");
+    } finally {
+      setStartingQuickMeeting(false);
+    }
+  }
 
   const clockOutIcons: Record<ClockOutReason, React.ReactNode> = {
     lunch: <Utensils size={16} />,
@@ -1210,13 +1283,22 @@ export function EmployeeDashboard({
                     <p className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">No scheduled or ongoing meetings</p>
                     <p className="text-[11px] text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mt-1">Create a meeting first, then come back to step out into it.</p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowCreateMeetingForm(true)}
-                    className="mt-1 flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold font-['Plus_Jakarta_Sans'] bg-violet-500/20 border border-violet-500/30 text-violet-300 hover:bg-violet-500/30 transition-colors"
-                  >
-                    <Plus size={15} /> Create Meeting
-                  </button>
+                  <div className="flex items-center gap-2 mt-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowCreateMeetingForm(true)}
+                      className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold font-['Plus_Jakarta_Sans'] bg-violet-500/20 border border-violet-500/30 text-violet-300 hover:bg-violet-500/30 transition-colors"
+                    >
+                      <Plus size={15} /> Create Meeting
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowQuickMeetingForm(true)}
+                      className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold font-['Plus_Jakarta_Sans'] bg-amber-500/20 border border-amber-500/30 text-amber-300 hover:bg-amber-500/30 transition-colors"
+                    >
+                      <Zap size={15} /> Quick Meeting
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <div className="p-3 space-y-1.5 max-h-96 overflow-y-auto">
@@ -1242,13 +1324,22 @@ export function EmployeeDashboard({
                       </span>
                     </button>
                   ))}
-                  <button
-                    type="button"
-                    onClick={() => setShowCreateMeetingForm(true)}
-                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold font-['Plus_Jakarta_Sans'] border border-dashed border-violet-500/30 text-violet-300 hover:bg-violet-500/10 transition-colors"
-                  >
-                    <Plus size={15} /> Create another meeting
-                  </button>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowCreateMeetingForm(true)}
+                      className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold font-['Plus_Jakarta_Sans'] border border-dashed border-violet-500/30 text-violet-300 hover:bg-violet-500/10 transition-colors"
+                    >
+                      <Plus size={15} /> Create meeting
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowQuickMeetingForm(true)}
+                      className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold font-['Plus_Jakarta_Sans'] border border-dashed border-amber-500/30 text-amber-300 hover:bg-amber-500/10 transition-colors"
+                    >
+                      <Zap size={15} /> Quick meeting
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -1260,8 +1351,134 @@ export function EmployeeDashboard({
             organizerId={myProfile.id}
             organizerName={myProfile.name}
             onClose={() => setShowCreateMeetingForm(false)}
-            onSaved={() => { setShowCreateMeetingForm(false); void openMeetingPicker(); }}
+            onSaved={() => {
+              setShowCreateMeetingForm(false);
+              setShowMeetingPicker(false);
+              setShowClockOutMenu(false);
+            }}
           />
+        )}
+        {showQuickMeetingForm && myProfile && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
+            onClick={() => !startingQuickMeeting && setShowQuickMeetingForm(false)}
+          >
+            <div
+              className="w-full max-w-md bg-[#0d1326] border border-[rgba(99,102,241,0.2)] rounded-2xl shadow-2xl overflow-hidden"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-2 px-5 py-4 border-b border-[rgba(99,102,241,0.1)]">
+                <button
+                  type="button"
+                  onClick={() => { setShowQuickMeetingForm(false); setShowMeetingPicker(true); }}
+                  className="p-1.5 -ml-1.5 rounded-lg text-[#6b7fa8] hover:text-white hover:bg-white/5"
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Quick Meeting</h3>
+                  <p className="text-[11px] text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mt-0.5">Starts now · steps you out immediately</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowQuickMeetingForm(false)}
+                  className="p-1.5 rounded-lg text-[#6b7fa8] hover:text-white hover:bg-white/5"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="p-5 space-y-4">
+                {quickMeetingError && (
+                  <p className="text-xs text-red-400 font-['Plus_Jakarta_Sans']">{quickMeetingError}</p>
+                )}
+
+                <div>
+                  <label className="block text-xs font-['Plus_Jakarta_Sans'] text-[#6b7fa8] mb-1.5">Meeting Type</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setQuickMeetingType("internal")}
+                      className={`px-4 py-2.5 rounded-xl text-sm font-semibold font-['Plus_Jakarta_Sans'] border transition-colors ${
+                        quickMeetingType === "internal"
+                          ? "bg-amber-500/20 border-amber-500/40 text-amber-300"
+                          : "bg-[#131a35] border-[rgba(99,102,241,0.15)] text-[#8fa0c4] hover:text-white"
+                      }`}
+                    >
+                      Internal
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setQuickMeetingType("external")}
+                      className={`px-4 py-2.5 rounded-xl text-sm font-semibold font-['Plus_Jakarta_Sans'] border transition-colors ${
+                        quickMeetingType === "external"
+                          ? "bg-amber-500/20 border-amber-500/40 text-amber-300"
+                          : "bg-[#131a35] border-[rgba(99,102,241,0.15)] text-[#8fa0c4] hover:text-white"
+                      }`}
+                    >
+                      External
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-['Plus_Jakarta_Sans'] text-[#6b7fa8] mb-1.5">Title (optional)</label>
+                  <input
+                    value={quickMeetingTitle}
+                    onChange={e => setQuickMeetingTitle(e.target.value)}
+                    placeholder={quickMeetingType === "internal" ? "e.g. Quick sync with dev team" : "e.g. Client call"}
+                    className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-4 py-2.5 text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-amber-500/50 transition-colors font-['Plus_Jakarta_Sans']"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-['Plus_Jakarta_Sans'] text-[#6b7fa8] mb-1.5">
+                    Participants (optional){quickMeetingParticipantIds.length > 0 ? ` · ${quickMeetingParticipantIds.length} selected` : ""}
+                  </label>
+                  <div className="relative mb-2">
+                    <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#6b7fa8]" />
+                    <input
+                      value={quickMeetingParticipantSearch}
+                      onChange={e => setQuickMeetingParticipantSearch(e.target.value)}
+                      placeholder="Search employees..."
+                      className="w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl pl-8 pr-3 py-2 text-sm text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-amber-500/50 transition-colors font-['Plus_Jakarta_Sans']"
+                    />
+                  </div>
+                  <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
+                    {profiles
+                      .filter(p => p.id !== myProfile.id && p.name.toLowerCase().includes(quickMeetingParticipantSearch.toLowerCase()))
+                      .map(p => {
+                        const checked = quickMeetingParticipantIds.includes(p.id);
+                        return (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => toggleQuickMeetingParticipant(p.id)}
+                            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors ${
+                              checked ? "bg-amber-500/15 border border-amber-500/30" : "bg-[#131a35] border border-transparent hover:bg-[#1a2440]"
+                            }`}
+                          >
+                            <span className={`w-4 h-4 rounded border shrink-0 flex items-center justify-center ${checked ? "bg-amber-500 border-amber-500" : "border-[#6b7fa8]"}`}>
+                              {checked && <span className="w-1.5 h-1.5 bg-[#0d1326] rounded-sm" />}
+                            </span>
+                            <span className="text-xs text-[#e2e8f7] font-['Plus_Jakarta_Sans'] truncate">{p.name}</span>
+                          </button>
+                        );
+                      })}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void startQuickMeeting()}
+                  disabled={startingQuickMeeting}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold font-['Plus_Jakarta_Sans'] bg-amber-500 hover:bg-amber-400 text-[#0d1326] transition-colors disabled:opacity-50"
+                >
+                  <Zap size={15} /> {startingQuickMeeting ? "Starting..." : "Start Meeting & Step Out"}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
         {[
           { label: "Focus Score", value: `${focusScore}%`, icon: Target, color: "text-indigo-400" },
