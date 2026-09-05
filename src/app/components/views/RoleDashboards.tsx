@@ -1013,11 +1013,16 @@ export function EmployeeDashboard({
       // Use the session the write call already returned instead of firing a
       // second round-trip read just to learn what we already know — the
       // button/status flips the instant the write resolves, not after an
-      // extra fetch.
+      // extra fetch. This raw session has no `.segments` though (it's not
+      // hydrated), so the Daily Timeline would fall back to a crude
+      // reconstruction and lose real segment history (lunch break, meeting
+      // blocks) until reconciled — refreshClockStatus() does that shortly
+      // after, in the background, without blocking the instant status flip.
       setActiveClock(session);
       setTodaySession(session);
       setClockSetupNeeded(!isClockSessionsTableReady());
       setShowClockOutMenu(false);
+      void refreshClockStatus().catch(() => {});
       void refreshClockStats().catch(() => {});
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Clock action failed";
@@ -1027,7 +1032,7 @@ export function EmployeeDashboard({
     } finally {
       setClockLoading(false);
     }
-  }, [userName, myProfile, refreshClockStats]);
+  }, [userName, myProfile, refreshClockStatus, refreshClockStats]);
 
   const handleClockOut = useCallback(async (reason: ClockOutReason, meeting?: Meeting) => {
     if (!userName || !activeClock) return;
@@ -1044,12 +1049,15 @@ export function EmployeeDashboard({
       });
       // clockOutEmployee always leaves the session non-active (paused or
       // completed), so activeClock is always null from here — no need to
-      // wait on a second read to learn that.
+      // wait on a second read to learn that. Same caveat as handleClockIn:
+      // this raw session has no `.segments`, so reconcile with a hydrated
+      // one in the background right after.
       setActiveClock(null);
       setTodaySession(session);
       setShowClockOutMenu(false);
       setShowMeetingPicker(false);
       setPickerMeetings(null);
+      void refreshClockStatus().catch(() => {});
       void refreshClockStats().catch(() => {});
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Clock action failed";
@@ -1059,7 +1067,7 @@ export function EmployeeDashboard({
     } finally {
       setClockLoading(false);
     }
-  }, [activeClock, userName, myProfile, refreshClockStats]);
+  }, [activeClock, userName, myProfile, refreshClockStatus, refreshClockStats]);
 
   const openMeetingPicker = useCallback(async () => {
     setShowMeetingPicker(true);

@@ -3255,7 +3255,17 @@ async function enforceAutoLunchBreak(session: ClockSessionRecord): Promise<Clock
   }
 
   const activeNow = segments.find(s => !s.endedAt);
-  if (!activeNow || new Date(activeNow.startedAt).getTime() > twoPM.getTime()) {
+  // Only split a genuine WORKING segment for the auto-lunch insert. Without
+  // this check, an employee still in an ongoing meeting (or break/idle) when
+  // 2 PM ticks over had that segment force-closed at 2 PM and overwritten
+  // with a fake "Lunch Break" + a generic "work" segment resuming at 2:40 —
+  // cutting their meeting short and mislabeling/recoloring the rest of it as
+  // plain office attendance instead of "meeting".
+  if (
+    !activeNow ||
+    (activeNow.kind !== "working" && activeNow.kind !== "work") ||
+    new Date(activeNow.startedAt).getTime() > twoPM.getTime()
+  ) {
     return session;
   }
 

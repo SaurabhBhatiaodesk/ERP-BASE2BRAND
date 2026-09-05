@@ -57,6 +57,11 @@ function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function currentTimeStr() {
+  const now = new Date();
+  return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+}
+
 function addMinutes(timeStr: string, mins: number): string {
   const [h, m] = timeStr.split(":").map(Number);
   const total = h * 60 + m + mins;
@@ -590,7 +595,7 @@ export function ScheduleModal({ profiles, organizerId, organizerName, editingMee
   const [platform,      setPlatform]      = useState(editingMeeting?.platform ?? "Zoom");
   const [link,          setLink]          = useState(editingMeeting?.meeting_link ?? "");
   const [date,          setDate]          = useState(editingMeeting?.date ?? todayStr());
-  const [startTime,     setStartTime]     = useState(editingMeeting?.start_time?.slice(0,5) ?? "10:00");
+  const [startTime,     setStartTime]     = useState(editingMeeting?.start_time?.slice(0,5) ?? currentTimeStr());
   const [durationMins,  setDurationMins]  = useState(editingMeeting?.duration_mins ?? 30);
   const [agenda,        setAgenda]        = useState(editingMeeting?.agenda ?? "");
   const [selectedPIds,  setSelectedPIds]  = useState<string[]>(
