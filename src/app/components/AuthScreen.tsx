@@ -325,7 +325,7 @@ export function AuthScreen({ onLogin }: { onLogin: (role: string, name: string) 
         {/* Logo */}
         <div className="text-center mb-10">
           <ImageWithFallback src={logo} alt="Base2Brand" className="h-9 w-auto object-contain mx-auto mb-3" />
-          <p className="text-[11px] font-['Geist_Mono'] text-[#6b7fa8] tracking-widest uppercase">Command Center · v2.4</p>
+          <p className="text-[11px] font-['Geist_Mono'] text-[#6b7fa8] tracking-widest uppercase">Command Center · v{__APP_VERSION__}</p>
         </div>
 
         {step === "role" && (

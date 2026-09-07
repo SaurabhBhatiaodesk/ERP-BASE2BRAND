@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FileText, Plus, Search, X, Building2, Landmark, Users,
-  Download, Pencil, Trash2, ShieldAlert, Loader2, Camera, Wallet, Lock, KeyRound,
+  Download, Pencil, Trash2, ShieldAlert, Loader2, Camera, Wallet, Lock, KeyRound, Eye,
 } from "lucide-react";
 import { usePDF } from "react-to-pdf";
 // @ts-expect-error — number-to-words ships no type declarations; matches the exact
@@ -22,7 +22,7 @@ import {
   fetchInvoiceWages, createInvoiceWages, updateInvoiceWages, deleteInvoiceWages, updateEmployeeWageFields,
   fetchInvoicingLockHash, setInvoicingLockHash,
   type Invoice, type InvoiceClient, type InvoiceCompany, type InvoiceBankDetail,
-  type InvoiceLineItem, type InvoicePaymentStatus, type InvoiceWage,
+  type InvoiceLineItem, type InvoicePaymentStatus, type InvoicePaymentOptions, type InvoiceWage,
 } from "@/lib/database";
 
 // ── Styles (matches MeetingView/PayrollView convention) ─────────
@@ -863,10 +863,52 @@ function InvoiceFormModal({
   const [saving, setSaving] = useState(false);
 
   const selectedClient = clients.find(c => c.id === clientId);
+  const selectedCompany = companies.find(c => c.id === companyId);
+  const selectedBank = banks.find(b => b.id === bankId);
   const subtotal = lineItemsTotal(lineItems);
   const cgst = enableGst ? Math.round(subtotal * cgstPercent) / 100 : 0;
   const sgst = enableGst ? Math.round(subtotal * sgstPercent) / 100 : 0;
   const total = subtotal + cgst + sgst - advanceAmount;
+
+  // Mirrors handleSave's payload shape exactly, so the live preview on the right
+  // renders through the same InvoiceDocument component a saved invoice uses —
+  // no separate "preview" template to keep in sync.
+  const previewInvoice: InvoiceDocumentData = useMemo(() => ({
+    invoice_no: editing?.invoice_no || "(assigned on save)",
+    invoice_date: invoiceDate,
+    currency,
+    line_items: lineItems.filter(li => li.description.trim() || li.amount),
+    client_name: selectedClient?.client_name,
+    client_company: selectedClient?.company ?? undefined,
+    client_gst_no: clientGstNo || undefined,
+    company_logo_url: selectedCompany?.logo_url ?? undefined,
+    company_name: selectedCompany?.trade_name,
+    company_address: selectedCompany?.company_address ?? undefined,
+    company_gst_no: selectedCompany?.gst_no ?? undefined,
+    company_pan_no: selectedCompany?.pan_no ?? undefined,
+    company_ifsc: selectedCompany?.ifsc ?? undefined,
+    signature_url: selectedCompany?.signature_url ?? undefined,
+    cgst_percent: enableGst ? cgstPercent : 0,
+    sgst_percent: enableGst ? sgstPercent : 0,
+    cgst, sgst,
+    pay_method: payMethod,
+    payment_options: {
+      paytm: paytmId ? { name: "", id: paytmId } : undefined,
+      paypal: paypalId ? { name: "", id: paypalId } : undefined,
+      wise: wiseId ? { name: "", id: wiseId } : undefined,
+      payoneer: payoneerId ? { name: "", id: payoneerId } : undefined,
+    },
+    bank_name: selectedBank?.bank_name,
+    bank_branch_name: selectedBank?.branch_name,
+    bank_account_no: selectedBank?.account_no,
+    bank_account_name: selectedBank?.account_name,
+    bank_account_type: selectedBank?.account_type,
+    bank_ifsc_code: selectedBank?.ifsc_code,
+    bank_swift_code: selectedBank?.swift_code,
+  }), [
+    editing, invoiceDate, currency, lineItems, selectedClient, clientGstNo, selectedCompany,
+    enableGst, cgstPercent, sgstPercent, cgst, sgst, payMethod, paytmId, paypalId, wiseId, payoneerId, selectedBank,
+  ]);
 
   function updateLineItem(index: number, patch: Partial<InvoiceLineItem>) {
     setLineItems(prev => prev.map((li, i) => (i === index ? { ...li, ...patch } : li)));
@@ -927,7 +969,14 @@ function InvoiceFormModal({
   }
 
   return (
-    <ModalShell title={editing ? `Edit ${editing.invoice_no}` : "New Invoice"} onClose={onClose} wide>
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/70 backdrop-blur-sm">
+      <div className={`${cardCls} w-full sm:max-w-6xl max-h-[90vh] shadow-2xl shadow-black/60 rounded-b-none sm:rounded-xl flex flex-col overflow-hidden`}>
+        <div className="flex items-center justify-between p-5 border-b border-[rgba(99,102,241,0.12)] shrink-0">
+          <h2 className="text-xs font-bold text-[#6b7fa8] font-['Plus_Jakarta_Sans'] uppercase tracking-wider">{editing ? `Edit ${editing.invoice_no}` : "New Invoice"}</h2>
+          <button onClick={onClose} className="p-2 rounded-lg hover:bg-white/[0.05] text-[#6b7fa8] hover:text-white transition-colors"><X size={18} /></button>
+        </div>
+        <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-[rgba(99,102,241,0.12)] overflow-hidden">
+        <div className="p-5 space-y-4 overflow-y-auto">
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className={labelCls}>Client *</label>
@@ -1031,7 +1080,21 @@ function InvoiceFormModal({
         <button onClick={onClose} className={btnSecondary}>Cancel</button>
         <button onClick={handleSave} disabled={saving} className={btnPrimary}>{saving ? <Loader2 size={14} className="animate-spin" /> : null} Save</button>
       </div>
-    </ModalShell>
+        </div>
+        <div className="p-5 overflow-y-auto bg-[#080c1a] hidden lg:block">
+          <div className="flex items-center gap-2 mb-3">
+            <Eye size={13} className="text-indigo-400" />
+            <span className="text-[10px] font-bold text-[#6b7fa8] uppercase tracking-wider font-['Geist_Mono']">Live Preview</span>
+          </div>
+          <div className="rounded-lg overflow-hidden border border-[rgba(99,102,241,0.12)]">
+            <div style={{ zoom: 0.62 } as React.CSSProperties}>
+              <InvoiceDocument invoice={previewInvoice} />
+            </div>
+          </div>
+        </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1161,31 +1224,171 @@ function DocumentFooter() {
   );
 }
 
+/** Data an invoice document needs to render — a structural subset of `Invoice` so a
+ * draft (not-yet-saved) invoice, assembled client-side from the form's current values,
+ * can be rendered through the exact same component as a real saved invoice. */
+type InvoiceDocumentData = {
+  invoice_no: string;
+  invoice_date: string;
+  currency: string;
+  line_items: InvoiceLineItem[];
+  client_name?: string;
+  client_company?: string;
+  client_gst_no?: string | null;
+  company_logo_url?: string | null;
+  company_name?: string;
+  company_address?: string;
+  company_gst_no?: string | null;
+  company_pan_no?: string;
+  company_ifsc?: string;
+  signature_url?: string | null;
+  cgst_percent: number;
+  sgst_percent: number;
+  cgst: number;
+  sgst: number;
+  pay_method: string | null;
+  payment_options: InvoicePaymentOptions;
+  bank_name?: string | null;
+  bank_branch_name?: string | null;
+  bank_account_no?: string | null;
+  bank_account_name?: string | null;
+  bank_account_type?: string | null;
+  bank_ifsc_code?: string | null;
+  bank_swift_code?: string | null;
+};
+
+const InvoiceDocument = React.forwardRef<HTMLDivElement, { invoice: InvoiceDocumentData }>(
+  function InvoiceDocument({ invoice }, ref) {
+    const subtotal = lineItemsTotal(invoice.line_items);
+    const gstPercent = invoice.cgst_percent + invoice.sgst_percent;
+    const gstAmount = invoice.cgst + invoice.sgst;
+    // Matches Invoice.js exactly: the GST line (and total) only include GST when both
+    // percent fields are set — it checks `sgstper && cgstper` directly, not a separate
+    // enable_gst flag (which the legacy template never actually reads). Advance_amount
+    // is never subtracted from the total on the legacy invoice document either — it's
+    // tracked as a field but not deducted here.
+    const hasGst = invoice.cgst_percent > 0 && invoice.sgst_percent > 0;
+    const total = subtotal + (hasGst ? gstAmount : 0);
+    const amountInWords = numberToWords(Math.round(total));
+
+    // Group line items by project — matches Invoice.js: one "Task" row per project,
+    // with each description line (and its amount) nested beneath it.
+    const grouped: { project: string; lines: InvoiceLineItem[] }[] = [];
+    const byProject = new Map<string, InvoiceLineItem[]>();
+    for (const li of invoice.line_items) {
+      if (!byProject.has(li.project)) { byProject.set(li.project, []); grouped.push({ project: li.project, lines: byProject.get(li.project)! }); }
+      byProject.get(li.project)!.push(li);
+    }
+
+    const payMethodLabel = PAY_METHOD_LABELS[invoice.pay_method ?? ""] ?? "Bank Detail";
+
+    return (
+      <div ref={ref} style={DS.doc}>
+        {invoice.company_logo_url && <img style={{ ...DS.watermark, width: "55%" }} src={invoice.company_logo_url} alt="" />}
+        <div style={DS.content}>
+        <div style={DS.appoinmentLogo}>
+          {invoice.company_logo_url ? <img style={DS.appoinmentLogoImg} src={invoice.company_logo_url} alt="" /> : <div />}
+          <h2 style={DS.taxInvoiceTitle}>Tax Invoice</h2>
+        </div>
+        <div style={DS.invoiceSection}>
+          <div style={DS.formHead}>
+            <span style={DS.billHead}>Bill To</span>
+            <span style={DS.billHead}>Original For Recipient</span>
+          </div>
+          <div style={DS.invoiceBody}>
+            <div>
+              <p style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>{invoice.client_name}</p>
+              <div style={DS.detailRow}><label style={DS.detailLabel}>Name :</label><p style={DS.detailP}>{invoice.client_company}</p></div>
+              {/* Legacy quirk, replicated exactly: this "Address :" row shows the ISSUING
+                  company's address (Invoice.js reads formData.companyAddress here), not a
+                  client-specific address — there's no separate client-address field used. */}
+              {invoice.company_address && <div style={DS.detailRow}><label style={DS.detailLabel}>Address :</label><p style={DS.detailP}>{invoice.company_address}</p></div>}
+              {invoice.client_gst_no && <div style={DS.detailRow}><label style={DS.detailLabel}>Gst NO :</label><p style={DS.detailP}>{invoice.client_gst_no}</p></div>}
+            </div>
+            <div>
+              <div style={DS.detailsDataRow}><label style={DS.detailsDataLabel}>Invoice No.</label><span style={DS.detailsDataSpan}>{invoice.invoice_no}</span></div>
+              <div style={DS.detailsDataRow}><label style={DS.detailsDataLabel}>Invoice Date</label><span style={DS.detailsDataSpan}>{invoice.invoice_date}</span></div>
+              {invoice.client_gst_no && <div style={DS.detailsDataRow}><label style={DS.detailsDataLabel}>GST Code</label><span style={DS.detailsDataSpan}>{invoice.client_gst_no}</span></div>}
+            </div>
+          </div>
+
+          <div style={DS.thead}>
+            <b style={DS.theadB}>Sr. No.</b><b style={DS.theadB}>Task</b><b style={DS.theadBWide}>Description</b><b style={DS.theadB}>Amount</b>
+          </div>
+          <div>
+            {grouped.map((g, gi) => (
+              <div style={DS.detaCombine} key={gi}>
+                <p style={DS.detaCombineP}>{gi + 1}</p>
+                <div style={DS.taskCombine}>
+                  <p style={DS.taskCombineP}>{g.project}</p>
+                  <div style={DS.taskName}>
+                    {g.lines.map((li, li_i) => (
+                      <section style={DS.amountTask} key={li_i}>
+                        <p style={DS.amountTaskP}>{li.description}</p>
+                        {!!li.amount && <b>{li.amount}</b>}
+                      </section>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {hasGst && (
+            <div style={DS.sgstPer}><p style={{ margin: 0 }}>GST ({gstPercent}%): <b>{gstAmount.toFixed(2)}</b></p></div>
+          )}
+          <div style={DS.totalAmount}>
+            <span style={DS.totalLabel}>Total Value</span>
+            <span style={DS.totalValue}>{invoice.currency} {total.toFixed(2)}</span>
+          </div>
+
+          <h3 style={DS.wordAmount}>In Words: {invoice.currency} {amountInWords} Only /-</h3>
+
+          <div style={DS.formHead}>
+            <span style={DS.billHead}>{payMethodLabel}</span>
+            <span style={DS.billHead}>Company Detail</span>
+          </div>
+          <div style={DS.invoiceBody}>
+            <div>
+              {(!invoice.pay_method || invoice.pay_method === "bank") && invoice.bank_name && (
+                <>
+                  <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Bank</label><span style={DS.bankDataSpan}>{invoice.bank_name}</span></div>
+                  <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Branch</label><span style={DS.bankDataSpan}>{invoice.bank_branch_name}</span></div>
+                  <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Account No.</label><span style={DS.bankDataSpan}>{invoice.bank_account_no}</span></div>
+                  <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Account Name</label><span style={DS.bankDataSpan}>{invoice.bank_account_name}</span></div>
+                  <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Account Type</label><span style={DS.bankDataSpan}>{invoice.bank_account_type}</span></div>
+                  <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>IFSC</label><span style={DS.bankDataSpan}>{invoice.bank_ifsc_code}</span></div>
+                  <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Swift Code</label><span style={DS.bankDataSpan}>{invoice.bank_swift_code}</span></div>
+                </>
+              )}
+              {invoice.pay_method === "paytm" && invoice.payment_options.paytm && <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Paytm Id</label><span style={DS.bankDataSpan}>{invoice.payment_options.paytm.id}</span></div>}
+              {invoice.pay_method === "paypal" && invoice.payment_options.paypal && <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Paypal Id</label><span style={DS.bankDataSpan}>{invoice.payment_options.paypal.id}</span></div>}
+              {invoice.pay_method === "wise" && invoice.payment_options.wise && <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Wise Id</label><span style={DS.bankDataSpan}>{invoice.payment_options.wise.id}</span></div>}
+              {invoice.pay_method === "payOneer" && invoice.payment_options.payoneer && <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Payoneer Id</label><span style={DS.bankDataSpan}>{invoice.payment_options.payoneer.id}</span></div>}
+            </div>
+            <div>
+              <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Trade Name</label><span style={DS.bankDataSpan}>{invoice.company_name}</span></div>
+              {/* Legacy quirk, replicated exactly: this "Ifsc Code" row is gated on the
+                  CLIENT's GST number being present, not the company's IFSC — that's
+                  what Invoice.js actually does (likely a copy-paste bug in the source). */}
+              {invoice.client_gst_no && <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Ifsc Code</label><span style={DS.bankDataSpan}>{invoice.company_ifsc}</span></div>}
+              <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>GSTIN</label><span style={DS.bankDataSpan}>{invoice.company_gst_no}</span></div>
+              {!invoice.client_gst_no && <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>PAN</label><span style={DS.bankDataSpan}>{invoice.company_pan_no}</span></div>}
+              <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Address</label><span style={DS.bankDataSpan}>{invoice.company_address}</span></div>
+              {invoice.signature_url && <div style={DS.bankDataRow}><label></label><span><img src={invoice.signature_url} alt="Signature" style={{ width: 80, height: 45, objectFit: "cover", marginTop: 6 }} /></span></div>}
+              <div style={DS.bankDataRow}><label></label><span style={DS.bankDataSpan}>{invoice.company_name}</span></div>
+            </div>
+          </div>
+        </div>
+        <DocumentFooter />
+        </div>
+      </div>
+    );
+  }
+);
+
 function InvoicePreviewModal({ invoice, onClose }: { invoice: Invoice; onClose: () => void }) {
   const { toPDF, targetRef } = usePDF({ filename: "page.pdf" }); // matches the legacy app's generatePDF(targetRef, { filename: "page.pdf" }) exactly
-  const subtotal = lineItemsTotal(invoice.line_items);
-  const gstPercent = invoice.cgst_percent + invoice.sgst_percent;
-  const gstAmount = invoice.cgst + invoice.sgst;
-  // Matches Invoice.js exactly: the GST line (and total) only include GST when both
-  // percent fields are set — it checks `sgstper && cgstper` directly, not a separate
-  // enable_gst flag (which the legacy template never actually reads). Advance_amount
-  // is never subtracted from the total on the legacy invoice document either — it's
-  // tracked as a field but not deducted here.
-  const hasGst = invoice.cgst_percent > 0 && invoice.sgst_percent > 0;
-  const total = subtotal + (hasGst ? gstAmount : 0);
-  const amountInWords = numberToWords(Math.round(total));
-
-  // Group line items by project — matches Invoice.js: one "Task" row per project,
-  // with each description line (and its amount) nested beneath it.
-  const grouped: { project: string; lines: InvoiceLineItem[] }[] = [];
-  const byProject = new Map<string, InvoiceLineItem[]>();
-  for (const li of invoice.line_items) {
-    if (!byProject.has(li.project)) { byProject.set(li.project, []); grouped.push({ project: li.project, lines: byProject.get(li.project)! }); }
-    byProject.get(li.project)!.push(li);
-  }
-
-  const payMethodLabel = PAY_METHOD_LABELS[invoice.pay_method ?? ""] ?? "Bank Detail";
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
       <div className="w-full max-w-5xl max-h-[90vh] overflow-y-auto bg-[#ffffff] rounded-xl shadow-2xl">
@@ -1196,106 +1399,7 @@ function InvoicePreviewModal({ invoice, onClose }: { invoice: Invoice; onClose: 
             <button onClick={onClose} className="p-1.5 rounded-lg text-[#6b7280] hover:bg-[#f3f4f6]"><X size={16} /></button>
           </div>
         </div>
-        <div ref={targetRef} style={DS.doc}>
-          {invoice.company_logo_url && <img style={{ ...DS.watermark, width: "55%" }} src={invoice.company_logo_url} alt="" />}
-          <div style={DS.content}>
-          <div style={DS.appoinmentLogo}>
-            {invoice.company_logo_url ? <img style={DS.appoinmentLogoImg} src={invoice.company_logo_url} alt="" /> : <div />}
-            <h2 style={DS.taxInvoiceTitle}>Tax Invoice</h2>
-          </div>
-          <div style={DS.invoiceSection}>
-            <div style={DS.formHead}>
-              <span style={DS.billHead}>Bill To</span>
-              <span style={DS.billHead}>Original For Recipient</span>
-            </div>
-            <div style={DS.invoiceBody}>
-              <div>
-                <p style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>{invoice.client_name}</p>
-                <div style={DS.detailRow}><label style={DS.detailLabel}>Name :</label><p style={DS.detailP}>{invoice.client_company}</p></div>
-                {/* Legacy quirk, replicated exactly: this "Address :" row shows the ISSUING
-                    company's address (Invoice.js reads formData.companyAddress here), not a
-                    client-specific address — there's no separate client-address field used. */}
-                {invoice.company_address && <div style={DS.detailRow}><label style={DS.detailLabel}>Address :</label><p style={DS.detailP}>{invoice.company_address}</p></div>}
-                {invoice.client_gst_no && <div style={DS.detailRow}><label style={DS.detailLabel}>Gst NO :</label><p style={DS.detailP}>{invoice.client_gst_no}</p></div>}
-              </div>
-              <div>
-                <div style={DS.detailsDataRow}><label style={DS.detailsDataLabel}>Invoice No.</label><span style={DS.detailsDataSpan}>{invoice.invoice_no}</span></div>
-                <div style={DS.detailsDataRow}><label style={DS.detailsDataLabel}>Invoice Date</label><span style={DS.detailsDataSpan}>{invoice.invoice_date}</span></div>
-                {invoice.client_gst_no && <div style={DS.detailsDataRow}><label style={DS.detailsDataLabel}>GST Code</label><span style={DS.detailsDataSpan}>{invoice.client_gst_no}</span></div>}
-              </div>
-            </div>
-
-            <div style={DS.thead}>
-              <b style={DS.theadB}>Sr. No.</b><b style={DS.theadB}>Task</b><b style={DS.theadBWide}>Description</b><b style={DS.theadB}>Amount</b>
-            </div>
-            <div>
-              {grouped.map((g, gi) => (
-                <div style={DS.detaCombine} key={gi}>
-                  <p style={DS.detaCombineP}>{gi + 1}</p>
-                  <div style={DS.taskCombine}>
-                    <p style={DS.taskCombineP}>{g.project}</p>
-                    <div style={DS.taskName}>
-                      {g.lines.map((li, li_i) => (
-                        <section style={DS.amountTask} key={li_i}>
-                          <p style={DS.amountTaskP}>{li.description}</p>
-                          {!!li.amount && <b>{li.amount}</b>}
-                        </section>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {hasGst && (
-              <div style={DS.sgstPer}><p style={{ margin: 0 }}>GST ({gstPercent}%): <b>{gstAmount.toFixed(2)}</b></p></div>
-            )}
-            <div style={DS.totalAmount}>
-              <span style={DS.totalLabel}>Total Value</span>
-              <span style={DS.totalValue}>{invoice.currency} {total.toFixed(2)}</span>
-            </div>
-
-            <h3 style={DS.wordAmount}>In Words: {invoice.currency} {amountInWords} Only /-</h3>
-
-            <div style={DS.formHead}>
-              <span style={DS.billHead}>{payMethodLabel}</span>
-              <span style={DS.billHead}>Company Detail</span>
-            </div>
-            <div style={DS.invoiceBody}>
-              <div>
-                {(!invoice.pay_method || invoice.pay_method === "bank") && invoice.bank_name && (
-                  <>
-                    <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Bank</label><span style={DS.bankDataSpan}>{invoice.bank_name}</span></div>
-                    <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Branch</label><span style={DS.bankDataSpan}>{invoice.bank_branch_name}</span></div>
-                    <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Account No.</label><span style={DS.bankDataSpan}>{invoice.bank_account_no}</span></div>
-                    <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Account Name</label><span style={DS.bankDataSpan}>{invoice.bank_account_name}</span></div>
-                    <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Account Type</label><span style={DS.bankDataSpan}>{invoice.bank_account_type}</span></div>
-                    <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>IFSC</label><span style={DS.bankDataSpan}>{invoice.bank_ifsc_code}</span></div>
-                    <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Swift Code</label><span style={DS.bankDataSpan}>{invoice.bank_swift_code}</span></div>
-                  </>
-                )}
-                {invoice.pay_method === "paytm" && invoice.payment_options.paytm && <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Paytm Id</label><span style={DS.bankDataSpan}>{invoice.payment_options.paytm.id}</span></div>}
-                {invoice.pay_method === "paypal" && invoice.payment_options.paypal && <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Paypal Id</label><span style={DS.bankDataSpan}>{invoice.payment_options.paypal.id}</span></div>}
-                {invoice.pay_method === "wise" && invoice.payment_options.wise && <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Wise Id</label><span style={DS.bankDataSpan}>{invoice.payment_options.wise.id}</span></div>}
-                {invoice.pay_method === "payOneer" && invoice.payment_options.payoneer && <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Payoneer Id</label><span style={DS.bankDataSpan}>{invoice.payment_options.payoneer.id}</span></div>}
-              </div>
-              <div>
-                <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Trade Name</label><span style={DS.bankDataSpan}>{invoice.company_name}</span></div>
-                {/* Legacy quirk, replicated exactly: this "Ifsc Code" row is gated on the
-                    CLIENT's GST number being present, not the company's IFSC — that's
-                    what Invoice.js actually does (likely a copy-paste bug in the source). */}
-                {invoice.client_gst_no && <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Ifsc Code</label><span style={DS.bankDataSpan}>{invoice.company_ifsc}</span></div>}
-                <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>GSTIN</label><span style={DS.bankDataSpan}>{invoice.company_gst_no}</span></div>
-                {!invoice.client_gst_no && <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>PAN</label><span style={DS.bankDataSpan}>{invoice.company_pan_no}</span></div>}
-                <div style={DS.bankDataRow}><label style={DS.bankDataLabel}>Address</label><span style={DS.bankDataSpan}>{invoice.company_address}</span></div>
-                {invoice.signature_url && <div style={DS.bankDataRow}><label></label><span><img src={invoice.signature_url} alt="Signature" style={{ width: 80, height: 45, objectFit: "cover", marginTop: 6 }} /></span></div>}
-                <div style={DS.bankDataRow}><label></label><span style={DS.bankDataSpan}>{invoice.company_name}</span></div>
-              </div>
-            </div>
-          </div>
-          <DocumentFooter />
-          </div>
-        </div>
+        <InvoiceDocument ref={targetRef} invoice={invoice} />
       </div>
     </div>
   );

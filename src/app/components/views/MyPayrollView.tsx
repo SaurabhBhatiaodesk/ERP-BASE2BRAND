@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import { Avatar } from "../ui";
 import { DataEmpty, DataError, DataLoading } from "../ui/DataStatus";
-import { useAttendanceReport, useEmployeeProfiles, useLeaveRequests, usePublicHolidays } from "@/hooks/useSupabaseData";
+import { useAttendanceReport, useEmployeeProfiles, useLeaveRequests, useManualSandwichDays, usePublicHolidays } from "@/hooks/useSupabaseData";
 import { findProfileForUser, fetchPayrollPinHash, setPayrollPinHash, initialsFromName, updateEmployeeProfile } from "@/lib/database";
 import {
   buildHolidayCalendar,
@@ -19,7 +19,6 @@ import {
   parseJoinedDate,
   parseSalaryAmount,
   toDateKey,
-  SANDWICH_WINDOW_PAD_DAYS,
   type PayrollResult,
 } from "@/lib/payroll";
 
@@ -258,15 +257,16 @@ export function MyPayrollView({
 
   const range = useMemo(() => {
     const { year, monthIndex } = cursor;
-    const pad = SANDWICH_WINDOW_PAD_DAYS;
     return {
-      startDate: toDateKey(new Date(year, monthIndex, 1 - pad)),
-      endDate: toDateKey(new Date(year, monthIndex, daysInMonthOf(year, monthIndex) + pad)),
+      startDate: toDateKey(new Date(year, monthIndex, 1)),
+      endDate: toDateKey(new Date(year, monthIndex, daysInMonthOf(year, monthIndex))),
     };
   }, [cursor]);
 
   const { data: leaveRequests, loading: leavesLoading } = useLeaveRequests();
   const { data: holidayRows, loading: holidaysLoading, error: holidaysError } = usePublicHolidays();
+  const { data: sandwichDays } = useManualSandwichDays(viewerProfile?.id);
+  const manualSandwichDates = useMemo(() => sandwichDays.map(d => d.date), [sandwichDays]);
   const { data: attendance, loading: attendanceLoading, error: attendanceError } = useAttendanceReport({
     ...range,
     employeeId: viewerProfile?.id,
@@ -316,8 +316,9 @@ export function MyPayrollView({
       leaveRequests,
       holidays,
       today: todayKey,
+      manualSandwichDates,
     });
-  }, [viewerProfile, attendance, leaveRequests, holidays, holidaysLoading, holidaysError, cursor, todayKey, joinedOn]);
+  }, [viewerProfile, attendance, leaveRequests, holidays, holidaysLoading, holidaysError, cursor, todayKey, joinedOn, manualSandwichDates]);
 
   function shiftMonth(delta: number) {
     setCursor(prev => {

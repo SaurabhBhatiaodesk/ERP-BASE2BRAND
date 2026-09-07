@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import {
   Calendar, ChevronLeft, ChevronRight, Search, X, Users, Wallet,
-  AlertTriangle, Pencil, ShieldAlert, IndianRupee,
+  AlertTriangle, Pencil, ShieldAlert, IndianRupee, Plus, Trash2, Sandwich,
 } from "lucide-react";
 import { Avatar } from "../ui";
 import { DataEmpty, DataError, DataLoading } from "../ui/DataStatus";
@@ -10,8 +10,19 @@ import {
   useEmployeeProfiles,
   useLeaveRequests,
   usePublicHolidays,
+  useManualSandwichDays,
 } from "@/hooks/useSupabaseData";
-import { initialsFromName, updateEmployeeProfile, type EmployeeProfile } from "@/lib/database";
+import {
+  initialsFromName,
+  updateEmployeeProfile,
+  createPublicHoliday,
+  deletePublicHoliday,
+  markManualSandwichDay,
+  unmarkManualSandwichDay,
+  type EmployeeProfile,
+  type PublicHoliday,
+  type ManualSandwichDay,
+} from "@/lib/database";
 import { isPayrollRole } from "@/lib/auth";
 import {
   buildHolidayCalendar,
@@ -25,7 +36,6 @@ import {
   parseSalaryAmount,
   toDateKey,
   PAID_LEAVE_QUOTA_PER_QUARTER,
-  SANDWICH_WINDOW_PAD_DAYS,
   type PayrollResult,
 } from "@/lib/payroll";
 
@@ -38,7 +48,15 @@ type PayrollRow = {
   payroll: PayrollResult;
 };
 
-export function PayrollView({ userRole = "ceo" }: { userRole?: string }) {
+export function PayrollView({
+  userRole = "ceo",
+  markerId,
+  markerName,
+}: {
+  userRole?: string;
+  markerId?: string;
+  markerName?: string;
+}) {
   const today = useMemo(() => new Date(), []);
   const [cursor, setCursor] = useState(() => ({
     year: today.getFullYear(),
@@ -50,17 +68,15 @@ export function PayrollView({ userRole = "ceo" }: { userRole?: string }) {
   const [salaryDraft, setSalaryDraft] = useState<Record<string, string>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
   const [saveError, setSaveError] = useState("");
+  const [showHolidays, setShowHolidays] = useState(false);
 
   const allowed = isPayrollRole(userRole);
 
-  // Padded past both ends of the month: sandwich-leave detection needs to see
-  // the Friday before the 1st and the Monday after the last day.
   const range = useMemo(() => {
     const { year, monthIndex } = cursor;
-    const pad = SANDWICH_WINDOW_PAD_DAYS;
     return {
-      startDate: toDateKey(new Date(year, monthIndex, 1 - pad)),
-      endDate: toDateKey(new Date(year, monthIndex, daysInMonthOf(year, monthIndex) + pad)),
+      startDate: toDateKey(new Date(year, monthIndex, 1)),
+      endDate: toDateKey(new Date(year, monthIndex, daysInMonthOf(year, monthIndex))),
     };
   }, [cursor]);
 
@@ -75,7 +91,9 @@ export function PayrollView({ userRole = "ceo" }: { userRole?: string }) {
     data: holidayRows,
     loading: holidaysLoading,
     error: holidaysError,
+    refresh: refreshHolidays,
   } = usePublicHolidays();
+  const { data: sandwichDays, refresh: refreshSandwichDays } = useManualSandwichDays();
   const { data: attendance, loading: attendanceLoading, error: attendanceError } =
     useAttendanceReport(allowed ? range : { startDate: range.startDate, endDate: range.startDate });
 
@@ -84,6 +102,16 @@ export function PayrollView({ userRole = "ceo" }: { userRole?: string }) {
     cursor.year === today.getFullYear() && cursor.monthIndex === today.getMonth();
 
   const holidays = useMemo(() => buildHolidayCalendar(holidayRows), [holidayRows]);
+
+  const sandwichDatesByEmployee = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const row of sandwichDays) {
+      const list = map.get(row.employeeId) ?? [];
+      list.push(row.date);
+      map.set(row.employeeId, list);
+    }
+    return map;
+  }, [sandwichDays]);
 
   const rows: PayrollRow[] = useMemo(() => {
     if (!allowed) return [];
@@ -106,13 +134,14 @@ export function PayrollView({ userRole = "ceo" }: { userRole?: string }) {
           attendance,
           leaveRequests,
           holidays,
+          manualSandwichDates: sandwichDatesByEmployee.get(profile.id) ?? [],
           today: todayKey,
         }),
       }))
       .sort((a, b) => a.profile.name.localeCompare(b.profile.name));
   }, [
     allowed, profiles, attendance, leaveRequests, cursor, todayKey,
-    holidays, holidaysLoading, holidaysError,
+    holidays, holidaysLoading, holidaysError, sandwichDatesByEmployee,
   ]);
 
   const visibleRows = useMemo(() => {
@@ -204,30 +233,39 @@ export function PayrollView({ userRole = "ceo" }: { userRole?: string }) {
             </p>
           </div>
 
-          <div className="flex items-center bg-[#131a35] border border-indigo-500/30 rounded-lg overflow-hidden shadow-sm shadow-indigo-500/10">
+          <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={() => shiftMonth(-1)}
-              className="px-3 py-2 text-[#8fa0c4] hover:text-white hover:bg-indigo-500/10 transition-colors border-r border-[rgba(99,102,241,0.15)]"
-              aria-label="Previous month"
+              onClick={() => setShowHolidays(true)}
+              className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold font-['Plus_Jakarta_Sans'] bg-violet-500/10 border border-violet-500/25 text-violet-300 hover:bg-violet-500/20 transition-colors"
             >
-              <ChevronLeft size={16} />
+              <Calendar size={14} /> Public Holidays
             </button>
-            <div className="px-5 py-2 flex items-center justify-center gap-2 min-w-[180px]">
-              <Calendar size={14} className="text-indigo-400" />
-              <span className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">
-                {monthLabel(cursor.year, cursor.monthIndex)}
-              </span>
+            <div className="flex items-center bg-[#131a35] border border-indigo-500/30 rounded-lg overflow-hidden shadow-sm shadow-indigo-500/10">
+              <button
+                type="button"
+                onClick={() => shiftMonth(-1)}
+                className="px-3 py-2 text-[#8fa0c4] hover:text-white hover:bg-indigo-500/10 transition-colors border-r border-[rgba(99,102,241,0.15)]"
+                aria-label="Previous month"
+              >
+                <ChevronLeft size={16} />
+              </button>
+              <div className="px-5 py-2 flex items-center justify-center gap-2 min-w-[180px]">
+                <Calendar size={14} className="text-indigo-400" />
+                <span className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">
+                  {monthLabel(cursor.year, cursor.monthIndex)}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => shiftMonth(1)}
+                disabled={isCurrentMonth}
+                className="px-3 py-2 text-[#8fa0c4] hover:text-white hover:bg-indigo-500/10 disabled:opacity-30 disabled:hover:bg-transparent transition-colors border-l border-[rgba(99,102,241,0.15)]"
+                aria-label="Next month"
+              >
+                <ChevronRight size={16} />
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => shiftMonth(1)}
-              disabled={isCurrentMonth}
-              className="px-3 py-2 text-[#8fa0c4] hover:text-white hover:bg-indigo-500/10 disabled:opacity-30 disabled:hover:bg-transparent transition-colors border-l border-[rgba(99,102,241,0.15)]"
-              aria-label="Next month"
-            >
-              <ChevronRight size={16} />
-            </button>
           </div>
         </div>
 
@@ -435,14 +473,214 @@ export function PayrollView({ userRole = "ceo" }: { userRole?: string }) {
       )}
 
       {selected && (
-        <PayslipModal row={selected} onClose={() => setSelectedId(null)} />
+        <PayslipModal
+          row={selected}
+          onClose={() => setSelectedId(null)}
+          sandwichDates={sandwichDatesByEmployee.get(selected.profile.id) ?? []}
+          markerId={markerId}
+          markerName={markerName}
+          onSandwichChanged={refreshSandwichDays}
+        />
+      )}
+
+      {showHolidays && (
+        <PublicHolidaysModal
+          holidays={holidayRows}
+          onClose={() => setShowHolidays(false)}
+          onChanged={refreshHolidays}
+        />
       )}
     </div>
   );
 }
 
-function PayslipModal({ row, onClose }: { row: PayrollRow; onClose: () => void }) {
+function PublicHolidaysModal({
+  holidays,
+  onClose,
+  onChanged,
+}: {
+  holidays: PublicHoliday[];
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [date, setDate] = useState("");
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [formError, setFormError] = useState("");
+
+  const sorted = useMemo(
+    () => [...holidays].sort((a, b) => a.date.localeCompare(b.date)),
+    [holidays],
+  );
+
+  async function handleAdd() {
+    if (!date) {
+      setFormError("Pick a date.");
+      return;
+    }
+    setSaving(true);
+    setFormError("");
+    try {
+      await createPublicHoliday(date, name.trim() || "Day Off");
+      setDate("");
+      setName("");
+      onChanged();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "Failed to add holiday.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleRemove(id: string) {
+    setRemovingId(id);
+    try {
+      await deletePublicHoliday(id);
+      onChanged();
+    } finally {
+      setRemovingId(null);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-[#0d1326] border border-[rgba(99,102,241,0.2)] rounded-2xl w-full max-w-md max-h-[85vh] flex flex-col shadow-2xl shadow-indigo-900/30"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between p-6 pb-4 shrink-0">
+          <div>
+            <h3 className="text-lg font-bold text-white font-['Plus_Jakarta_Sans']">Public Holidays</h3>
+            <p className="text-[11px] text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mt-0.5">
+              Mark a day off for everyone, or remove one — payroll updates immediately.
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="text-[#6b7fa8] hover:text-white transition-colors">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="px-6 pb-4 shrink-0 space-y-2">
+          {formError && <p className="text-xs text-rose-400 font-['Plus_Jakarta_Sans']">{formError}</p>}
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={date}
+              onChange={e => setDate(e.target.value)}
+              className={`${inputCls} [color-scheme:dark]`}
+            />
+            <input
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="Holiday name (e.g. Diwali)"
+              className={inputCls}
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => void handleAdd()}
+            disabled={saving}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 disabled:opacity-60 text-white text-sm font-semibold rounded-xl transition-all font-['Plus_Jakarta_Sans']"
+          >
+            <Plus size={15} /> {saving ? "Adding..." : "Mark as Holiday"}
+          </button>
+        </div>
+
+        <div className="px-6 pb-6 overflow-y-auto space-y-1.5">
+          {sorted.length === 0 ? (
+            <div className="bg-[#131a35]/70 border border-[rgba(99,102,241,0.12)] rounded-xl px-4 py-5 text-center">
+              <p className="text-sm text-[#8fa0c4] font-['Plus_Jakarta_Sans']">No holidays marked yet.</p>
+            </div>
+          ) : (
+            sorted.map(h => (
+              <div
+                key={h.id}
+                className="flex items-center justify-between gap-3 bg-[#131a35]/70 border border-[rgba(99,102,241,0.1)] rounded-xl px-4 py-2.5"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm text-white font-['Plus_Jakarta_Sans'] truncate">{h.name}</p>
+                  <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono']">{formatDayLabel(h.date)}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleRemove(h.id)}
+                  disabled={removingId === h.id}
+                  className="shrink-0 p-1.5 rounded-lg text-rose-400/80 hover:text-rose-400 hover:bg-rose-500/10 transition-colors disabled:opacity-50"
+                  aria-label={`Remove ${h.name}`}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PayslipModal({
+  row,
+  onClose,
+  sandwichDates,
+  markerId,
+  markerName,
+  onSandwichChanged,
+}: {
+  row: PayrollRow;
+  onClose: () => void;
+  sandwichDates: string[];
+  markerId?: string;
+  markerName?: string;
+  onSandwichChanged: () => void;
+}) {
   const { profile, payroll } = row;
+  const [sandwichDraft, setSandwichDraft] = useState("");
+  const [sandwichSaving, setSandwichSaving] = useState(false);
+  const [sandwichRemoving, setSandwichRemoving] = useState<string | null>(null);
+  const [sandwichError, setSandwichError] = useState("");
+
+  const sortedSandwichDates = useMemo(
+    () => [...sandwichDates].sort((a, b) => b.localeCompare(a)),
+    [sandwichDates],
+  );
+
+  async function handleMarkSandwich() {
+    if (!sandwichDraft) {
+      setSandwichError("Pick a date.");
+      return;
+    }
+    setSandwichSaving(true);
+    setSandwichError("");
+    try {
+      await markManualSandwichDay({
+        employeeId: profile.id,
+        date: sandwichDraft,
+        markedById: markerId,
+        markedByName: markerName,
+      });
+      setSandwichDraft("");
+      onSandwichChanged();
+    } catch (err) {
+      setSandwichError(err instanceof Error ? err.message : "Failed to mark sandwich day.");
+    } finally {
+      setSandwichSaving(false);
+    }
+  }
+
+  async function handleUnmarkSandwich(date: string) {
+    setSandwichRemoving(date);
+    try {
+      await unmarkManualSandwichDay(profile.id, date);
+      onSandwichChanged();
+    } finally {
+      setSandwichRemoving(null);
+    }
+  }
 
   return (
     <div
@@ -524,6 +762,54 @@ function PayslipModal({ row, onClose }: { row: PayrollRow; onClose: () => void }
                     <span className="text-sm font-semibold text-rose-400 font-['Plus_Jakarta_Sans'] shrink-0">
                       - {formatDays(day.deduct)} Day
                     </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <h4 className="text-base font-bold text-white mb-1 flex items-center gap-2 font-['Plus_Jakarta_Sans']">
+              <Sandwich size={16} className="text-amber-400" /> Sandwich Leave
+            </h4>
+            <p className="text-[11px] text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mb-3">
+              Manual only — mark a specific date to bill it as leave for {profile.name.split(" ")[0]}.
+            </p>
+            {sandwichError && (
+              <p className="text-xs text-rose-400 font-['Plus_Jakarta_Sans'] mb-2">{sandwichError}</p>
+            )}
+            <div className="flex items-center gap-2 mb-3">
+              <input
+                type="date"
+                value={sandwichDraft}
+                onChange={e => setSandwichDraft(e.target.value)}
+                className={`${inputCls} [color-scheme:dark]`}
+              />
+              <button
+                type="button"
+                onClick={() => void handleMarkSandwich()}
+                disabled={sandwichSaving}
+                className="shrink-0 flex items-center gap-1.5 px-4 py-2.5 bg-amber-500/20 border border-amber-500/30 text-amber-300 hover:bg-amber-500/30 disabled:opacity-60 text-sm font-semibold rounded-xl transition-colors font-['Plus_Jakarta_Sans']"
+              >
+                <Plus size={14} /> Mark
+              </button>
+            </div>
+            {sortedSandwichDates.length > 0 && (
+              <div className="bg-[#131a35]/70 border border-[rgba(99,102,241,0.12)] rounded-xl divide-y divide-[rgba(99,102,241,0.08)]">
+                {sortedSandwichDates.map(date => (
+                  <div key={date} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                    <span className="text-sm text-[#e2e8f7] font-['Plus_Jakarta_Sans']">
+                      {formatDayLabel(date)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void handleUnmarkSandwich(date)}
+                      disabled={sandwichRemoving === date}
+                      className="shrink-0 p-1.5 rounded-lg text-rose-400/80 hover:text-rose-400 hover:bg-rose-500/10 transition-colors disabled:opacity-50"
+                      aria-label={`Unmark ${date}`}
+                    >
+                      <Trash2 size={13} />
+                    </button>
                   </div>
                 ))}
               </div>

@@ -26,6 +26,8 @@ import {
   fetchLeaveRequests,
   fetchPublicHolidays,
   type PublicHoliday,
+  fetchManualSandwichDays,
+  type ManualSandwichDay,
   type Employee,
   type Lead,
   type ClientProfile,
@@ -130,6 +132,17 @@ export function usePublicHolidays() {
     fetchPublicHolidays,
     [] as PublicHoliday[],
     [],
+    10 * 60_000,
+  );
+}
+
+/** Dates HR has manually marked as sandwich leave — all, or one employee's. */
+export function useManualSandwichDays(employeeId?: string) {
+  return useQuery(
+    employeeId ? `${CACHE_KEYS.manualSandwichLeaves}:${employeeId}` : CACHE_KEYS.manualSandwichLeaves,
+    () => fetchManualSandwichDays(employeeId),
+    [] as ManualSandwichDay[],
+    [employeeId],
     10 * 60_000,
   );
 }

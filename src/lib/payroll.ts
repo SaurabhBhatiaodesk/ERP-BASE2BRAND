@@ -19,9 +19,10 @@
  *   3. A Mon–Fri day with no clock-in and no approved leave is "Absent" and is
  *      always cut — it never consumes the paid-leave quota.
  *   4. Listed public holidays are paid non-working days (`PAYROLL_HOLIDAYS`).
- *   5. SANDWICH LEAVE — a weekend/holiday gap with leave or absence on BOTH
- *      sides is itself counted as leave. Off on Friday and the following
- *      Monday? That Saturday and Sunday are billed too.
+ *   5. SANDWICH LEAVE — manual only. There is no automatic weekend/holiday
+ *      detection; HR explicitly marks a specific date as "sandwich" for a
+ *      specific employee (`manual_sandwich_leaves`), and only that date is
+ *      billed as leave.
  *   6. Net pay = (base salary / days in month) × payable days.
  */
 
@@ -47,14 +48,6 @@ export function buildHolidayCalendar(
 ): HolidayCalendar {
   return new Map([...rows].map(row => [row.date, row.name]));
 }
-
-/**
- * Longest run of non-working days a sandwich will swallow. 2 covers the plain
- * Fri→Mon weekend; 3 also covers a weekend with a public holiday stuck to it
- * (leave Fri 6 Nov, off Sat 7 + Diwali Sun 8/Mon 9, leave Tue 10). Anything
- * longer is a genuine company shutdown, not a stretched weekend.
- */
-export const SANDWICH_MAX_BRIDGE_DAYS = 3;
 
 /** 0 = Sunday, 6 = Saturday. Both are paid non-working days. */
 const WEEKEND_WEEKDAYS = new Set([0, 6]);
@@ -101,19 +94,17 @@ export type PayrollContext = {
   /** "YYYY-MM-DD" — days after this are "upcoming", not deducted. */
   today: string;
   baseSalary: number;
-  /**
-   * Dates with at least one clock session. Covers a few days either side of
-   * the month as well, so a sandwich straddling the month boundary is visible.
-   */
+  /** Dates with at least one clock session, falling inside this month. */
   workedDates: ReadonlySet<string>;
   /** Approved leave days falling inside this month. */
   leaveByDate: ReadonlyMap<string, PayrollLeaveDay>;
   /**
-   * Working days — inside the month AND a few days either side of it — that
-   * the employee was off: approved leave or unexplained absence. These are the
-   * days that can flank a weekend and turn it into a sandwich.
+   * Dates HR has explicitly marked as "sandwich" for this employee, falling
+   * inside this month (see `manual_sandwich_leaves` / the `sandwich-leave`
+   * factor below). There is no automatic detection — only these exact dates
+   * are billed.
    */
-  sandwichAnchorDates: ReadonlySet<string>;
+  manualSandwichDates: ReadonlySet<string>;
   /** HR's paid-holiday calendar, loaded from `public_holidays`. */
   holidays: HolidayCalendar;
   /** Paid-leave allowance still unused when this month began. */
@@ -125,8 +116,6 @@ export type PayrollContext = {
 /** Mutable scratchpad threaded through the day loop. */
 export type PayrollState = {
   quotaLeft: number;
-  /** Weekend/holiday days this month that a sandwich has claimed. */
-  sandwichDates: ReadonlySet<string>;
 };
 
 export type PayrollAdjustment = {
@@ -234,65 +223,6 @@ export function isWorkingDay(dateKey: string, holidays: HolidayCalendar) {
   return !isWeekend(dateKey) && !isHoliday(dateKey, holidays);
 }
 
-/** "2026-08-17" + 3 → "2026-08-20". Negative deltas walk backwards. */
-export function shiftDateKey(dateKey: string, deltaDays: number) {
-  const [y, m, d] = dateKey.split("-").map(Number);
-  return toDateKey(new Date(y, m - 1, d + deltaDays));
-}
-
-/** A day a sandwich can swallow: a weekend or a paid public holiday. */
-function isBridgeableDay(dateKey: string, holidays: HolidayCalendar) {
-  return isWeekend(dateKey) || isHoliday(dateKey, holidays);
-}
-
-/**
- * How far outside the month we have to look to spot a sandwich that straddles
- * the boundary — e.g. leave on Fri 31 Jul + Mon 3 Aug bills 1–2 Aug.
- */
-export const SANDWICH_WINDOW_PAD_DAYS = SANDWICH_MAX_BRIDGE_DAYS + 1;
-
-/**
- * The weekend/holiday days OF THIS MONTH that get billed as leave because the
- * employee was off on both sides of them.
- *
- * Walks a padded window, finds every unbroken run of non-working days, and
- * keeps the runs whose immediate neighbours are both anchors. A run the
- * employee actually clocked into is left alone.
- */
-export function computeSandwichDates(ctx: PayrollContext): ReadonlySet<string> {
-  const sandwiched = new Set<string>();
-  const monthDays = monthDateKeys(ctx.year, ctx.monthIndex);
-  if (monthDays.length === 0) return sandwiched;
-
-  const windowEnd = shiftDateKey(monthDays[monthDays.length - 1], SANDWICH_WINDOW_PAD_DAYS);
-  let cursor = shiftDateKey(monthDays[0], -SANDWICH_WINDOW_PAD_DAYS);
-
-  while (cursor <= windowEnd) {
-    if (!isBridgeableDay(cursor, ctx.holidays)) {
-      cursor = shiftDateKey(cursor, 1);
-      continue;
-    }
-
-    const run: string[] = [];
-    while (cursor <= windowEnd && isBridgeableDay(cursor, ctx.holidays)) {
-      run.push(cursor);
-      cursor = shiftDateKey(cursor, 1);
-    }
-
-    if (run.length > SANDWICH_MAX_BRIDGE_DAYS) continue;
-    // A run touching the window edge has an unknown neighbour, so the lookups
-    // below miss and it is correctly left alone.
-    if (!ctx.sandwichAnchorDates.has(shiftDateKey(run[0], -1))) continue;
-    if (!ctx.sandwichAnchorDates.has(shiftDateKey(run[run.length - 1], 1))) continue;
-
-    for (const date of run) {
-      if (date.startsWith(`${ctx.month}-`) && !ctx.workedDates.has(date)) sandwiched.add(date);
-    }
-  }
-
-  return sandwiched;
-}
-
 // ─── Money helpers ───────────────────────────────────────────────────────────
 
 /**
@@ -374,13 +304,13 @@ export const PAYROLL_FACTORS: PayrollFactor[] = [
     id: "sandwich-leave",
     label: "Sandwich leave",
     description:
-      "A weekend or holiday with leave/absence on BOTH sides is billed as leave — " +
-      "off Friday and Monday and the weekend between them counts too.",
-    classify: (date, _ctx, state) =>
-      state.sandwichDates.has(date)
+      "HR manually marks a specific date as sandwich leave for this employee " +
+      "(no automatic weekend/holiday detection) — that date is billed as leave.",
+    classify: (date, ctx, state) =>
+      ctx.manualSandwichDates.has(date)
         ? spendLeaveQuota(state, 1, {
-            paid: "Paid Leave — Sandwich",
-            unpaid: "Unpaid Leave — Sandwich (quarter quota used)",
+            paid: "Paid Leave — Sandwich (HR marked)",
+            unpaid: "Unpaid Leave — Sandwich (HR marked, quota used)",
           })
         : null,
   },
@@ -445,9 +375,6 @@ export function computeMonthlyPayroll(
 ): PayrollResult {
   const state: PayrollState = {
     quotaLeft: ctx.quotaAtMonthStart,
-    // Needs the whole month in view, so it is resolved once up front rather
-    // than day by day inside the factor.
-    sandwichDates: computeSandwichDates(ctx),
   };
   const days: PayrollDay[] = [];
 
@@ -592,6 +519,9 @@ export function buildPayrollForEmployee(input: {
   /** HR's calendar from `public_holidays`. Never pass an empty map as a
    *  stand-in for "still loading" — every holiday would bill as an absence. */
   holidays: HolidayCalendar;
+  /** Dates (any month — filtered to this one internally) HR has explicitly
+   *  marked as sandwich leave for this employee. Defaults to none. */
+  manualSandwichDates?: Iterable<string>;
   today?: string;
 }): PayrollResult {
   const { profile, year, monthIndex, holidays } = input;
@@ -605,17 +535,19 @@ export function buildPayrollForEmployee(input: {
     (!employeeId && normalizeName(employeeName) === nameMatch) ||
     normalizeName(employeeName) === nameMatch;
 
-  // Padded either side of the month so a Fri–Mon sandwich spanning the
-  // boundary can see both of its anchors. `input.attendance` must cover this
-  // window too, or the extra days read as absences.
   const monthDays = monthDateKeys(year, monthIndex);
-  const windowStart = shiftDateKey(monthDays[0], -SANDWICH_WINDOW_PAD_DAYS);
-  const windowEnd = shiftDateKey(monthDays[monthDays.length - 1], SANDWICH_WINDOW_PAD_DAYS);
+  const windowStart = monthDays[0];
+  const windowEnd = monthDays[monthDays.length - 1];
 
   const workedDates = new Set<string>();
   for (const entry of input.attendance) {
     if (entry.date < windowStart || entry.date > windowEnd) continue;
     if (belongsToEmployee(entry.employeeId, entry.employee)) workedDates.add(entry.date);
+  }
+
+  const manualSandwichDates = new Set<string>();
+  for (const date of input.manualSandwichDates ?? []) {
+    if (date.slice(0, 7) === month) manualSandwichDates.add(date);
   }
 
   const approved = input.leaveRequests.filter(
@@ -642,19 +574,6 @@ export function buildPayrollForEmployee(input: {
   const quotaAtMonthStart = Math.max(0, PAID_LEAVE_QUOTA_PER_QUARTER - quotaUsedBeforeMonth);
   const joinedOn = parseJoinedDate(profile.joined);
 
-  // Anything the employee owed us a day for and did not deliver — approved
-  // leave and plain absence alike — can anchor a sandwich. Absence has to
-  // count, or skipping the leave form would be the cheaper way to take a long
-  // weekend.
-  const sandwichAnchorDates = new Set<string>();
-  for (const date of inclusiveDateKeys(windowStart, windowEnd)) {
-    if (!isWorkingDay(date, holidays)) continue;
-    if (date > today) continue;
-    if (joinedOn && date < joinedOn) continue;
-    if (workedDates.has(date)) continue;
-    sandwichAnchorDates.add(date);
-  }
-
   const ctx: PayrollContext = {
     month,
     year,
@@ -664,7 +583,7 @@ export function buildPayrollForEmployee(input: {
     baseSalary: parseSalaryAmount(profile.salary) ?? 0,
     workedDates,
     leaveByDate,
-    sandwichAnchorDates,
+    manualSandwichDates,
     holidays,
     quotaAtMonthStart,
     joinedOn,

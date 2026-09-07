@@ -893,6 +893,103 @@ export async function fetchPublicHolidays(): Promise<PublicHoliday[]> {
   );
 }
 
+/** HR/CEO marks a date as a public holiday / company day off. */
+export async function createPublicHoliday(date: string, name: string): Promise<PublicHoliday> {
+  const { data, error } = await supabase
+    .from("public_holidays")
+    .insert({ holiday_date: date, name: name.trim() || "Day Off" })
+    .select("id, holiday_date, name")
+    .single();
+  if (error) throw new Error(`Failed to add holiday: ${error.message}`);
+  invalidateDataCache(CACHE_KEYS.publicHolidays);
+  return { id: data.id, date: data.holiday_date, name: data.name };
+}
+
+/** HR/CEO toggles a public holiday back off (un-marks the day). */
+export async function deletePublicHoliday(id: string): Promise<void> {
+  const { error } = await supabase.from("public_holidays").delete().eq("id", id);
+  if (error) throw new Error(`Failed to remove holiday: ${error.message}`);
+  invalidateDataCache(CACHE_KEYS.publicHolidays);
+}
+
+// ─── Manual Sandwich Leave (see supabase/manual_sandwich_leaves.sql) ───────────
+
+/**
+ * A specific date HR has explicitly marked as sandwich leave for a specific
+ * employee. There is no automatic weekend/holiday detection — payroll only
+ * bills the exact dates in this table (see src/lib/payroll.ts).
+ */
+export type ManualSandwichDay = {
+  id: string;
+  employeeId: string;
+  date: string;
+  markedByName: string | null;
+};
+
+function mapManualSandwichDay(row: {
+  id: string;
+  employee_id: string;
+  sandwich_date: string;
+  marked_by_name: string | null;
+}): ManualSandwichDay {
+  return { id: row.id, employeeId: row.employee_id, date: row.sandwich_date, markedByName: row.marked_by_name };
+}
+
+/** All manually-marked sandwich days, or just one employee's when `employeeId` is given. */
+export async function fetchManualSandwichDays(employeeId?: string): Promise<ManualSandwichDay[]> {
+  return getCached(
+    employeeId ? `${CACHE_KEYS.manualSandwichLeaves}:${employeeId}` : CACHE_KEYS.manualSandwichLeaves,
+    async () => {
+      let query = supabase
+        .from("manual_sandwich_leaves")
+        .select("id, employee_id, sandwich_date, marked_by_name")
+        .order("sandwich_date", { ascending: false });
+      if (employeeId) query = query.eq("employee_id", employeeId);
+
+      const { data, error } = await query;
+      if (error) {
+        console.error("fetchManualSandwichDays error:", error);
+        return [];
+      }
+      return (data ?? []).map(mapManualSandwichDay);
+    },
+    HOLIDAY_CACHE_TTL,
+  );
+}
+
+/** HR marks one date as sandwich leave for one employee. Idempotent. */
+export async function markManualSandwichDay(input: {
+  employeeId: string;
+  date: string;
+  markedById?: string;
+  markedByName?: string;
+}): Promise<void> {
+  const { error } = await supabase.from("manual_sandwich_leaves").upsert(
+    {
+      employee_id: input.employeeId,
+      sandwich_date: input.date,
+      marked_by: input.markedById || null,
+      marked_by_name: input.markedByName || null,
+    },
+    { onConflict: "employee_id,sandwich_date" },
+  );
+  if (error) throw new Error(`Failed to mark sandwich day: ${error.message}`);
+  invalidateDataCache(CACHE_KEYS.manualSandwichLeaves);
+  invalidateDataCache(`${CACHE_KEYS.manualSandwichLeaves}:${input.employeeId}`);
+}
+
+/** HR un-marks a previously-marked sandwich day. */
+export async function unmarkManualSandwichDay(employeeId: string, date: string): Promise<void> {
+  const { error } = await supabase
+    .from("manual_sandwich_leaves")
+    .delete()
+    .eq("employee_id", employeeId)
+    .eq("sandwich_date", date);
+  if (error) throw new Error(`Failed to remove sandwich day: ${error.message}`);
+  invalidateDataCache(CACHE_KEYS.manualSandwichLeaves);
+  invalidateDataCache(`${CACHE_KEYS.manualSandwichLeaves}:${employeeId}`);
+}
+
 // ─── Leave Requests ─────────────────────────────────────────────────────────
 
 export async function fetchLeaveRequests(): Promise<LeaveRequest[]> {

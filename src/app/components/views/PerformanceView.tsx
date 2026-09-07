@@ -17,7 +17,6 @@ import {
   daysInMonthOf,
   monthLabel,
   toDateKey,
-  SANDWICH_WINDOW_PAD_DAYS,
   type PayrollDay,
 } from "@/lib/payroll";
 import {
@@ -266,10 +265,9 @@ export function PerformanceView({
 
   const range = useMemo(() => {
     const { year, monthIndex } = cursor;
-    const pad = SANDWICH_WINDOW_PAD_DAYS;
     return {
-      startDate: toDateKey(new Date(year, monthIndex, 1 - pad)),
-      endDate: toDateKey(new Date(year, monthIndex, daysInMonthOf(year, monthIndex) + pad)),
+      startDate: toDateKey(new Date(year, monthIndex, 1)),
+      endDate: toDateKey(new Date(year, monthIndex, daysInMonthOf(year, monthIndex))),
     };
   }, [cursor]);
 

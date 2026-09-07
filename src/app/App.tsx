@@ -887,7 +887,7 @@ export default function App() {
       case "performance": return <PerformanceView userRole={userRole} userName={userName} userEmail={userEmail} />;
       case "mypayroll": return <MyPayrollView userRole={userRole} userName={userName} userEmail={userEmail} />;
       case "hrms": return <HRMSView />;
-      case "payroll": return <PayrollView userRole={userRole} />;
+      case "payroll": return <PayrollView userRole={userRole} markerId={currentProfile?.id} markerName={currentProfile?.name || userName} />;
       case "profiles": return (
         <EmployeeProfilePage
           userName={userName}
@@ -1033,7 +1033,7 @@ export default function App() {
         {/* Logo */}
         <div className="px-5 py-4 border-b border-[rgba(99,102,241,0.08)]">
           <ImageWithFallback src={logo} alt="Base2Brand Infotech" className="h-8 w-auto object-contain" />
-          <p className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8] mt-1.5">Command · v2.4</p>
+          <p className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8] mt-1.5">Command · v{__APP_VERSION__}</p>
         </div>
 
         {/* Nav */}
