@@ -7371,3 +7371,323 @@ export async function setPayrollPinHash(employeeId: string, passwordHash: string
   }
   return true;
 }
+
+// ==========================================
+// Feed — company social posts, tagging, likes, comments (see supabase/feed.sql)
+// ==========================================
+
+export type FeedPost = {
+  id: string;
+  authorId: string;
+  authorName: string;
+  authorAvatarUrl: string | null;
+  title: string;
+  body: string;
+  attachmentUrls: string[];
+  taggedUserIds: string[];
+  taggedDepartments: string[];
+  createdAt: string;
+  likeCount: number;
+  likedByViewer: boolean;
+  commentCount: number;
+};
+
+export type CreateFeedPostInput = {
+  authorId: string;
+  authorName: string;
+  authorAvatarUrl?: string;
+  title: string;
+  body?: string;
+  attachmentUrls?: string[];
+  taggedUserIds?: string[];
+  taggedDepartments?: string[];
+};
+
+export type FeedComment = {
+  id: string;
+  postId: string;
+  parentCommentId: string | null;
+  authorId: string;
+  authorName: string;
+  body: string;
+  createdAt: string;
+  likeCount: number;
+  likedByViewer: boolean;
+};
+
+type DbFeedPost = {
+  id: string;
+  author_id: string;
+  author_name: string;
+  author_avatar_url: string | null;
+  title: string;
+  body: string;
+  attachment_urls: string[];
+  tagged_user_ids: string[];
+  tagged_departments: string[];
+  created_at: string;
+};
+
+/**
+ * Visibility is enforced here, in application code, not by RLS (matching every
+ * other table in this schema). Absolute tagging: an untargeted post is visible
+ * to everyone; a tagged post is visible ONLY to the tagged users/department
+ * members and its own author — no admin override.
+ */
+function isFeedPostVisible(
+  post: { authorId: string; taggedUserIds: string[]; taggedDepartments: string[] },
+  viewerId: string,
+  viewerDept: string
+): boolean {
+  if (post.taggedUserIds.length === 0 && post.taggedDepartments.length === 0) return true;
+  if (post.authorId === viewerId) return true;
+  if (post.taggedUserIds.includes(viewerId)) return true;
+  if (post.taggedDepartments.includes(viewerDept)) return true;
+  return false;
+}
+
+function mapFeedPost(
+  row: DbFeedPost,
+  likesByPost: Map<string, string[]>,
+  commentCountByPost: Map<string, number>,
+  viewerId: string
+): FeedPost {
+  const likerIds = likesByPost.get(row.id) ?? [];
+  return {
+    id: row.id,
+    authorId: row.author_id,
+    authorName: row.author_name,
+    authorAvatarUrl: row.author_avatar_url,
+    title: row.title,
+    body: row.body,
+    attachmentUrls: row.attachment_urls ?? [],
+    taggedUserIds: row.tagged_user_ids ?? [],
+    taggedDepartments: row.tagged_departments ?? [],
+    createdAt: row.created_at,
+    likeCount: likerIds.length,
+    likedByViewer: likerIds.includes(viewerId),
+    commentCount: commentCountByPost.get(row.id) ?? 0,
+  };
+}
+
+export async function fetchFeedPosts(viewerId: string, viewerDept: string): Promise<FeedPost[]> {
+  const { data, error } = await supabase
+    .from("feed_posts")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) throw new Error(`Failed to load feed: ${error.message}`);
+  const rows = (data as DbFeedPost[]) ?? [];
+  if (rows.length === 0) return [];
+
+  const postIds = rows.map(r => r.id);
+  const [{ data: likeRows }, { data: commentRows }] = await Promise.all([
+    supabase.from("feed_post_likes").select("post_id, employee_id").in("post_id", postIds),
+    supabase.from("feed_comments").select("post_id").in("post_id", postIds),
+  ]);
+
+  const likesByPost = new Map<string, string[]>();
+  for (const row of (likeRows as { post_id: string; employee_id: string }[]) ?? []) {
+    const list = likesByPost.get(row.post_id) ?? [];
+    list.push(row.employee_id);
+    likesByPost.set(row.post_id, list);
+  }
+  const commentCountByPost = new Map<string, number>();
+  for (const row of (commentRows as { post_id: string }[]) ?? []) {
+    commentCountByPost.set(row.post_id, (commentCountByPost.get(row.post_id) ?? 0) + 1);
+  }
+
+  return rows
+    .map(row => mapFeedPost(row, likesByPost, commentCountByPost, viewerId))
+    .filter(post => isFeedPostVisible(post, viewerId, viewerDept));
+}
+
+/** Resolves tagged users + tagged-department members into notification recipients — mirrors the Broadcast audience-notify pattern in SettingsViews.tsx. */
+async function notifyFeedTaggedRecipients(post: {
+  id: string;
+  authorId: string;
+  authorName: string;
+  title: string;
+  taggedUserIds: string[];
+  taggedDepartments: string[];
+}): Promise<void> {
+  if (post.taggedUserIds.length === 0 && post.taggedDepartments.length === 0) return;
+  const profiles = await fetchEmployeeProfiles();
+  const recipientIds = new Set<string>();
+  for (const id of post.taggedUserIds) recipientIds.add(id);
+  if (post.taggedDepartments.length > 0) {
+    for (const profile of profiles) {
+      if (post.taggedDepartments.includes(profile.dept)) recipientIds.add(profile.id);
+    }
+  }
+  recipientIds.delete(post.authorId);
+
+  await Promise.all(
+    [...recipientIds].map(recipientId =>
+      insertNotification({
+        recipientId,
+        title: `${post.authorName} tagged you in a post`,
+        message: post.title,
+        type: "feed_tag",
+        senderId: post.authorId,
+        referenceId: post.id,
+      }).catch(err => console.error("notifyFeedTaggedRecipients error:", err))
+    )
+  );
+}
+
+export async function createFeedPost(input: CreateFeedPostInput): Promise<FeedPost | null> {
+  const payload = {
+    author_id: input.authorId,
+    author_name: input.authorName,
+    author_avatar_url: input.authorAvatarUrl || null,
+    title: input.title.trim(),
+    body: (input.body ?? "").trim(),
+    attachment_urls: input.attachmentUrls ?? [],
+    tagged_user_ids: input.taggedUserIds ?? [],
+    tagged_departments: input.taggedDepartments ?? [],
+  };
+  const { data, error } = await supabase.from("feed_posts").insert(payload).select("*").single();
+  if (error || !data) {
+    console.error("createFeedPost error:", error);
+    return null;
+  }
+  const row = data as DbFeedPost;
+  void notifyFeedTaggedRecipients({
+    id: row.id,
+    authorId: row.author_id,
+    authorName: row.author_name,
+    title: row.title,
+    taggedUserIds: row.tagged_user_ids ?? [],
+    taggedDepartments: row.tagged_departments ?? [],
+  });
+  return mapFeedPost(row, new Map(), new Map(), input.authorId);
+}
+
+export async function deleteFeedPost(postId: string): Promise<boolean> {
+  const { error } = await supabase.from("feed_posts").delete().eq("id", postId);
+  if (error) {
+    console.error("deleteFeedPost error:", error);
+    return false;
+  }
+  return true;
+}
+
+export async function toggleFeedPostLike(postId: string, employeeId: string): Promise<void> {
+  const { data: existing, error: fetchError } = await supabase
+    .from("feed_post_likes")
+    .select("id")
+    .eq("post_id", postId)
+    .eq("employee_id", employeeId)
+    .maybeSingle();
+  if (fetchError) throw fetchError;
+
+  if (existing?.id) {
+    const { error } = await supabase.from("feed_post_likes").delete().eq("id", existing.id);
+    if (error) throw error;
+  } else {
+    const { error } = await supabase.from("feed_post_likes").insert({ post_id: postId, employee_id: employeeId });
+    if (error) throw error;
+  }
+}
+
+export async function fetchFeedComments(postId: string, viewerId: string): Promise<FeedComment[]> {
+  const { data, error } = await supabase
+    .from("feed_comments")
+    .select("*")
+    .eq("post_id", postId)
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(`Failed to load comments: ${error.message}`);
+  const rows =
+    (data as { id: string; post_id: string; parent_comment_id: string | null; author_id: string; author_name: string; body: string; created_at: string }[]) ?? [];
+  if (rows.length === 0) return [];
+
+  const commentIds = rows.map(r => r.id);
+  const { data: likeRows } = await supabase
+    .from("feed_comment_likes")
+    .select("comment_id, employee_id")
+    .in("comment_id", commentIds);
+  const likesByComment = new Map<string, string[]>();
+  for (const row of (likeRows as { comment_id: string; employee_id: string }[]) ?? []) {
+    const list = likesByComment.get(row.comment_id) ?? [];
+    list.push(row.employee_id);
+    likesByComment.set(row.comment_id, list);
+  }
+
+  return rows.map(row => {
+    const likerIds = likesByComment.get(row.id) ?? [];
+    return {
+      id: row.id,
+      postId: row.post_id,
+      parentCommentId: row.parent_comment_id,
+      authorId: row.author_id,
+      authorName: row.author_name,
+      body: row.body,
+      createdAt: row.created_at,
+      likeCount: likerIds.length,
+      likedByViewer: likerIds.includes(viewerId),
+    };
+  });
+}
+
+export async function createFeedComment(input: {
+  postId: string;
+  parentCommentId?: string | null;
+  authorId: string;
+  authorName: string;
+  body: string;
+}): Promise<boolean> {
+  const body = input.body.trim();
+  if (!body) return false;
+
+  // Flatten replies-to-replies: if the given parent is itself a reply,
+  // attach to ITS parent instead, so threads never nest more than one level.
+  let parentCommentId = input.parentCommentId || null;
+  if (parentCommentId) {
+    const { data: parent } = await supabase
+      .from("feed_comments")
+      .select("parent_comment_id")
+      .eq("id", parentCommentId)
+      .maybeSingle();
+    if (parent?.parent_comment_id) parentCommentId = parent.parent_comment_id;
+  }
+
+  const { error } = await supabase.from("feed_comments").insert({
+    post_id: input.postId,
+    parent_comment_id: parentCommentId,
+    author_id: input.authorId,
+    author_name: input.authorName,
+    body,
+  });
+  if (error) {
+    console.error("createFeedComment error:", error);
+    return false;
+  }
+  return true;
+}
+
+export async function deleteFeedComment(commentId: string): Promise<boolean> {
+  const { error } = await supabase.from("feed_comments").delete().eq("id", commentId);
+  if (error) {
+    console.error("deleteFeedComment error:", error);
+    return false;
+  }
+  return true;
+}
+
+export async function toggleFeedCommentLike(commentId: string, employeeId: string): Promise<void> {
+  const { data: existing, error: fetchError } = await supabase
+    .from("feed_comment_likes")
+    .select("id")
+    .eq("comment_id", commentId)
+    .eq("employee_id", employeeId)
+    .maybeSingle();
+  if (fetchError) throw fetchError;
+
+  if (existing?.id) {
+    const { error } = await supabase.from("feed_comment_likes").delete().eq("id", existing.id);
+    if (error) throw error;
+  } else {
+    const { error } = await supabase.from("feed_comment_likes").insert({ comment_id: commentId, employee_id: employeeId });
+    if (error) throw error;
+  }
+}

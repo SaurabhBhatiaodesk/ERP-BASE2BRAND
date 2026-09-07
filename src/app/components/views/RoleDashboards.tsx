@@ -39,6 +39,7 @@ import {
   type Meeting,
   insertNotification,
   hasNotificationToday,
+  isPersonalTaskRole,
 } from "@/lib/database";
 import { sessionStatusToActivity } from "@/lib/shiftTimeline";
 import { EmployeeDailyTimeline } from "./EmployeeDailyTimeline";
@@ -757,10 +758,12 @@ export function LeavesView({ userName, userEmail = "" }: { userName?: string; us
 export function EmployeeDashboard({
   userName = "",
   userEmail = "",
+  userRole = "",
   onNavigate,
 }: {
   userName?: string;
   userEmail?: string;
+  userRole?: string;
   onNavigate?: (view: string, options?: EmployeeNavigateOptions) => void;
 }) {
   const { data: profiles, loading: pLoading, error: pError } = useEmployeeProfiles();
@@ -858,6 +861,11 @@ export function EmployeeDashboard({
   const clockInIsoForReminder = todaySession?.clockIn || activeClock?.clockIn || null;
 
   useEffect(() => {
+    // HR/CEO/Superadmin/Team Lead manage the shared team board rather than
+    // self-assigning their own daily to-dos (Tasks module leaves `assigneeId`
+    // unset for these roles — see `personalView` in CRMTasksViews.tsx), so an
+    // empty "assigned to me" list is normal for them and shouldn't nudge.
+    if (!isPersonalTaskRole(userRole)) return;
     if (!clockInIsoForReminder || !myProfile?.id) return;
     const employeeId = myProfile.id;
     const GRACE_MS = 20 * 60 * 1000;
@@ -889,7 +897,7 @@ export function EmployeeDashboard({
     }
     const timer = setTimeout(() => void runCheck(), remainingMs);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [clockInIsoForReminder, myProfile?.id]);
+  }, [clockInIsoForReminder, myProfile?.id, userRole]);
 
   const timerSession = employeeTimerSession(activeClock, todaySession);
   const timerSessionId = timerSession?.id ?? null;

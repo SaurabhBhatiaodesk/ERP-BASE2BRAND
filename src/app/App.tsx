@@ -11,7 +11,7 @@ import {
   DollarSign, UserCheck, Plus, X, Send, Activity,
   Globe, Hash, ChevronRight, Building2, Award, Layers,
   Timer, Monitor, ChevronLeft, Settings, TrendingUp, LogOut, User, Calendar, Wallet, Video, Gauge, IndianRupee,
-  Rocket, Download,
+  Rocket, Download, Rss,
 } from "lucide-react";
 
 // Imported views
@@ -30,6 +30,7 @@ import { TimesheetView } from "./components/views/TimesheetView";
 import { ProjectsView } from "./components/views/ProjectsView";
 import { ProjectWorkspaceView } from "./components/views/ProjectWorkspaceView";
 import { MeetingView } from "./components/views/MeetingView";
+import { FeedView } from "./components/views/FeedView";
 import { ThemeSwitcher } from "./components/ThemeSwitcher";
 import { Toaster } from "./components/ui/sonner";
 import { findProfileForUser, isPersonalTaskRole, fetchLatestAppUpdate, type AppUpdateAnnouncement } from "@/lib/database";
@@ -81,6 +82,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "invoices", label: "Invoices", icon: DollarSign },
     { id: "copilot", label: "AI Copilot", icon: Brain },
     { id: "notifications", label: "Notifications", icon: Bell, badge: 4 },
+    { id: "feed", label: "Feed", icon: Rss },
     { id: "chat", label: "Chat", icon: MessageSquare, badge: 4 },
     { id: "settings", label: "Settings", icon: Settings },
   ],
@@ -107,6 +109,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "invoices", label: "Invoices", icon: DollarSign },
     { id: "copilot", label: "AI Copilot", icon: Brain },
     { id: "notifications", label: "Notifications", icon: Bell, badge: 4 },
+    { id: "feed", label: "Feed", icon: Rss },
     { id: "chat", label: "Chat", icon: MessageSquare, badge: 4 },
     { id: "settings", label: "Settings", icon: Settings },
   ],
@@ -122,9 +125,11 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "mypayroll", label: "My Payroll", icon: IndianRupee },
     { id: "register", label: "Register / Add", icon: Plus },
     { id: "timesheet", label: "Time Sheet", icon: Clock },
+    { id: "feed", label: "Feed", icon: Rss },
     { id: "chat", label: "Chat", icon: MessageSquare, badge: 4 },
   ],
   employee: [
+    { id: "feed", label: "Feed", icon: Rss },
     { id: "employee", label: "Dashboard", icon: LayoutDashboard },
     { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "projects", label: "Projects & Work", icon: Layers },
@@ -135,6 +140,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "chat", label: "Chat", icon: MessageSquare, badge: 2 },
   ],
   developer: [
+    { id: "feed", label: "Feed", icon: Rss },
     { id: "employee", label: "Dashboard", icon: LayoutDashboard },
     { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "projects", label: "Projects & Work", icon: Layers },
@@ -145,6 +151,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
   designer: [
+    { id: "feed", label: "Feed", icon: Rss },
     { id: "employee", label: "Dashboard", icon: LayoutDashboard },
     { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "designer", label: "Design Hub", icon: Star },
@@ -156,6 +163,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
   marketing: [
+    { id: "feed", label: "Feed", icon: Rss },
     { id: "employee", label: "Dashboard", icon: LayoutDashboard },
     { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "marketing", label: "Marketing Hub", icon: TrendingUp },
@@ -176,6 +184,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "meetings", label: "Meetings", icon: Video },
     { id: "performance", label: "KPI/Performance", icon: Gauge },
     { id: "mypayroll", label: "My Payroll", icon: IndianRupee },
+    { id: "feed", label: "Feed", icon: Rss },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
 };
@@ -185,7 +194,7 @@ const bottomNav: NavItem[] = [];
 const viewTitles: Record<string, string> = {
   dashboard: "Command Center", shifts: "Shift Tracker", crm: "CRM",
   tasks: "Tasks", hr: "HR & People", analytics: "Analytics",
-  chat: "Chat", teamlead: "My Team", employee: "My Dashboard",
+  chat: "Chat", feed: "Feed", teamlead: "My Team", employee: "My Dashboard",
   developer: "Dev Hub", designer: "Design Hub", marketing: "Marketing Hub",
   revenue: "Revenue & KPI", performance: "KPI/Performance", mypayroll: "My Payroll", hrms: "HRMS", payroll: "Payroll Dashboard",
   profiles: "Employee Profiles", clientdetail: "Client Profiles",
@@ -848,6 +857,7 @@ export default function App() {
         <EmployeeDashboard
           userName={userName}
           userEmail={userEmail}
+          userRole={userRole}
           onNavigate={(view, options) => {
             if (options?.projectId) {
               setSelectedProjectId(options.projectId);
@@ -888,6 +898,7 @@ export default function App() {
       case "mypayroll": return <MyPayrollView userRole={userRole} userName={userName} userEmail={userEmail} />;
       case "hrms": return <HRMSView />;
       case "payroll": return <PayrollView userRole={userRole} markerId={currentProfile?.id} markerName={currentProfile?.name || userName} />;
+      case "feed": return <FeedView userRole={userRole} userId={currentProfile?.id} userName={currentProfile?.name || userName} />;
       case "profiles": return (
         <EmployeeProfilePage
           userName={userName}
