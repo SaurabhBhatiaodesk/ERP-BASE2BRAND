@@ -254,6 +254,20 @@
   --color-indigo-950: #3b0764;
 }
 
+.accent-theme-gray {
+  --color-indigo-50: #f9fafb;
+  --color-indigo-100: #f3f4f6;
+  --color-indigo-200: #e5e7eb;
+  --color-indigo-300: #d1d5db;
+  --color-indigo-400: #9ca3af;
+  --color-indigo-500: #6b7280;
+  --color-indigo-600: #4b5563;
+  --color-indigo-700: #374151;
+  --color-indigo-800: #1f2937;
+  --color-indigo-900: #111827;
+  --color-indigo-950: #030712;
+}
+
 /* ========================================================
    DYNAMIC BACKGROUND THEMES (Overrides Hardcoded Arbitrary Hexes)
    ======================================================== */
@@ -306,4 +320,11 @@
 .bg-theme-forest .bg-\[\#131a35\], .bg-theme-forest .bg-\[\#111828\] { background-color: #065f46 !important; }
 .bg-theme-forest .text-\[\#a8b5d1\] { color: #a7f3d0 !important; }
 .bg-theme-forest .text-\[\#6b7fa8\], .bg-theme-forest .text-\[\#8fa0c4\] { color: #6ee7b7 !important; }
+
+/* BLACK DARK MODE — pure black, distinct from Graphite's lighter zinc tones */
+.bg-theme-black .bg-\[\#080c1a\] { background-color: #000000 !important; }
+.bg-theme-black .bg-\[\#0d1326\], .bg-theme-black .bg-\[\#0a1020\], .bg-theme-black .bg-\[\#0a0f1d\] { background-color: #0a0a0a !important; }
+.bg-theme-black .bg-\[\#131a35\], .bg-theme-black .bg-\[\#111828\] { background-color: #1a1a1a !important; }
+.bg-theme-black .text-\[\#a8b5d1\] { color: #e5e5e5 !important; }
+.bg-theme-black .text-\[\#6b7fa8\], .bg-theme-black .text-\[\#8fa0c4\] { color: #a3a3a3 !important; }
 

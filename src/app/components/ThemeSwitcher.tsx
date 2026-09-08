@@ -7,7 +7,8 @@ const ACCENT_THEMES = [
   { id: "rose", name: "Rose", color: "#f43f5e" },
   { id: "amber", name: "Amber", color: "#f59e0b" },
   { id: "blue", name: "Ocean", color: "#3b82f6" },
-  { id: "purple", name: "Purple", color: "#a855f7" }
+  { id: "purple", name: "Purple", color: "#a855f7" },
+  { id: "gray", name: "Gray", color: "#6b7280" }
 ];
 
 const BG_THEMES = [
@@ -18,7 +19,8 @@ const BG_THEMES = [
   { id: "oceanic", name: "Oceanic", bg: "#042f2e", text: "#bae6fd" },
   { id: "espresso", name: "Espresso", bg: "#2e1008", text: "#fed7aa" },
   { id: "cosmic", name: "Cosmic Ruby", bg: "#2e0219", text: "#fecdd3" },
-  { id: "plum", name: "Royal Plum", bg: "#1e1b4b", text: "#ddd6fe" }
+  { id: "plum", name: "Royal Plum", bg: "#1e1b4b", text: "#ddd6fe" },
+  { id: "black", name: "Black Dark", bg: "#000000", text: "#a3a3a3" }
 ];
 
 export function ThemeSwitcher() {
