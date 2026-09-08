@@ -176,7 +176,7 @@ export function FloatingQuickActions({
 
   return (
     <>
-      <div className="fixed bottom-6 right-6 z-40" ref={qaMenuRef}>
+      <div className="fixed bottom-10 right-6 z-40" ref={qaMenuRef}>
         <button 
           onClick={() => setShowQA(v => !v)}
           className={`w-12 h-12 bg-gradient-to-br from-indigo-600 to-violet-600 rounded-full shadow-lg shadow-indigo-600/30 flex items-center justify-center hover:shadow-indigo-600/50 hover:scale-105 transition-all duration-200 ${showQA ? "ring-2 ring-indigo-400 ring-offset-2 ring-offset-[#06091a]" : ""}`}

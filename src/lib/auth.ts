@@ -498,6 +498,11 @@ export function canSeeClientRevenue(role: string) {
   return role === "ceo" || role === "superadmin";
 }
 
+/** External Lead Sources (leads-crm API integration) — CEO & Superadmin only. */
+export function isExternalLeadsRole(role: string) {
+  return role === "ceo" || role === "superadmin";
+}
+
 export function isExecutiveProfile(profile: { name: string; role: string; dept: string }) {
   return (
     profile.dept === "Executive" ||

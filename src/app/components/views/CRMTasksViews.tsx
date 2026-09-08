@@ -3,7 +3,8 @@ import { DndProvider, useDrag, useDrop } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
 import {
   Plus, Filter, Building2, Clock, MoreHorizontal, Layers, CheckSquare,
-  Calendar, GitBranch, Users, Save, X, Timer, Search, Trash2
+  Calendar, GitBranch, Users, Save, X, Timer, Search, Trash2,
+  Globe, ChevronLeft, ChevronRight, RefreshCw, Mail, Phone, ExternalLink,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
@@ -39,6 +40,13 @@ import {
   isValidPhone,
   isPositiveNumber,
 } from "@/lib/validation";
+import { isExternalLeadsRole } from "@/lib/auth";
+import {
+  fetchExternalLeads,
+  isLeadsCrmConfigured,
+  type ExternalLead,
+  type ExternalLeadSource,
+} from "@/lib/leadsCrm";
 import { getSprintSummary, formatTaskManagementSubtitle } from "@/lib/sprint";
 import {
   applyOptimisticTaskStatusMove,
@@ -306,7 +314,7 @@ const emptyLeadForm = {
   notes: "",
 };
 
-export function CRMView() {
+export function CRMView({ userRole = "" }: { userRole?: string }) {
   const { data: leads, loading, error, refresh } = useLeads();
   const [showLeadForm, setShowLeadForm] = useState(false);
   const [leadForm, setLeadForm] = useState(emptyLeadForm);
@@ -607,6 +615,188 @@ export function CRMView() {
           </tbody>
         </table>
       </div>
+
+      {isExternalLeadsRole(userRole) && <ExternalLeadsPanel />}
+    </div>
+  );
+}
+
+const EXTERNAL_LEADS_PAGE_SIZE = 25;
+const EXTERNAL_SOURCE_LABELS: Record<ExternalLeadSource, string> = {
+  leads_finder: "Leads Finder",
+  lead_engine: "Lead Engine",
+};
+
+function ExternalLeadsPanel() {
+  const [items, setItems] = useState<ExternalLead[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [source, setSource] = useState<"all" | ExternalLeadSource>("all");
+  const [offset, setOffset] = useState(0);
+
+  // Debounce free-text search before it becomes a server request — mirrors
+  // resetting to page 1, like every other paginated table in this app.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearch(searchInput.trim());
+      setOffset(0);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  const load = useCallback(async () => {
+    if (!isLeadsCrmConfigured()) {
+      setError("Leads CRM not configured — add VITE_LEADS_CRM_BASE_URL and VITE_LEADS_CRM_API_KEY to .env.");
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetchExternalLeads({ source, limit: EXTERNAL_LEADS_PAGE_SIZE, offset, search: search || undefined });
+      setItems(res.items);
+      setTotalCount(res.totalCount);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load external leads.");
+    } finally {
+      setLoading(false);
+    }
+  }, [source, offset, search]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const pageStart = totalCount === 0 ? 0 : offset + 1;
+  const pageEnd = Math.min(offset + EXTERNAL_LEADS_PAGE_SIZE, totalCount);
+
+  return (
+    <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-3 p-5 border-b border-[rgba(99,102,241,0.1)]">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg bg-violet-600/15 border border-violet-500/20 flex items-center justify-center shrink-0">
+            <Globe size={14} className="text-violet-400" />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">External Lead Sources</h3>
+            <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono']">Leads Finder + Lead Engine, live from the Sales-Os leads API</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#6b7fa8]" />
+            <input
+              value={searchInput}
+              onChange={e => setSearchInput(e.target.value)}
+              placeholder="Search name/company/email..."
+              className="bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-lg pl-7 pr-3 py-1.5 text-xs text-[#e2e8f7] placeholder:text-[#6b7fa8] outline-none focus:border-indigo-500/50 font-['Plus_Jakarta_Sans'] w-48"
+            />
+          </div>
+          <select
+            value={source}
+            onChange={e => { setSource(e.target.value as "all" | ExternalLeadSource); setOffset(0); }}
+            className="bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-lg px-2.5 py-1.5 text-xs text-[#e2e8f7] outline-none focus:border-indigo-500/50 font-['Plus_Jakarta_Sans'] cursor-pointer"
+          >
+            <option value="all">All sources</option>
+            <option value="leads_finder">Leads Finder</option>
+            <option value="lead_engine">Lead Engine</option>
+          </select>
+          <button
+            onClick={() => void load()}
+            className="p-1.5 bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-lg text-[#a8b5d1] hover:border-indigo-500/30 transition-colors"
+            title="Refresh"
+          >
+            <RefreshCw size={13} />
+          </button>
+        </div>
+      </div>
+
+      {error ? (
+        <div className="p-5"><DataError message={error} /></div>
+      ) : loading ? (
+        <DataLoading label="Loading external leads..." />
+      ) : items.length === 0 ? (
+        <DataEmpty message="No external leads found." />
+      ) : (
+        <>
+          <table className="w-full table-fixed">
+            <thead>
+              <tr className="border-b border-[rgba(99,102,241,0.08)]">
+                <th className="text-left text-[10px] font-['Geist_Mono'] text-[#6b7fa8] px-5 py-3 uppercase tracking-wider w-[26%]">Company</th>
+                <th className="text-left text-[10px] font-['Geist_Mono'] text-[#6b7fa8] px-5 py-3 uppercase tracking-wider w-[14%]">Contact</th>
+                <th className="text-left text-[10px] font-['Geist_Mono'] text-[#6b7fa8] px-5 py-3 uppercase tracking-wider w-[20%]">Email / Phone</th>
+                <th className="text-left text-[10px] font-['Geist_Mono'] text-[#6b7fa8] px-5 py-3 uppercase tracking-wider w-[14%]">Industry</th>
+                <th className="text-left text-[10px] font-['Geist_Mono'] text-[#6b7fa8] px-5 py-3 uppercase tracking-wider w-[12%]">Status</th>
+                <th className="text-left text-[10px] font-['Geist_Mono'] text-[#6b7fa8] px-5 py-3 uppercase tracking-wider w-[10%]">Source</th>
+                <th className="text-left text-[10px] font-['Geist_Mono'] text-[#6b7fa8] px-5 py-3 uppercase tracking-wider w-[10%]">Created</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map(lead => (
+                <tr key={`${lead.source}-${lead.id}`} className="border-b border-[rgba(99,102,241,0.06)] hover:bg-white/[0.02] transition-colors">
+                  <td className="px-5 py-3.5">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-7 h-7 rounded-lg bg-violet-600/20 border border-violet-500/20 flex items-center justify-center shrink-0">
+                        <Building2 size={12} className="text-violet-400" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm text-white font-semibold font-['Plus_Jakarta_Sans'] truncate">{lead.companyName || "—"}</p>
+                        {lead.website && (
+                          <a href={lead.website} target="_blank" rel="noreferrer" className="text-[10px] text-indigo-400 hover:text-indigo-300 font-['Geist_Mono'] flex items-center gap-1 min-w-0">
+                            <ExternalLink size={9} className="shrink-0" />
+                            <span className="truncate">{lead.website.replace(/^https?:\/\//, "")}</span>
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-5 py-3.5 text-xs text-[#a8b5d1] font-['Plus_Jakarta_Sans'] truncate">{lead.contactName || "—"}</td>
+                  <td className="px-5 py-3.5 min-w-0">
+                    {lead.email && <div className="flex items-center gap-1.5 text-xs text-[#a8b5d1] min-w-0"><Mail size={10} className="text-[#6b7fa8] shrink-0" /> <span className="truncate">{lead.email}</span></div>}
+                    {lead.phone && <div className="flex items-center gap-1.5 text-xs text-[#6b7fa8] mt-0.5 min-w-0"><Phone size={10} className="shrink-0" /> <span className="truncate">{lead.phone}</span></div>}
+                    {!lead.email && !lead.phone && <span className="text-xs text-[#6b7fa8]">—</span>}
+                  </td>
+                  <td className="px-5 py-3.5 text-xs text-[#a8b5d1] font-['Plus_Jakarta_Sans'] truncate">{lead.industry || "—"}</td>
+                  <td className="px-5 py-3.5">
+                    <span className="text-[11px] font-['Geist_Mono'] text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded-md truncate inline-block max-w-full align-bottom">{lead.status || "—"}</span>
+                  </td>
+                  <td className="px-5 py-3.5">
+                    <span className="text-[10px] font-['Geist_Mono'] text-violet-300 bg-violet-500/10 border border-violet-500/20 px-2 py-0.5 rounded-md">
+                      {EXTERNAL_SOURCE_LABELS[lead.source] ?? lead.source}
+                    </span>
+                  </td>
+                  <td className="px-5 py-3.5 text-xs font-['Geist_Mono'] text-[#6b7fa8]">
+                    {lead.createdAt ? new Date(lead.createdAt).toLocaleDateString() : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <div className="flex items-center justify-between px-5 py-3 border-t border-[rgba(99,102,241,0.08)]">
+            <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono']">
+              {pageStart}–{pageEnd} of {totalCount}
+            </p>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setOffset(o => Math.max(0, o - EXTERNAL_LEADS_PAGE_SIZE))}
+                disabled={offset === 0}
+                className="p-1.5 bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-lg text-[#a8b5d1] hover:border-indigo-500/30 disabled:opacity-30 disabled:hover:border-[rgba(99,102,241,0.15)] transition-colors"
+              >
+                <ChevronLeft size={13} />
+              </button>
+              <button
+                onClick={() => setOffset(o => o + EXTERNAL_LEADS_PAGE_SIZE)}
+                disabled={pageEnd >= totalCount}
+                className="p-1.5 bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-lg text-[#a8b5d1] hover:border-indigo-500/30 disabled:opacity-30 disabled:hover:border-[rgba(99,102,241,0.15)] transition-colors"
+              >
+                <ChevronRight size={13} />
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

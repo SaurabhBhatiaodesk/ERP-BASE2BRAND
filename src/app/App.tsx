@@ -758,7 +758,7 @@ export default function App() {
           );
         }
         return <ShiftView userRole={userRole} userName={userName} userEmail={userEmail} />;
-      case "crm": return <CRMView />;
+      case "crm": return <CRMView userRole={userRole} />;
       case "tasks":
         if (isPersonalTaskRole(userRole)) {
           const hubProjectId = taskNav?.projectId || selectedProjectId;

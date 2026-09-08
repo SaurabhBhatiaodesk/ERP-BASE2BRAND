@@ -123,6 +123,22 @@ app.whenReady().then(() => {
       return null;
     }
   });
+
+  // Handle IPC request for the leads-CRM read API. Done here (Node/main
+  // process) instead of a renderer-side fetch() because the third-party
+  // server's CORS policy blocks the renderer's origin ("Failed to fetch" in
+  // DevTools despite a 200 response) — a plain Node request isn't subject to
+  // browser CORS at all, so this sidesteps it without needing their server
+  // reconfigured.
+  ipcMain.handle('fetch-leads-crm', async (_event, args: { url: string; apiKey: string }) => {
+    try {
+      const res = await fetch(args.url, { headers: { 'X-API-Key': args.apiKey } });
+      const text = await res.text();
+      return { ok: res.ok, status: res.status, body: text };
+    } catch (err) {
+      return { ok: false, status: 0, body: '', error: err instanceof Error ? err.message : String(err) };
+    }
+  });
 });
 
 app.on('window-all-closed', () => {
