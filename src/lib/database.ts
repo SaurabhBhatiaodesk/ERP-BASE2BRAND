@@ -5192,6 +5192,18 @@ export function isPersonalTaskRole(role: string) {
   return true;
 }
 
+/**
+ * Roles whose screen gets periodically captured while clocked in (see
+ * useEmployeeScreenshotCapture, wired up in App.tsx). Deliberately its own
+ * check rather than reusing isPersonalTaskRole above — Team Leads have their
+ * own team-wide Tasks view (so isPersonalTaskRole is false for them), but
+ * should still be screenshot-monitored like any other working employee.
+ * Only true leadership/admin — CEO, Superadmin, HR — is exempt.
+ */
+export function isScreenshotMonitoredRole(role: string) {
+  return role !== "ceo" && role !== "superadmin";
+}
+
 /** Resolve logged-in user row — email first, then unique exact full name only. */
 export function findProfileForUser(
   profiles: EmployeeProfile[],

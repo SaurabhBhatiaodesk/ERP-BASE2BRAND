@@ -33,7 +33,7 @@ import { MeetingView } from "./components/views/MeetingView";
 import { FeedView } from "./components/views/FeedView";
 import { ThemeSwitcher } from "./components/ThemeSwitcher";
 import { Toaster } from "./components/ui/sonner";
-import { findProfileForUser, isPersonalTaskRole, fetchLatestAppUpdate, reportInstalledAppVersion, type AppUpdateAnnouncement } from "@/lib/database";
+import { findProfileForUser, isPersonalTaskRole, isScreenshotMonitoredRole, fetchLatestAppUpdate, reportInstalledAppVersion, type AppUpdateAnnouncement } from "@/lib/database";
 import { useEmployeeProfiles } from "@/hooks/useSupabaseData";
 import { Avatar } from "./components/ui";
 import { useChatUnreadCounts } from "@/hooks/useChat";
@@ -499,7 +499,7 @@ export default function App() {
   useEmployeeScreenshotCapture(
     userName,
     currentProfile,
-    isLoggedIn && isPersonalTaskRole(userRole),
+    isLoggedIn && isScreenshotMonitoredRole(userRole),
   );
 
   const { data: chatUnread } = useChatUnreadCounts(currentProfile?.id ?? "");
