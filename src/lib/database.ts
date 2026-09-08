@@ -182,7 +182,6 @@ export type DbEmployeeProfile = {
   joined: string;
   score: number;
   status: string;
-  salary: string;
   manager: string;
   skills: string[];
   bio: string;
@@ -1360,7 +1359,10 @@ export function mapEmployeeProfile(row: DbEmployeeProfile): EmployeeProfile {
     joined: row.joined,
     score: row.score,
     status: row.status,
-    salary: row.salary,
+    // Salary lives entirely in the isolated Finance project's employee_salaries
+    // table now (fetchAllEmployeeSalaries/fetchEmployeeSalary overwrite this
+    // right after mapping) — employee_profiles has no salary column anymore.
+    salary: "",
     manager: row.manager,
     skills: row.skills || [],
     bio: row.bio,
@@ -1987,9 +1989,9 @@ export async function updateProjectDetails(
 /**
  * Salary is stored in the isolated Finance/Invoicing Supabase project
  * (employee_salaries), not on employee_profiles — see database.ts's
- * updateEmployeeProfile/createEmployee for the write side. The
- * employee_profiles.salary column is left in place but no longer read
- * from or written to; these functions are the sole source of truth.
+ * updateEmployeeProfile/createEmployee for the write side. The old
+ * employee_profiles.salary column has been dropped; these functions are
+ * the sole source of truth.
  */
 export async function fetchAllEmployeeSalaries(): Promise<Map<string, string>> {
   try {
