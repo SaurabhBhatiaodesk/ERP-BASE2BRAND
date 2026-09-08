@@ -199,6 +199,9 @@ export type DbEmployeeProfile = {
   created_at?: string;
   /** Precise date-of-joining ("YYYY-MM-DD") — separate from `joined`, which is only a month/year display string. */
   join_date?: string | null;
+  /** Desktop app build version last reported by this employee's client (see reportInstalledAppVersion). */
+  installed_app_version?: string | null;
+  installed_app_version_at?: string | null;
 };
 
 export type DbLeaveRequest = {
@@ -319,6 +322,9 @@ export type EmployeeProfile = {
   createdAt: string | null;
   /** Precise date-of-joining ("YYYY-MM-DD"), HR-set — the trustworthy source for day-precise join calculations. Null until set. */
   joinDate: string | null;
+  /** Desktop app build version last reported by this employee's client, and when — see reportInstalledAppVersion. Null until the app has reported at least once. */
+  installedAppVersion: string | null;
+  installedAppVersionAt: string | null;
 };
 
 export type LeaveRequest = {
@@ -1380,6 +1386,8 @@ export function mapEmployeeProfile(row: DbEmployeeProfile): EmployeeProfile {
     shiftStart: row.shift_start?.trim() || "10:00",
     createdAt: row.created_at || null,
     joinDate: row.join_date || null,
+    installedAppVersion: row.installed_app_version || null,
+    installedAppVersionAt: row.installed_app_version_at || null,
   };
 }
 
@@ -2396,6 +2404,22 @@ export async function updateEmployeeProfile(id: string, input: Partial<{
     await setEmployeeSalary(id, input.salary);
   }
   invalidateProfileCaches();
+}
+
+/**
+ * Reports the desktop app's own build version for this employee, once per
+ * login/session start (see App.tsx). Powers the "Employee App Versions"
+ * panel CEO/Superadmin see under Broadcast, so they can tell who's still on
+ * an old build after publishing a new one. Best-effort — never throws, so a
+ * write hiccup here can't block someone from using the app.
+ */
+export async function reportInstalledAppVersion(employeeId: string, version: string): Promise<void> {
+  if (!employeeId || !version) return;
+  const { error } = await supabase
+    .from("employee_profiles")
+    .update({ installed_app_version: version, installed_app_version_at: new Date().toISOString() })
+    .eq("id", employeeId);
+  if (error) console.error("reportInstalledAppVersion error:", error);
 }
 
 export async function createLead(input: {

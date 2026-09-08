@@ -33,7 +33,7 @@ import { MeetingView } from "./components/views/MeetingView";
 import { FeedView } from "./components/views/FeedView";
 import { ThemeSwitcher } from "./components/ThemeSwitcher";
 import { Toaster } from "./components/ui/sonner";
-import { findProfileForUser, isPersonalTaskRole, fetchLatestAppUpdate, type AppUpdateAnnouncement } from "@/lib/database";
+import { findProfileForUser, isPersonalTaskRole, fetchLatestAppUpdate, reportInstalledAppVersion, type AppUpdateAnnouncement } from "@/lib/database";
 import { useEmployeeProfiles } from "@/hooks/useSupabaseData";
 import { Avatar } from "./components/ui";
 import { useChatUnreadCounts } from "@/hooks/useChat";
@@ -452,6 +452,13 @@ export default function App() {
     });
     return () => { cancelled = true; };
   }, [isLoggedIn]);
+
+  // Report this client's build version once per login, so CEO/Superadmin can
+  // see who's still on an old build after a new release goes out.
+  useEffect(() => {
+    if (!isLoggedIn || !currentProfile?.id) return;
+    void reportInstalledAppVersion(currentProfile.id, __APP_VERSION__);
+  }, [isLoggedIn, currentProfile?.id]);
 
   function dismissUpdateBanner() {
     if (!latestUpdate) return;

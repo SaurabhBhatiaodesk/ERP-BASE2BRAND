@@ -1,14 +1,14 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   UserCheck, Award, Bell, Monitor, Globe, AlertTriangle, Zap,
   Clock, Activity, Brain, DollarSign, Users, Send, Plus,
   ChevronLeft, X, Layers, MessageSquare, Timer, CheckSquare,
-  Rocket, Download,
+  Rocket, Download, CheckCircle2, RefreshCw,
 } from "lucide-react";
 import { Avatar, Badge } from "../ui";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
 import { useProjects, useEmployeeProfiles } from "@/hooks/useSupabaseData";
-import { insertNotification, publishAppUpdate, type AppUpdateAnnouncement } from "@/lib/database";
+import { insertNotification, publishAppUpdate, fetchLatestAppUpdate, initialsFromName, type AppUpdateAnnouncement } from "@/lib/database";
 import { saveQuickAction } from "@/lib/quickActions";
 export function SettingsPage() {
   const [section, setSection] = useState("profile");
@@ -311,6 +311,32 @@ export function BroadcastView({ userId = "", userName = "" }: { userId?: string;
   const [published, setPublished] = useState<AppUpdateAnnouncement | null>(null);
   const [publishError, setPublishError] = useState("");
 
+  const [latestUpdate, setLatestUpdate] = useState<AppUpdateAnnouncement | null>(null);
+  const [latestUpdateLoading, setLatestUpdateLoading] = useState(true);
+  const { data: allProfiles, loading: profilesLoading, refresh: refreshProfiles } = useEmployeeProfiles();
+
+  useEffect(() => {
+    void fetchLatestAppUpdate().then(u => { setLatestUpdate(u); setLatestUpdateLoading(false); });
+  }, [published]);
+
+  const normalizeVersion = (v: string) => v.trim().replace(/^v/i, "");
+  const latestVersion = latestUpdate ? normalizeVersion(latestUpdate.version) : null;
+
+  // Real employees only — matches the exact exclusion every other list in
+  // this app uses for the "CEO Admin" placeholder / Executive dept.
+  const versionRows = useMemo(() => {
+    const rows = allProfiles
+      .filter(p => p.dept !== "Executive" && p.name !== "CEO Admin")
+      .map(p => {
+        const version = p.installedAppVersion ? normalizeVersion(p.installedAppVersion) : null;
+        const status: "unknown" | "outdated" | "current" =
+          !version ? "unknown" : latestVersion && version !== latestVersion ? "outdated" : "current";
+        return { profile: p, version, status, reportedAt: p.installedAppVersionAt };
+      });
+    const statusRank = { unknown: 0, outdated: 1, current: 2 };
+    return rows.sort((a, b) => statusRank[a.status] - statusRank[b.status] || a.profile.name.localeCompare(b.profile.name));
+  }, [allProfiles, latestVersion]);
+
   async function publishUpdate() {
     if (!updateVersion.trim() || !updateLink.trim()) return;
     setPublishing(true);
@@ -428,6 +454,70 @@ export function BroadcastView({ userId = "", userName = "" }: { userId?: string;
             </button>
           </div>
         </div>
+      </div>
+
+      {/* Employee App Versions */}
+      <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.12)] rounded-xl overflow-hidden">
+        <div className="flex items-center justify-between gap-3 p-6 pb-5">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-gradient-to-br from-cyan-600 to-blue-600 rounded-xl flex items-center justify-center shrink-0">
+              <Monitor size={17} className="text-white" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-white font-['Plus_Jakarta_Sans']">Employee App Versions</h3>
+              <p className="text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans']">
+                {latestVersion ? `Latest published: v${latestVersion}` : "No update has been published yet"} — reported by each employee's own app on login
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => { refreshProfiles(); setLatestUpdateLoading(true); void fetchLatestAppUpdate().then(u => { setLatestUpdate(u); setLatestUpdateLoading(false); }); }}
+            className="p-2 bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-lg text-[#a8b5d1] hover:border-indigo-500/30 transition-colors shrink-0"
+            title="Refresh"
+          >
+            <RefreshCw size={14} />
+          </button>
+        </div>
+
+        {profilesLoading || latestUpdateLoading ? (
+          <div className="px-6 pb-6"><DataLoading label="Loading employee versions..." /></div>
+        ) : versionRows.length === 0 ? (
+          <div className="px-6 pb-6"><DataEmpty message="No employees found." /></div>
+        ) : (
+          <div className="max-h-80 overflow-y-auto">
+            {versionRows.map(({ profile, version, status, reportedAt }) => (
+              <div key={profile.id} className="flex items-center justify-between gap-3 px-6 py-3 border-t border-[rgba(99,102,241,0.06)]">
+                <div className="flex items-center gap-3 min-w-0">
+                  <Avatar initials={profile.avatar || initialsFromName(profile.name)} src={profile.profileImageUrl} size="sm" />
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-white font-['Plus_Jakarta_Sans'] truncate">{profile.name}</p>
+                    <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono']">{profile.dept}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  {reportedAt && (
+                    <span className="text-[10px] text-[#6b7fa8] font-['Geist_Mono'] hidden sm:inline">
+                      {new Date(reportedAt).toLocaleDateString()}
+                    </span>
+                  )}
+                  {status === "unknown" ? (
+                    <span className="flex items-center gap-1.5 text-[11px] font-['Geist_Mono'] text-[#6b7fa8] bg-white/[0.04] px-2.5 py-1 rounded-md">
+                      Never reported
+                    </span>
+                  ) : status === "outdated" ? (
+                    <span className="flex items-center gap-1.5 text-[11px] font-['Geist_Mono'] text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-md">
+                      <AlertTriangle size={11} /> v{version} (outdated)
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1.5 text-[11px] font-['Geist_Mono'] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 rounded-md">
+                      <CheckCircle2 size={11} /> v{version}
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Compose */}
