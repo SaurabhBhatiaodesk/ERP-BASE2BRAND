@@ -11,4 +11,4 @@ release/
 supabase/.temp/
 supabase/.temp/*
 invoice
-client-erp
+# client-erp

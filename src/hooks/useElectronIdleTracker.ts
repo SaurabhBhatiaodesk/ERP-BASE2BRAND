@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import {
   fetchActiveClockSession,
@@ -21,11 +21,17 @@ function notifyClockSessionChanged() {
 
 export function useElectronIdleTracker(userEmail: string, userProfile?: EmployeeProfile | null) {
   const [idleSeconds, setIdleSeconds] = useState(0);
+  const [idleTrackingPaused, setIdleTrackingPaused] = useState(false);
   const profileRef = useRef(userProfile);
+  const pausedRef = useRef(idleTrackingPaused);
 
   useEffect(() => {
     profileRef.current = userProfile;
   }, [userProfile]);
+
+  useEffect(() => {
+    pausedRef.current = idleTrackingPaused;
+  }, [idleTrackingPaused]);
 
   useEffect(() => {
     if (!userEmail) return;
@@ -125,6 +131,7 @@ export function useElectronIdleTracker(userEmail: string, userProfile?: Employee
 
     const intervalId = setInterval(async () => {
       try {
+        if (pausedRef.current) return;
         const time = await readIdleSeconds();
         setIdleSeconds(time);
         const now = Date.now();
@@ -196,5 +203,31 @@ export function useElectronIdleTracker(userEmail: string, userProfile?: Employee
     };
   }, [userEmail]);
 
-  return idleSeconds;
+  const togglePaused = useCallback(() => {
+    setIdleTrackingPaused(prev => {
+      const next = !prev;
+      if (next) {
+        // Pausing means "treat me as active regardless of literal system
+        // idle time" — if the tracker had already auto-clocked them out for
+        // being idle, resume immediately instead of leaving them stuck
+        // clocked out until they touch the mouse/keyboard.
+        void (async () => {
+          const profile = profileRef.current;
+          if (!profile) return;
+          try {
+            const session = await fetchTodayOfficeSession(profile.name, profile.id);
+            if (session && isIdlePausedSession(session)) {
+              await clockInEmployee({ employeeName: profile.name, employeeId: profile.id });
+              notifyClockSessionChanged();
+            }
+          } catch (err) {
+            console.error("Idle tracker resume-on-pause error:", err);
+          }
+        })();
+      }
+      return next;
+    });
+  }, []);
+
+  return { idleSeconds, idleTrackingPaused, togglePaused };
 }
