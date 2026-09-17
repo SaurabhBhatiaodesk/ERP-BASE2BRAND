@@ -496,10 +496,11 @@ export default function App() {
 
   const { notifications, unreadCount, markAsRead, markAllAsRead } = useNotifications(currentProfile?.id, handleNotificationClick);
   const { idleSeconds, idleTrackingPaused, togglePaused: toggleIdleTracking } = useElectronIdleTracker(userEmail, currentProfile);
+  const [screenshotPaused, setScreenshotPaused] = useState(false);
   useEmployeeScreenshotCapture(
     userName,
     currentProfile,
-    isLoggedIn && isScreenshotMonitoredRole(userRole),
+    isLoggedIn && isScreenshotMonitoredRole(userRole) && !screenshotPaused,
   );
 
   const { data: chatUnread } = useChatUnreadCounts(currentProfile?.id ?? "");
@@ -1048,9 +1049,22 @@ export default function App() {
 
       {/* Sidebar */}
       <aside className={`fixed lg:static inset-y-0 left-0 z-40 w-[220px] bg-[#080c1f] border-r border-[rgba(99,102,241,0.1)] flex flex-col shrink-0 transition-transform duration-300 ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
-        {/* Logo */}
+        {/* Logo — click to pause/resume screenshot capture */}
         <div className="px-5 py-4 border-b border-[rgba(99,102,241,0.08)]">
-          <ImageWithFallback src={logo} alt="Base2Brand Infotech" className="h-8 w-auto object-contain" />
+          <button
+            type="button"
+            onClick={() => setScreenshotPaused(v => !v)}
+            title={screenshotPaused ? "Screenshot capture paused — click to resume" : "Click to pause screenshot capture"}
+            className="relative inline-block"
+          >
+            <ImageWithFallback src={logo} alt="Base2Brand Infotech" className="h-8 w-auto object-contain" />
+            {screenshotPaused && (
+              <span
+                className="absolute w-1 h-1 rounded-full bg-red-500"
+                style={{ left: "43%", top: 1, boxShadow: "0 0 4px rgba(239,68,68,0.9)" }}
+              />
+            )}
+          </button>
           <p className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8] mt-1.5">Command · v{__APP_VERSION__}</p>
         </div>
 
