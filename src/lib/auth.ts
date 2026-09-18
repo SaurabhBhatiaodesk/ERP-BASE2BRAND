@@ -1,6 +1,12 @@
 import type { User, Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
-import { fetchEmployeeProfileByEmail, upsertEmployeeProfileFromSignup, type EmployeeProfile } from "@/lib/database";
+import {
+  fetchEmployeeProfileByEmail,
+  upsertEmployeeProfileFromSignup,
+  fetchClientUserByEmail,
+  type EmployeeProfile,
+  type ClientUser,
+} from "@/lib/database";
 
 const ROLE_KEY = "b2b_app_role";
 const NAME_KEY = "b2b_app_name";
@@ -24,7 +30,8 @@ export type AppRoleId =
   | "developer"
   | "designer"
   | "marketing"
-  | "hr";
+  | "hr"
+  | "client";
 
 export const APP_ROLE_OPTIONS: { id: AppRoleId; label: string }[] = [
   { id: "superadmin", label: "Super Admin" },
@@ -64,6 +71,9 @@ export const ROLE_SIGNUP_DEFAULTS: Record<AppRoleId, { designation: string; depa
   designer: { designation: "Designer", department: "Design" },
   marketing: { designation: "Marketing Executive", department: "Marketing" },
   hr: { designation: "HR Manager", department: "HR" },
+  // Unused — clients never go through the employee signup form, but every
+  // AppRoleId needs an entry here since this is a Record over the full union.
+  client: { designation: "Client", department: "Client" },
 };
 
 export function saveAppSession(role: string, name: string) {
@@ -187,6 +197,10 @@ export async function loginWithRole(
         profile = null;
       }
     }
+    if (!profile) {
+      const clientLogin = await tryResolveClientLogin(user, user.email || email);
+      if (clientLogin) return clientLogin;
+    }
     const metadataRole = user.user_metadata?.role as string | undefined;
     const resolvedRole = profile
       ? resolveRoleFromProfile(profile, metadataRole || options?.roleHint)
@@ -211,6 +225,11 @@ export async function loginWithRole(
     } catch {
       profile = null;
     }
+  }
+
+  if (!profile) {
+    const clientLogin = await tryResolveClientLogin(user, user.email || email);
+    if (clientLogin) return clientLogin;
   }
 
   if (!profile && email) {
@@ -388,6 +407,35 @@ export async function signUpWithRole(
   return { user: data.user, session: null };
 }
 
+/**
+ * Checks whether `email` belongs to a client_users row, once a Supabase Auth
+ * session already exists for it (client_users' RLS only allows a row where
+ * auth_user_id = auth.uid(), so this must run after sign-in, never before).
+ * Returns null for any normal employee email — callers should fall through
+ * to the existing employee_profiles flow in that case.
+ */
+async function tryResolveClientLogin(
+  user: User,
+  email: string,
+  options?: { syncMetadata?: boolean },
+) {
+  let clientUser: ClientUser | null = null;
+  try {
+    clientUser = await fetchClientUserByEmail(email);
+  } catch {
+    clientUser = null;
+  }
+  if (!clientUser) return null;
+
+  if (options?.syncMetadata !== false) {
+    await supabase.auth.updateUser({
+      data: { role: "client", app_role: "client", full_name: clientUser.fullName },
+    });
+  }
+
+  return { role: "client" as AppRoleId, name: clientUser.fullName, profile: null, user, clientUser };
+}
+
 async function finalizeAuthUser(
   user: User,
   role: AppRoleId,
@@ -452,6 +500,11 @@ export async function resolveLoginUser(
     }
   }
 
+  if (!profile && email) {
+    const clientLogin = await tryResolveClientLogin(user, email, options);
+    if (clientLogin) return clientLogin;
+  }
+
   const fallbackRole: AppRoleId =
     (user.user_metadata?.role as AppRoleId) ||
     (localStorage.getItem(ROLE_KEY) as AppRoleId) ||
@@ -500,6 +553,14 @@ export function canSeeClientRevenue(role: string) {
 
 /** External Lead Sources (leads-crm API integration) — CEO & Superadmin only. */
 export function isExternalLeadsRole(role: string) {
+  return role === "ceo" || role === "superadmin";
+}
+
+/**
+ * Raise Ticket module — CEO/Superadmin can tag anyone on a ticket; every
+ * other role (Team Lead, Employee, etc.) can tag anyone EXCEPT CEO/Superadmin.
+ */
+export function canTagAnyoneInTicket(role: string) {
   return role === "ceo" || role === "superadmin";
 }
 

@@ -11,7 +11,7 @@ import {
   DollarSign, UserCheck, Plus, X, Send, Activity,
   Globe, Hash, ChevronRight, Building2, Award, Layers,
   Timer, Monitor, ChevronLeft, Settings, TrendingUp, LogOut, User, Calendar, Wallet, Video, Gauge, IndianRupee,
-  Rocket, Download, Rss,
+  Rocket, Download, Rss, Ticket,
 } from "lucide-react";
 
 // Imported views
@@ -31,6 +31,8 @@ import { ProjectsView } from "./components/views/ProjectsView";
 import { ProjectWorkspaceView } from "./components/views/ProjectWorkspaceView";
 import { MeetingView } from "./components/views/MeetingView";
 import { FeedView } from "./components/views/FeedView";
+import { ClientProjectView } from "./components/views/ClientProjectView";
+import { TicketsView } from "./components/views/TicketsView";
 import { ThemeSwitcher } from "./components/ThemeSwitcher";
 import { Toaster } from "./components/ui/sonner";
 import { findProfileForUser, isPersonalTaskRole, isScreenshotMonitoredRole, fetchLatestAppUpdate, reportInstalledAppVersion, type AppUpdateAnnouncement } from "@/lib/database";
@@ -46,7 +48,7 @@ import { useNotifications } from "@/hooks/useNotifications";
 import { playBeep } from "@/lib/audio";
 import { FloatingQuickActions } from "./components/FloatingQuickActions";
 
-type RoleId = "superadmin" | "ceo" | "teamlead" | "employee" | "developer" | "designer" | "marketing" | "hr";
+type RoleId = "superadmin" | "ceo" | "teamlead" | "employee" | "developer" | "designer" | "marketing" | "hr" | "client";
 
 type NavItem = {
   id: string;
@@ -83,6 +85,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "copilot", label: "AI Copilot", icon: Brain },
     { id: "notifications", label: "Notifications", icon: Bell, badge: 4 },
     { id: "feed", label: "Feed", icon: Rss },
+    { id: "tickets", label: "Tickets", icon: Ticket },
     { id: "chat", label: "Chat", icon: MessageSquare, badge: 4 },
     { id: "settings", label: "Settings", icon: Settings },
   ],
@@ -110,6 +113,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "copilot", label: "AI Copilot", icon: Brain },
     { id: "notifications", label: "Notifications", icon: Bell, badge: 4 },
     { id: "feed", label: "Feed", icon: Rss },
+    { id: "tickets", label: "Tickets", icon: Ticket },
     { id: "chat", label: "Chat", icon: MessageSquare, badge: 4 },
     { id: "settings", label: "Settings", icon: Settings },
   ],
@@ -126,6 +130,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "register", label: "Register / Add", icon: Plus },
     { id: "timesheet", label: "Time Sheet", icon: Clock },
     { id: "feed", label: "Feed", icon: Rss },
+    { id: "tickets", label: "Tickets", icon: Ticket },
     { id: "chat", label: "Chat", icon: MessageSquare, badge: 4 },
   ],
   employee: [
@@ -133,6 +138,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "employee", label: "Dashboard", icon: LayoutDashboard },
     { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "projects", label: "Projects & Work", icon: Layers },
+    { id: "tickets", label: "Tickets", icon: Ticket },
     { id: "meetings", label: "Meetings", icon: Video },
     { id: "performance", label: "KPI/Performance", icon: Gauge },
     { id: "mypayroll", label: "My Payroll", icon: IndianRupee },
@@ -144,6 +150,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "employee", label: "Dashboard", icon: LayoutDashboard },
     { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "projects", label: "Projects & Work", icon: Layers },
+    { id: "tickets", label: "Tickets", icon: Ticket },
     { id: "meetings", label: "Meetings", icon: Video },
     { id: "performance", label: "KPI/Performance", icon: Gauge },
     { id: "mypayroll", label: "My Payroll", icon: IndianRupee },
@@ -156,6 +163,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "designer", label: "Design Hub", icon: Star },
     { id: "projects", label: "Projects & Work", icon: Layers },
+    { id: "tickets", label: "Tickets", icon: Ticket },
     { id: "meetings", label: "Meetings", icon: Video },
     { id: "performance", label: "KPI/Performance", icon: Gauge },
     { id: "mypayroll", label: "My Payroll", icon: IndianRupee },
@@ -168,6 +176,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "leaves", label: "Apply Leave", icon: CheckSquare },
     { id: "marketing", label: "Marketing Hub", icon: TrendingUp },
     { id: "crm", label: "CRM", icon: Briefcase, badge: 3 },
+    { id: "tickets", label: "Tickets", icon: Ticket },
     { id: "meetings", label: "Meetings", icon: Video },
     { id: "performance", label: "KPI/Performance", icon: Gauge },
     { id: "mypayroll", label: "My Payroll", icon: IndianRupee },
@@ -181,12 +190,17 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "timesheet", label: "Time Sheet", icon: Clock },
     { id: "hrms", label: "HRMS", icon: Award },
     { id: "payroll", label: "Payroll Dashboard", icon: Wallet },
+    { id: "tickets", label: "Tickets", icon: Ticket },
     { id: "meetings", label: "Meetings", icon: Video },
     { id: "performance", label: "KPI/Performance", icon: Gauge },
     { id: "mypayroll", label: "My Payroll", icon: IndianRupee },
     { id: "feed", label: "Feed", icon: Rss },
     { id: "chat", label: "Chat", icon: MessageSquare },
   ],
+  // Client login is rendered by its own dedicated shell (see the `userRole
+  // === "client"` branch below) rather than through this nav/switch system,
+  // so this entry only exists to satisfy Record<RoleId, NavItem[]>.
+  client: [],
 };
 
 const bottomNav: NavItem[] = [];
@@ -202,7 +216,7 @@ const viewTitles: Record<string, string> = {
   projects: "Projects & Work", leaves: "Apply Leave",
   settings: "Settings", notifications: "Notifications",
   broadcast: "Broadcast", projectworkspace: "Project", projectdetail: "Project Details", invoices: "Invoices & Billing",
-  copilot: "AI Copilot", meetings: "Meetings & Schedule",
+  copilot: "AI Copilot", meetings: "Meetings & Schedule", tickets: "Tickets",
 };
 
 type ChatMessage = { role: "ai" | "user"; text: string };
@@ -489,6 +503,11 @@ export default function App() {
     } else if (n.type === "task_ready_for_review") {
       setTaskNav({ taskId: n.reference_id, status: "ready-for-testing" });
       setActiveView("tasks");
+    } else if (n.type === "task_assigned") {
+      setTaskNav({ taskId: n.reference_id });
+      setActiveView("tasks");
+    } else if (n.type === "ticket_tagged" || n.type === "ticket_status") {
+      setActiveView("tickets");
     } else if (n.type === "app_update" && latestUpdate?.downloadLink) {
       window.open(latestUpdate.downloadLink, "_blank", "noopener,noreferrer");
     }
@@ -754,6 +773,41 @@ export default function App() {
 
   if (!isLoggedIn) return <AuthScreen onLogin={handleLogin} />;
 
+  // Client login gets its own minimal shell — not the employee sidebar/nav
+  // system above (which assumes an employee_profiles identity throughout),
+  // and not the internal Projects/Kanban views (too much internal-only
+  // chrome and data-model coupling for an external login). RLS on the
+  // `projects`/`project_tasks` tables (see supabase/client_login.sql)
+  // already scopes every query this view makes to the client's own
+  // project(s) at the database level, so this shell only needs to keep the
+  // client out of the rest of the app's nav — it's not the security boundary.
+  if (userRole === "client") {
+    return (
+      <div className="flex h-screen bg-[#06091a] overflow-hidden" style={{ fontFamily: "Inter, sans-serif" }}>
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <header className="flex items-center justify-between px-6 py-4 border-b border-[rgba(99,102,241,0.1)] shrink-0">
+            <div className="flex items-center gap-3">
+              <ImageWithFallback src={logo} alt="Base2Brand Infotech" className="h-8 w-auto object-contain" />
+              <div>
+                <p className="text-sm font-semibold text-white font-['Plus_Jakarta_Sans']">Client Portal</p>
+                <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono']">Base2Brand ERP</p>
+              </div>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-2 px-3 py-2 text-sm text-red-400 hover:bg-red-500/10 rounded-lg transition-colors font-['Plus_Jakarta_Sans']"
+            >
+              <LogOut size={14} /> Sign Out
+            </button>
+          </header>
+          <main className="flex-1 overflow-y-auto">
+            <ClientProjectView clientName={userName} />
+          </main>
+        </div>
+      </div>
+    );
+  }
+
   const renderView = () => {
     switch (activeView) {
       case "dashboard": return <CEODashboard userName={userName} userEmail={userEmail} />;
@@ -907,6 +961,7 @@ export default function App() {
       case "hrms": return <HRMSView />;
       case "payroll": return <PayrollView userRole={userRole} markerId={currentProfile?.id} markerName={currentProfile?.name || userName} />;
       case "feed": return <FeedView userRole={userRole} userId={currentProfile?.id} userName={currentProfile?.name || userName} />;
+      case "tickets": return <TicketsView userRole={userRole} userName={currentProfile?.name || userName} currentUserId={currentProfile?.id} />;
       case "profiles": return (
         <EmployeeProfilePage
           userName={userName}
@@ -1152,7 +1207,7 @@ export default function App() {
               }`}
             >
                <Clock size={12} />
-               <span>{idleTrackingPaused ? "Idle tracking paused" : `Idle: ${idleSeconds}s`}</span>
+               <span>{idleTrackingPaused ? "Idle: 0s" : `Idle: ${idleSeconds}s`}</span>
             </button>
           </div>
           <div className="flex items-center gap-2 lg:gap-3">

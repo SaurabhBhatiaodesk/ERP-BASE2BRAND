@@ -369,6 +369,8 @@ export type AppTask = {
   taskDate: string;
   statusEnteredAt: string;
   stageHistory: TaskStageHistoryRow[];
+  createdBy: string;
+  createdByName: string;
 };
 
 export type DbProjectMemberRow = {
@@ -391,6 +393,7 @@ export type DbProjectTaskRow = {
   task_date?: string | null;
   created_at?: string;
   updated_at?: string;
+  created_by?: string | null;
   status_entered_at?: string | null;
   /** When the task most recently, genuinely entered "Ready for QA" — unlike
    *  status_entered_at, this is NOT reset by attendance pause/resume splitting,
@@ -783,6 +786,8 @@ function mapProjectTaskRowToAppTask(
     taskDate: row.task_date?.trim() || formatLocalDateIso(new Date(row.created_at || taskCreatedAtFromId(taskId) || Date.now())),
     statusEnteredAt: row.status_entered_at === null ? "paused" : (row.status_entered_at || row.created_at || taskCreatedAtFromId(taskId) || ""),
     stageHistory: [],
+    createdBy: row.created_by || "",
+    createdByName: profileNameById(profiles, row.created_by) || "",
   };
 }
 
@@ -1426,6 +1431,8 @@ export function flattenDbProjectTasks(projects: DbProject[]): AppTask[] {
           taskDate: taskDateToDateInput(taskCreatedAtFromId(taskId) || undefined),
           statusEnteredAt: taskCreatedAtFromId(taskId) || "",
           stageHistory: [],
+          createdBy: "",
+          createdByName: "",
         };
       })
   );
@@ -2622,6 +2629,7 @@ export async function addProjectTask(input: {
   est?: string;
   workNotes?: string;
   taskDate?: string;
+  createdById?: string;
 }) {
   const dueIso = dueInputToStorageIso(input.due) || "—";
   const dueFormatted = dueIso !== "—"
@@ -2655,6 +2663,7 @@ export async function addProjectTask(input: {
       work_notes: input.workNotes?.trim() || "",
       task_date: taskDate,
       status_entered_at: now,
+      created_by: input.createdById || null,
     };
     const { error } = await supabase.from("project_tasks").insert(row);
     if (error) throw error;
@@ -2670,6 +2679,18 @@ export async function addProjectTask(input: {
     invalidateTaskCaches();
     invalidateDataCache(CACHE_KEYS.projects);
     invalidateTimesheetCaches();
+
+    if (assigneeId && assigneeId !== input.createdById) {
+      const creatorName = profileNameById(profiles, input.createdById) || "Someone";
+      void insertNotification({
+        recipientId: assigneeId,
+        title: "New Task Assigned",
+        message: `${creatorName} assigned you a task: "${input.title.trim()}".`,
+        type: "task_assigned",
+        referenceId: taskId,
+        senderId: input.createdById,
+      }).catch(err => console.error("Task assignment notification failed:", err));
+    }
     return;
   }
 
@@ -2825,6 +2846,19 @@ export async function updateProjectTask(input: {
     await syncRelationalTimesheetForTask(updated, profiles);
     invalidateTaskCaches();
     invalidateTimesheetCaches();
+
+    const reassigned = !input.statusOnly && assigneeId && assigneeId !== current.assignee_id;
+    if (reassigned && assigneeId !== input.movedById) {
+      const actorName = (input.movedById && profileNameById(profiles, input.movedById)) || "Someone";
+      void insertNotification({
+        recipientId: assigneeId,
+        title: "Task Assigned to You",
+        message: `${actorName} assigned you a task: "${input.title.trim()}".`,
+        type: "task_assigned",
+        referenceId: input.taskId,
+        senderId: input.movedById || undefined,
+      }).catch(err => console.error("Task assignment notification failed:", err));
+    }
     return;
   }
 
@@ -5201,7 +5235,7 @@ export function isPersonalTaskRole(role: string) {
  * Only true leadership/admin — CEO, Superadmin, HR — is exempt.
  */
 export function isScreenshotMonitoredRole(role: string) {
-  return role !== "ceo" && role !== "superadmin";
+  return role !== "ceo" && role !== "superadmin" && role !== "client";
 }
 
 /** Resolve logged-in user row — email first, then unique exact full name only. */
@@ -7728,4 +7762,418 @@ export async function toggleFeedCommentLike(commentId: string, employeeId: strin
     const { error } = await supabase.from("feed_comment_likes").insert({ comment_id: commentId, employee_id: employeeId });
     if (error) throw error;
   }
+}
+
+// ─── Client login (client_users) ───────────────────────────────────────────
+// A client_users row is a deliberately separate identity from
+// employee_profiles — an external client has no salary/HR/shift fields, and
+// their access is restricted at the database level (see supabase/client_login.sql)
+// rather than only hidden in the UI, since they authenticate with the same
+// anon key as every employee.
+
+export type ClientUser = {
+  id: string;
+  authUserId: string | null;
+  fullName: string;
+  email: string;
+  company: string | null;
+};
+
+function mapClientUser(row: any): ClientUser {
+  return {
+    id: row.id,
+    authUserId: row.auth_user_id,
+    fullName: row.full_name,
+    email: row.email,
+    company: row.company ?? null,
+  };
+}
+
+/**
+ * Looks up a client_users row by email. RLS on client_users only allows a
+ * row where auth_user_id = auth.uid(), so this only ever finds a match once
+ * the caller already has an authenticated session for that same account —
+ * it can't be used to probe whether an arbitrary email is a client pre-auth.
+ */
+export async function fetchClientUserByEmail(email: string): Promise<ClientUser | null> {
+  const normalized = email.trim();
+  if (!normalized) return null;
+
+  const { data, error } = await supabase
+    .from("client_users")
+    .select("*")
+    .ilike("email", normalized)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) return null;
+  return mapClientUser(data);
+}
+
+export type ClientPortalProject = {
+  id: string;
+  name: string;
+  status: string;
+  priority: string;
+  progress: number;
+  description: string;
+  startDate: string;
+  deadline: string;
+};
+
+function mapClientPortalProject(row: any): ClientPortalProject {
+  return {
+    id: row.id,
+    name: row.name,
+    status: row.status,
+    priority: row.priority,
+    progress: row.progress ?? 0,
+    description: row.description || "",
+    startDate: row.start_date || "",
+    deadline: row.deadline || "",
+  };
+}
+
+/** Projects visible to the logged-in client — RLS scopes this to their own project(s). */
+export async function fetchClientProjects(): Promise<ClientPortalProject[]> {
+  const { data, error } = await supabase
+    .from("projects")
+    .select("id, name, status, priority, progress, description, start_date, deadline")
+    .order("deadline", { ascending: true });
+  if (error) throw error;
+  return (data || []).map(mapClientPortalProject);
+}
+
+export type ClientPortalTask = {
+  id: string;
+  projectId: string;
+  assigneeId: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  due: string | null;
+};
+
+function mapClientPortalTask(row: any): ClientPortalTask {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    assigneeId: row.assignee_id,
+    title: row.title,
+    status: row.status,
+    priority: row.priority,
+    due: row.due,
+  };
+}
+
+/** Tasks for one of the client's own projects — RLS scopes this by project_id. */
+export async function fetchClientProjectTasks(projectId: string): Promise<ClientPortalTask[]> {
+  const { data, error } = await supabase
+    .from("project_tasks")
+    .select("id, project_id, assignee_id, title, status, priority, due")
+    .eq("project_id", projectId)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data || []).map(mapClientPortalTask);
+}
+
+export type ClientPortalTeamMember = { id: string; name: string; avatar: string | null };
+
+/** Team members a client may assign a task to — only this project's team, id/name/avatar only. */
+export async function fetchClientProjectTeam(projectId: string): Promise<ClientPortalTeamMember[]> {
+  const { data, error } = await supabase.rpc("list_project_team_for_client", { p_project_id: projectId });
+  if (error) throw error;
+  return (data || []) as ClientPortalTeamMember[];
+}
+
+/** Client assigns a new task on one of their own projects — enforced server-side by create_client_task(). */
+export async function createClientTask(input: {
+  projectId: string;
+  title: string;
+  assigneeId: string;
+  priority?: string;
+  due?: string;
+}): Promise<ClientPortalTask> {
+  const { data, error } = await supabase.rpc("create_client_task", {
+    p_project_id: input.projectId,
+    p_title: input.title,
+    p_assignee_id: input.assigneeId,
+    p_priority: input.priority || "medium",
+    p_due: input.due || null,
+  });
+  if (error) throw error;
+  return mapClientPortalTask(data);
+}
+
+export const CLIENT_TASK_STATUSES = ["todo", "in-progress", "done"] as const;
+export type ClientTaskStatus = (typeof CLIENT_TASK_STATUSES)[number];
+
+/** Client drags a task to a new column — enforced server-side by update_client_task_status(). */
+export async function updateClientTaskStatus(taskId: string, status: ClientTaskStatus): Promise<ClientPortalTask> {
+  const { data, error } = await supabase.rpc("update_client_task_status", {
+    p_task_id: taskId,
+    p_status: status,
+  });
+  if (error) throw error;
+  return mapClientPortalTask(data);
+}
+
+// ─── Raise Ticket module (supabase/tickets.sql) ────────────────────────────
+// Who may be tagged as an assignee (CEO/Superadmin only taggable by
+// CEO/Superadmin) is a business rule, not a security boundary — like every
+// other internal-employee permission in this app it's enforced in the UI
+// layer (see TicketsView.tsx + auth.ts's canTagAnyoneInTicket), not here.
+
+export type TicketPriority = "low" | "medium" | "high" | "urgent";
+export type TicketStatus = "open" | "in-progress" | "resolved" | "closed";
+
+export type Ticket = {
+  id: string;
+  projectId: string | null;
+  title: string;
+  description: string;
+  priority: TicketPriority;
+  status: TicketStatus;
+  createdBy: string | null;
+  createdByName: string;
+  assigneeIds: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+const TICKET_STATUS_LABEL: Record<TicketStatus, string> = {
+  open: "Open",
+  "in-progress": "In Progress",
+  resolved: "Resolved",
+  closed: "Closed",
+};
+
+/** Best-effort — a notification failure should never break the ticket action itself. */
+async function notifyTicketRecipients(
+  recipientIds: string[],
+  build: (recipientId: string) => Parameters<typeof insertNotification>[0]
+): Promise<void> {
+  await Promise.all(
+    recipientIds.map(recipientId =>
+      insertNotification(build(recipientId)).catch(err =>
+        console.error("Ticket notification failed:", err)
+      )
+    )
+  );
+}
+
+function mapTicketRow(row: any, profileNameById: Map<string, string>, assigneeIds: string[]): Ticket {
+  return {
+    id: row.id,
+    projectId: row.project_id ?? null,
+    title: row.title,
+    description: row.description || "",
+    priority: (row.priority || "medium") as TicketPriority,
+    status: (row.status || "open") as TicketStatus,
+    createdBy: row.created_by,
+    createdByName: profileNameById.get(row.created_by || "") || "Unknown",
+    assigneeIds,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * Every ticket the company has raised, newest first — project-scoping
+ * ("only his projects", "All", "General/no project") is a view-layer
+ * concern (see TicketsView.tsx), same as how useProjects()/getEmployeeProjects
+ * already fetch everything once and filter client-side.
+ */
+export async function fetchAllTickets(): Promise<Ticket[]> {
+  const [{ data: ticketRows, error: ticketError }, profiles] = await Promise.all([
+    supabase
+      .from("tickets")
+      .select("*")
+      .order("created_at", { ascending: false }),
+    fetchEmployeeProfiles(),
+  ]);
+  if (ticketError) throw ticketError;
+  const rows = ticketRows || [];
+  if (rows.length === 0) return [];
+
+  const ticketIds = rows.map(r => r.id);
+  const { data: assigneeRows, error: assigneeError } = await supabase
+    .from("ticket_assignees")
+    .select("ticket_id, employee_id")
+    .in("ticket_id", ticketIds);
+  if (assigneeError) throw assigneeError;
+
+  const assigneesByTicket = new Map<string, string[]>();
+  for (const row of assigneeRows || []) {
+    const list = assigneesByTicket.get(row.ticket_id) || [];
+    list.push(row.employee_id);
+    assigneesByTicket.set(row.ticket_id, list);
+  }
+
+  const nameById = new Map(profiles.map(p => [p.id, p.name]));
+  return rows.map(row => mapTicketRow(row, nameById, assigneesByTicket.get(row.id) || []));
+}
+
+/** Raise a new ticket — validate assignee eligibility in the UI before calling this (see canTagAnyoneInTicket). */
+export async function createTicket(input: {
+  projectId?: string | null;
+  title: string;
+  description?: string;
+  priority?: TicketPriority;
+  createdById: string;
+  assigneeIds: string[];
+}): Promise<Ticket> {
+  const title = input.title.trim();
+  if (!title) throw new Error("Title is required");
+
+  const id = `ticket-${Date.now()}`;
+  const { data, error } = await supabase
+    .from("tickets")
+    .insert({
+      id,
+      project_id: input.projectId || null,
+      title,
+      description: input.description?.trim() || "",
+      priority: input.priority || "medium",
+      status: "open",
+      created_by: input.createdById,
+    })
+    .select("*")
+    .single();
+  if (error) throw error;
+
+  const uniqueAssignees = Array.from(new Set(input.assigneeIds.filter(Boolean)));
+  if (uniqueAssignees.length > 0) {
+    const { error: assigneeError } = await supabase
+      .from("ticket_assignees")
+      .insert(uniqueAssignees.map(employeeId => ({ ticket_id: id, employee_id: employeeId })));
+    if (assigneeError) throw assigneeError;
+  }
+
+  const profiles = await fetchEmployeeProfiles();
+  const nameById = new Map(profiles.map(p => [p.id, p.name]));
+
+  const recipients = uniqueAssignees.filter(assigneeId => assigneeId !== input.createdById);
+  if (recipients.length > 0) {
+    const creatorName = nameById.get(input.createdById) || "Someone";
+    void notifyTicketRecipients(recipients, recipientId => ({
+      recipientId,
+      title: "Tagged in a Ticket",
+      message: `${creatorName} tagged you in "${title}".`,
+      type: "ticket_tagged",
+      referenceId: id,
+      senderId: input.createdById,
+    }));
+  }
+
+  return mapTicketRow(data, nameById, uniqueAssignees);
+}
+
+/** Drag-and-drop status change. `movedById` — the person who dragged the card — is excluded from the notification. */
+export async function updateTicketStatus(ticketId: string, status: TicketStatus, movedById?: string): Promise<void> {
+  const { data: existing, error: fetchError } = await supabase
+    .from("tickets")
+    .select("title, created_by")
+    .eq("id", ticketId)
+    .maybeSingle();
+  if (fetchError) throw fetchError;
+
+  const { error } = await supabase
+    .from("tickets")
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq("id", ticketId);
+  if (error) throw error;
+  if (!existing) return;
+
+  const { data: assigneeRows } = await supabase
+    .from("ticket_assignees")
+    .select("employee_id")
+    .eq("ticket_id", ticketId);
+
+  const recipients = new Set<string>((assigneeRows || []).map(r => r.employee_id));
+  if (existing.created_by) recipients.add(existing.created_by);
+  if (movedById) recipients.delete(movedById);
+
+  if (recipients.size > 0) {
+    const statusLabel = TICKET_STATUS_LABEL[status] || status;
+    void notifyTicketRecipients(Array.from(recipients), recipientId => ({
+      recipientId,
+      title: "Ticket Status Updated",
+      message: `"${existing.title}" moved to ${statusLabel}.`,
+      type: "ticket_status",
+      referenceId: ticketId,
+      senderId: movedById,
+    }));
+  }
+}
+
+/** Edit a ticket — validate assignee eligibility in the UI before calling this (see canTagAnyoneInTicket). */
+export async function updateTicket(ticketId: string, input: {
+  title: string;
+  description?: string;
+  priority?: TicketPriority;
+  projectId?: string | null;
+  assigneeIds: string[];
+  updatedById?: string;
+}): Promise<Ticket> {
+  const title = input.title.trim();
+  if (!title) throw new Error("Title is required");
+
+  const { data, error } = await supabase
+    .from("tickets")
+    .update({
+      title,
+      description: input.description?.trim() || "",
+      priority: input.priority || "medium",
+      project_id: input.projectId || null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", ticketId)
+    .select("*")
+    .single();
+  if (error) throw error;
+
+  const { data: previousAssigneeRows } = await supabase
+    .from("ticket_assignees")
+    .select("employee_id")
+    .eq("ticket_id", ticketId);
+  const previousAssigneeIds = new Set((previousAssigneeRows || []).map(r => r.employee_id));
+
+  // Simplest correct approach for a small tag list: replace wholesale rather than diffing.
+  const { error: clearError } = await supabase.from("ticket_assignees").delete().eq("ticket_id", ticketId);
+  if (clearError) throw clearError;
+
+  const uniqueAssignees = Array.from(new Set(input.assigneeIds.filter(Boolean)));
+  if (uniqueAssignees.length > 0) {
+    const { error: assigneeError } = await supabase
+      .from("ticket_assignees")
+      .insert(uniqueAssignees.map(employeeId => ({ ticket_id: ticketId, employee_id: employeeId })));
+    if (assigneeError) throw assigneeError;
+  }
+
+  const profiles = await fetchEmployeeProfiles();
+  const nameById = new Map(profiles.map(p => [p.id, p.name]));
+
+  // Only notify NEWLY tagged people — re-editing an already-tagged person shouldn't re-notify them.
+  const newlyTagged = uniqueAssignees.filter(
+    assigneeId => !previousAssigneeIds.has(assigneeId) && assigneeId !== input.updatedById
+  );
+  if (newlyTagged.length > 0) {
+    const actorName = (input.updatedById && nameById.get(input.updatedById)) || "Someone";
+    void notifyTicketRecipients(newlyTagged, recipientId => ({
+      recipientId,
+      title: "Tagged in a Ticket",
+      message: `${actorName} tagged you in "${title}".`,
+      type: "ticket_tagged",
+      referenceId: ticketId,
+      senderId: input.updatedById,
+    }));
+  }
+
+  return mapTicketRow(data, nameById, uniqueAssignees);
+}
+
+export async function deleteTicket(ticketId: string): Promise<void> {
+  const { error } = await supabase.from("tickets").delete().eq("id", ticketId);
+  if (error) throw error;
 }

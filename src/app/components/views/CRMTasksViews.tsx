@@ -23,7 +23,7 @@ import {
   fetchEmployeeHistoricalSessions,
   fetchTeamClockSessionsByDate,
   findProfileForUser,
-  filterTasksForUser,
+  isTaskAssignedToUser,
   getEmployeeProjects,
   isPersonalTaskRole,
   updateProjectTask,
@@ -853,6 +853,9 @@ function KanbanCard({
         </p>
       )}
       <p className="text-[10px] text-indigo-400 font-['Geist_Mono'] mb-2">{task.project}</p>
+      {task.createdByName && task.createdByName !== task.assignee && (
+        <p className="text-[10px] text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mb-2">Assigned by {task.createdByName}</p>
+      )}
       {trackedSeconds > 0 && (
         <p className="text-[10px] text-emerald-400 font-['Geist_Mono'] mb-2">
           {formatStageDuration(trackedSeconds)} worked
@@ -1074,7 +1077,12 @@ export function ListView({
               <td className="px-4 py-3">
                 <div className="flex items-center gap-1.5">
                   <Avatar initials={task.assignee.split(" ").map(n => n[0]).join("")} size="sm" />
-                  <span className="text-xs text-[#a8b5d1]">{task.assignee.split(" ")[0]}</span>
+                  <div>
+                    <span className="text-xs text-[#a8b5d1] block">{task.assignee.split(" ")[0]}</span>
+                    {task.createdByName && task.createdByName !== task.assignee && (
+                      <span className="text-[9px] text-[#6b7fa8] font-['Geist_Mono']">by {task.createdByName.split(" ")[0]}</span>
+                    )}
+                  </div>
                 </div>
               </td>
               <td className="px-4 py-3"><Badge label={task.priority} variant={task.priority as "urgent" | "high" | "medium" | "low"} /></td>
@@ -1378,10 +1386,12 @@ export function TasksView({
     () => findProfileForUser(profiles, userName, userEmail),
     [profiles, userName, userEmail]
   );
-  const { data: tasks, loading, error, refresh } = useProjectTasks({
-    assigneeId: personalView && currentProfile?.id ? currentProfile.id : undefined,
-    disabled: personalView && !currentProfile?.id,
-  });
+  // Deliberately NOT scoping this fetch by assigneeId even in personalView:
+  // that filter runs as a SQL "assignee_id = me" clause, which would exclude
+  // tasks this person created but assigned to someone else before scopedTasks
+  // below ever gets a chance to include them. Fetch everything (same as
+  // admin roles already do) and let scopedTasks filter client-side instead.
+  const { data: tasks, loading, error, refresh } = useProjectTasks();
   const targetDate = useMemo(() => new Date().toLocaleDateString("en-CA"), []);
   const [clockSessions, setClockSessions] = useState<Awaited<ReturnType<typeof fetchTeamClockSessionsByDate>>>([]);
   const [view, setView] = useState<TaskView>("kanban");
@@ -1470,9 +1480,20 @@ export function TasksView({
     [profiles]
   );
 
+  const assigneeSelectOptions = useMemo(
+    () => assignees.map(p => ({ value: p.id, label: p.name })),
+    [assignees]
+  );
+
   const scopedTasks = useMemo(() => {
     if (!personalView || !userName) return tasks;
-    return filterTasksForUser(tasks, userName, currentProfile?.id);
+    // Projects & Work should show a task to whoever assigned it too, not
+    // just the assignee — deliberately broader than filterTasksForUser()
+    // (used by Today's Tasks/timesheets/KPI, which must stay assignee-only:
+    // delegating a task shouldn't count as "my work" there).
+    return tasks.filter(
+      t => isTaskAssignedToUser(t.assignee, userName, t.assigneeId, currentProfile?.id) || t.createdBy === currentProfile?.id
+    );
   }, [tasks, userName, personalView, currentProfile?.id]);
 
   const displayTasks = dragTasks ?? scopedTasks;
@@ -1776,6 +1797,7 @@ export function TasksView({
           taskDate: form.taskDate,
           est: form.est,
           workNotes: form.workNotes,
+          createdById: currentProfile?.id,
         });
       }
       refresh();
@@ -1788,11 +1810,15 @@ export function TasksView({
     }
   };
 
+  // The assignee can delete their own task; the person who created/assigned
+  // it can delete it too, regardless of who it's assigned to.
   const canDeleteOwnTask = Boolean(
-    personalView &&
     editingTask &&
     currentProfile &&
-    taskMatchesAssignee(editingTask, currentProfile.id, currentProfile.name)
+    (
+      (personalView && taskMatchesAssignee(editingTask, currentProfile.id, currentProfile.name)) ||
+      (editingTask.createdBy && editingTask.createdBy === currentProfile.id)
+    )
   );
 
   const handleDeleteTask = async () => {
@@ -2107,9 +2133,12 @@ export function TasksView({
       {showForm && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => { setShowForm(false); setEditingTask(null); }}>
           <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.2)] rounded-2xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-bold text-white mb-4 font-['Plus_Jakarta_Sans']">
+            <h3 className="text-base font-bold text-white mb-1 font-['Plus_Jakarta_Sans']">
               {editingTask ? "Edit Task" : "New Task"}
             </h3>
+            {editingTask?.createdByName && (
+              <p className="text-[10px] text-[#6b7fa8] font-['Geist_Mono'] mb-3">Assigned by {editingTask.createdByName}</p>
+            )}
             {formError && <p className="mb-3 text-xs text-rose-400">{formError}</p>}
             <div className="space-y-4">
               <div>
@@ -2142,27 +2171,20 @@ export function TasksView({
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className={labelCls}>Assignee *</label>
-                  {personalView && !editingTask ? (
-                    <input value={form.assignee} readOnly className={`${inputCls} opacity-70 cursor-not-allowed`} />
-                  ) : (
-                    <select
-                      value={form.assigneeId}
-                      onChange={e => {
-                        const profile = assignees.find(p => p.id === e.target.value);
-                        setForm({
-                          ...form,
-                          assigneeId: e.target.value,
-                          assignee: profile?.name || "",
-                        });
-                      }}
-                      className={inputCls}
-                    >
-                      <option value="">Select assignee</option>
-                      {assignees.map(p => (
-                        <option key={p.id} value={p.id}>{p.name}</option>
-                      ))}
-                    </select>
-                  )}
+                  <SearchableSelect
+                    value={form.assigneeId}
+                    onChange={assigneeId => {
+                      const profile = assignees.find(p => p.id === assigneeId);
+                      setForm({
+                        ...form,
+                        assigneeId,
+                        assignee: profile?.name || "",
+                      });
+                    }}
+                    options={assigneeSelectOptions}
+                    placeholder="Select assignee"
+                    searchPlaceholder="Search employees…"
+                  />
                 </div>
                 <div>
                   <label className={labelCls}>Status</label>
