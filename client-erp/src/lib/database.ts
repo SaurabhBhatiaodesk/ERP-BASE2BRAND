@@ -129,6 +129,7 @@ export type Project = {
   projectManagerId: string | null;
   startDate: string | null;
   launchDate: string | null;
+  description: string | null;
   tags: string[];
   updatedAt: string;
 };
@@ -153,6 +154,7 @@ function mapProject(row: Record<string, unknown>): Project {
     projectManagerId: (row.project_manager_id as string) ?? null,
     startDate: (row.start_date as string) ?? null,
     launchDate: (row.launch_date as string) ?? null,
+    description: (row.description as string) ?? null,
     tags: (row.tags as string[]) ?? [],
     updatedAt: row.updated_at as string,
   };
@@ -509,6 +511,46 @@ export async function fetchPortfolioProjects(organizationId?: string): Promise<P
 }
 
 // ==========================================
+// Analytics — cross-project aggregates for the org (or, for an admin with no
+// org picked, across every client) layered on top of the Portfolio project list.
+// ==========================================
+
+export type TaskStatus = "not_started" | "in_progress" | "blocked" | "completed";
+
+export type AnalyticsData = {
+  projects: PortfolioProject[];
+  deliverablesByStatus: Record<DeliverableStatus, number>;
+  tasksByStatus: Record<TaskStatus, number>;
+};
+
+export async function fetchAnalyticsData(organizationId?: string): Promise<AnalyticsData> {
+  const projects = await fetchPortfolioProjects(organizationId);
+  const deliverablesByStatus: Record<DeliverableStatus, number> = { pending: 0, review: 0, approved: 0, changes: 0 };
+  const tasksByStatus: Record<TaskStatus, number> = { not_started: 0, in_progress: 0, blocked: 0, completed: 0 };
+
+  const projectIds = projects.map(p => p.id);
+  if (projectIds.length === 0) return { projects, deliverablesByStatus, tasksByStatus };
+
+  const [deliverablesRes, tasksRes] = await Promise.all([
+    supabase.from("deliverables").select("status").in("project_id", projectIds),
+    supabase.from("tasks").select("status").in("project_id", projectIds),
+  ]);
+  if (deliverablesRes.error) throw deliverablesRes.error;
+  if (tasksRes.error) throw tasksRes.error;
+
+  for (const row of deliverablesRes.data ?? []) {
+    const status = row.status as DeliverableStatus;
+    if (status in deliverablesByStatus) deliverablesByStatus[status]++;
+  }
+  for (const row of tasksRes.data ?? []) {
+    const status = row.status as TaskStatus;
+    if (status in tasksByStatus) tasksByStatus[status]++;
+  }
+
+  return { projects, deliverablesByStatus, tasksByStatus };
+}
+
+// ==========================================
 // Project detail — sprints, current-sprint task breakdown, activity, change requests
 // ==========================================
 
@@ -809,6 +851,7 @@ export type MeetingItem = {
   decisions: string[];
   actionItems: string[];
   recordingUrl: string | null;
+  meetLink: string | null;
 };
 
 function formatDuration(minutes: number | null): string {
@@ -879,8 +922,25 @@ export async function fetchMeetings(organizationId: string): Promise<MeetingItem
       decisions: (row.decisions as string[]) ?? [],
       actionItems: actionItemsByMeeting.get(row.id as string) ?? [],
       recordingUrl: (row.recording_url as string) ?? null,
+      meetLink: (row.meet_link as string) ?? null,
     };
   });
+}
+
+/** Lazily creates (once) and returns the Google Meet link for a scheduled meeting — same link every time it's called for that meeting, so the client and the team land in the same room without ever exchanging a URL. */
+export async function joinScheduledMeeting(meetingId: string): Promise<string> {
+  const { data, error } = await supabase.functions.invoke("create-meet-link", { body: { mode: "scheduled", meetingId } });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return data.meetLink as string;
+}
+
+/** A fresh, ad-hoc Google Meet link for "start a meeting right now" — not persisted anywhere. */
+export async function startInstantMeeting(organizationId: string): Promise<string> {
+  const { data, error } = await supabase.functions.invoke("create-meet-link", { body: { mode: "instant", organizationId } });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return data.meetLink as string;
 }
 
 // ==========================================

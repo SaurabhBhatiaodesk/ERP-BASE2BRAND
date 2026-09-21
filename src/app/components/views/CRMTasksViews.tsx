@@ -30,6 +30,7 @@ import {
   updateProjectTaskStatus,
   taskDateToDateInput,
   resolveTaskDate,
+  formatLocalDateIso,
   type AppTask,
   type AttendanceTimeWindow,
   type EmployeeProfile,
@@ -62,16 +63,20 @@ import {
 const inputCls = "w-full bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-xl px-4 py-2.5 text-sm text-[#e2e8f7] outline-none focus:border-indigo-500/50 font-['Plus_Jakarta_Sans']";
 const labelCls = "block text-xs font-['Plus_Jakarta_Sans'] text-[#6b7fa8] mb-1.5";
 
+// toISOString() converts to UTC first — for any timezone ahead of UTC (e.g.
+// IST, +5:30) that rolls local midnight back into "yesterday" in UTC, so
+// slicing the date out of it silently shifts the date back a day. Always go
+// through formatLocalDateIso (local Y/M/D getters), never .toISOString().
 function formatIso(d = new Date()) {
-  return d.toISOString().slice(0, 10);
+  return formatLocalDateIso(d);
 }
 
 function parseDueToIso(due: string) {
   if (!due || due === "—") return formatIso();
   const withYear = new Date(`${due} ${new Date().getFullYear()}`);
-  if (!Number.isNaN(withYear.getTime())) return withYear.toISOString().slice(0, 10);
+  if (!Number.isNaN(withYear.getTime())) return formatLocalDateIso(withYear);
   const parsed = new Date(due);
-  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
+  if (!Number.isNaN(parsed.getTime())) return formatLocalDateIso(parsed);
   return formatIso();
 }
 
@@ -1670,7 +1675,11 @@ export function TasksView({
       assigneeId: task.assigneeId,
       status: task.status as TaskColumn,
       priority: task.priority,
-      due: parseDueToIso(task.due),
+      // Prefer the raw stored ISO date over re-parsing task.due (a display
+      // string like "Sep 21") — round-tripping a display string through
+      // `new Date(...)` is what caused the edit form to show one day
+      // earlier than the actual due date.
+      due: /^\d{4}-\d{2}-\d{2}/.test(task.dueIso || "") ? task.dueIso.slice(0, 10) : parseDueToIso(task.due),
       taskDate: taskDateToDateInput(resolveTaskDate(task)),
       est: parseEstHours(task.est),
       workNotes: task.workNotes || "",

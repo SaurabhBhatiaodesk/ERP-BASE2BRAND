@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Send, Sparkles, Bot, User, Loader, TrendingUp, Clock, CheckCircle, AlertTriangle, Loader2 } from "lucide-react";
 import { fetchAiManagerContext, type AiManagerContext } from "@/lib/database";
+import { askCopilot, buildAiManagerSystemPrompt, type CopilotMessage } from "@/lib/copilotAi";
 
 function GlassCard({ children, className = "", style = {} }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) {
   return (
@@ -21,59 +22,6 @@ const suggestedQuestions = [
   "What is the current budget status?",
 ];
 
-function formatDate(dateStr: string | null): string {
-  if (!dateStr) return "an unconfirmed date";
-  return new Date(`${dateStr}T00:00:00`).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
-}
-
-function formatMoney(amount: number): string {
-  return `$${amount.toLocaleString()}`;
-}
-
-/** Every answer here is built from real numbers already loaded via fetchAiManagerContext — there's no LLM backend wired up for client-erp yet, so this grounds the chat in data instead of fabricating one. */
-function getGroundedResponse(question: string, ctx: AiManagerContext): string {
-  const q = question.toLowerCase();
-  const project = ctx.project;
-  if (!project) return "I don't have a project to analyze yet — check back once your engagement is set up.";
-
-  if (q.includes("delay") || q.includes("block") || q.includes("risk")) {
-    const parts: string[] = [];
-    if (ctx.pendingDeliverablesCount > 0) parts.push(`${ctx.pendingDeliverablesCount} deliverable${ctx.pendingDeliverablesCount === 1 ? "" : "s"} awaiting your review`);
-    if (ctx.blockedTasksCount > 0) parts.push(`${ctx.blockedTasksCount} blocked task${ctx.blockedTasksCount === 1 ? "" : "s"}`);
-    if (ctx.openTicketsCount > 0) parts.push(`${ctx.openTicketsCount} open support ticket${ctx.openTicketsCount === 1 ? "" : "s"}`);
-    if (parts.length === 0) return `No blockers identified right now. ${project.name} is at ${project.progressPct}% complete with a health score of ${project.healthScore ?? "—"}.`;
-    return `Here's what could affect your timeline:\n\n${parts.map(p => `• ${p}`).join("\n")}\n\nResolving these would help keep ${project.name} on schedule.`;
-  }
-
-  if (q.includes("launch") || q.includes("when")) {
-    return `${project.name} is targeting launch on **${formatDate(project.launchDate)}**. Current progress: ${project.progressPct}% complete, health score ${project.healthScore ?? "—"}.`;
-  }
-
-  if (q.includes("complete") || q.includes("week") || q.includes("recent")) {
-    if (ctx.recentActivity.length === 0) return "No recent activity logged yet.";
-    return `**Recent activity:**\n\n${ctx.recentActivity.slice(0, 6).map(a => `✅ ${a.text} — ${a.user}, ${a.timeLabel}`).join("\n")}`;
-  }
-
-  if (q.includes("approv") || q.includes("pending")) {
-    const openChangeRequests = ctx.changeRequests.filter(cr => cr.status !== "approved");
-    if (ctx.pendingDeliverablesCount === 0 && openChangeRequests.length === 0) return "Nothing is waiting on your approval right now.";
-    const lines: string[] = [];
-    if (ctx.pendingDeliverablesCount > 0) lines.push(`🔴 ${ctx.pendingDeliverablesCount} deliverable${ctx.pendingDeliverablesCount === 1 ? "" : "s"} awaiting review (see the Deliverables page)`);
-    for (const cr of openChangeRequests.slice(0, 5)) lines.push(`🟡 ${cr.title} (${cr.status.replace("-", " ")})`);
-    return `**Pending approvals:**\n\n${lines.join("\n")}`;
-  }
-
-  if (q.includes("budget")) {
-    if (project.budgetTotal === null) return "No budget has been set on this project yet.";
-    const pct = Math.round((project.budgetUsed / project.budgetTotal) * 100);
-    return `**Budget status:**\n\n• Total: ${formatMoney(project.budgetTotal)}\n• Used: ${formatMoney(project.budgetUsed)} (${pct}%)\n• Remaining: ${formatMoney(project.budgetTotal - project.budgetUsed)}`;
-  }
-
-  if (ctx.aiSummary) return ctx.aiSummary.summaryText;
-
-  return `${project.name} is at **${project.progressPct}%** complete with a health score of **${project.healthScore ?? "—"}**. ${ctx.pendingDeliverablesCount > 0 ? `There ${ctx.pendingDeliverablesCount === 1 ? "is" : "are"} ${ctx.pendingDeliverablesCount} deliverable${ctx.pendingDeliverablesCount === 1 ? "" : "s"} waiting on your review.` : "Nothing is currently waiting on you."}`;
-}
-
 function renderMarkdown(text: string) {
   const lines = text.split("\n");
   return lines.map((line, i) => {
@@ -92,6 +40,7 @@ function renderMarkdown(text: string) {
 
 export function AIProjectManager({ organizationId, personName }: { organizationId?: string; personName?: string }) {
   const [context, setContext] = useState<AiManagerContext | null>(null);
+  const [systemPrompt, setSystemPrompt] = useState("");
   const [loading, setLoading] = useState(true);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
@@ -110,6 +59,7 @@ export function AIProjectManager({ organizationId, personName }: { organizationI
       .then(result => {
         if (cancelled) return;
         setContext(result);
+        setSystemPrompt(buildAiManagerSystemPrompt(personName, result));
         setMessages([{
           role: "ai",
           text: result.project
@@ -125,16 +75,21 @@ export function AIProjectManager({ organizationId, personName }: { organizationI
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const sendMessage = (text?: string) => {
+  const sendMessage = async (text?: string) => {
     const msg = text || input;
-    if (!msg.trim() || thinking || !context) return;
+    if (!msg.trim() || thinking || !context || !systemPrompt) return;
     setInput("");
+    const history: CopilotMessage[] = messages.map(m => ({ role: m.role === "ai" ? "assistant" : "user", content: m.text }));
     setMessages(prev => [...prev, { role: "user", text: msg }]);
     setThinking(true);
-    setTimeout(() => {
+    try {
+      const reply = await askCopilot(systemPrompt, history, msg);
+      setMessages(prev => [...prev, { role: "ai", text: reply }]);
+    } catch (err) {
+      setMessages(prev => [...prev, { role: "ai", text: err instanceof Error ? err.message : "Something went wrong reaching the AI assistant." }]);
+    } finally {
       setThinking(false);
-      setMessages(prev => [...prev, { role: "ai", text: getGroundedResponse(msg, context) }]);
-    }, 500 + Math.random() * 400);
+    }
   };
 
   const project = context?.project ?? null;

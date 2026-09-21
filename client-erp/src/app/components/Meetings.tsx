@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Video, CalendarDays, Clock, PlayCircle, Sparkles, CheckSquare, Loader2 } from "lucide-react";
-import { fetchMeetings, type MeetingItem, type MeetingType } from "@/lib/database";
+import { Video, CalendarDays, Clock, PlayCircle, Sparkles, CheckSquare, Loader2, PhoneCall } from "lucide-react";
+import { fetchMeetings, joinScheduledMeeting, startInstantMeeting, type MeetingItem, type MeetingType } from "@/lib/database";
 
 function GlassCard({ children, className = "", style = {} }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) {
   return (
@@ -21,6 +21,9 @@ export function Meetings({ organizationId }: { organizationId?: string }) {
   const [meetings, setMeetings] = useState<MeetingItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [joiningId, setJoiningId] = useState<string | null>(null);
+  const [startingInstant, setStartingInstant] = useState(false);
+  const [meetingError, setMeetingError] = useState("");
 
   useEffect(() => {
     if (!organizationId) {
@@ -49,6 +52,32 @@ export function Meetings({ organizationId }: { organizationId?: string }) {
   const upcoming = meetings.filter(m => !m.isPast);
   const past = meetings.filter(m => m.isPast);
 
+  const handleJoin = async (meetingId: string) => {
+    setMeetingError("");
+    setJoiningId(meetingId);
+    try {
+      const link = await joinScheduledMeeting(meetingId);
+      window.open(link, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setMeetingError(err instanceof Error ? err.message : "Couldn't start the meeting.");
+    } finally {
+      setJoiningId(null);
+    }
+  };
+
+  const handleStartInstant = async () => {
+    setMeetingError("");
+    setStartingInstant(true);
+    try {
+      const link = await startInstantMeeting(organizationId);
+      window.open(link, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setMeetingError(err instanceof Error ? err.message : "Couldn't start the meeting.");
+    } finally {
+      setStartingInstant(false);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-6 p-6 overflow-y-auto">
       <div className="flex items-center justify-between">
@@ -56,14 +85,27 @@ export function Meetings({ organizationId }: { organizationId?: string }) {
           <h1 style={{ color: "#E2E4F0", fontSize: 22, fontWeight: 700 }}>Meeting Center</h1>
           <p style={{ color: "#8891B8", fontSize: 13, marginTop: 2 }}>Upcoming meetings, recordings, and AI summaries</p>
         </div>
-        <button
-          className="flex items-center gap-2 rounded-xl px-4 py-2.5"
-          style={{ background: "linear-gradient(135deg, #7B5CF5, #4C6EF5)", color: "#fff", fontSize: 13, fontWeight: 600 }}
-        >
-          <CalendarDays size={14} />
-          Schedule Meeting
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={handleStartInstant}
+            disabled={startingInstant}
+            className="flex items-center gap-2 rounded-xl px-4 py-2.5"
+            style={{ background: "linear-gradient(135deg, #10B981, #059669)", color: "#fff", fontSize: 13, fontWeight: 600, opacity: startingInstant ? 0.7 : 1 }}
+          >
+            {startingInstant ? <Loader2 size={14} className="animate-spin" /> : <PhoneCall size={14} />}
+            Start Meeting
+          </button>
+          <button
+            className="flex items-center gap-2 rounded-xl px-4 py-2.5"
+            style={{ background: "linear-gradient(135deg, #7B5CF5, #4C6EF5)", color: "#fff", fontSize: 13, fontWeight: 600 }}
+          >
+            <CalendarDays size={14} />
+            Schedule Meeting
+          </button>
+        </div>
       </div>
+
+      {meetingError && <p style={{ color: "#EF4444", fontSize: 13 }}>{meetingError}</p>}
 
       {loading && (
         <div className="flex flex-col items-center justify-center py-16 gap-3">
@@ -125,17 +167,15 @@ export function Meetings({ organizationId }: { organizationId?: string }) {
                       </div>
                     ))}
                   </div>
-                  {meet.recordingUrl && (
-                    <a
-                      href={meet.recordingUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex items-center gap-1.5 rounded-lg px-3 py-1.5"
-                      style={{ background: `${color}15`, border: `1px solid ${color}30`, color, fontSize: 12, fontWeight: 600 }}
-                    >
-                      Join
-                    </a>
-                  )}
+                  <button
+                    onClick={() => handleJoin(meet.id)}
+                    disabled={joiningId === meet.id}
+                    className="flex items-center gap-1.5 rounded-lg px-3 py-1.5"
+                    style={{ background: `${color}15`, border: `1px solid ${color}30`, color, fontSize: 12, fontWeight: 600, opacity: joiningId === meet.id ? 0.6 : 1 }}
+                  >
+                    {joiningId === meet.id ? <Loader2 size={12} className="animate-spin" /> : null}
+                    Join
+                  </button>
                 </div>
               );
             })}

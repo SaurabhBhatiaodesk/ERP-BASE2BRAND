@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { Search, BookOpen, Sparkles, Send, FileText, Video, Loader2 } from "lucide-react";
-import { fetchKnowledgeArticles, type KnowledgeArticle } from "@/lib/database";
+import { Search, BookOpen, Sparkles, FileText, Video, Loader2 } from "lucide-react";
+import { fetchKnowledgeArticles, fetchProjectDetail, fetchBillingData, fetchAllOrganizations, type KnowledgeArticle } from "@/lib/database";
+import { askCopilot, buildKnowledgeBaseSystemPrompt, type CopilotMessage } from "@/lib/copilotAi";
 
 function GlassCard({ children, className = "", style = {} }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) {
   return (
@@ -19,12 +20,14 @@ type Msg = { role: "user" | "ai"; text: string };
 
 export function KnowledgeBase({ organizationId }: { organizationId?: string }) {
   const [articles, setArticles] = useState<KnowledgeArticle[]>([]);
+  const [systemPrompt, setSystemPrompt] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [aiQuery, setAiQuery] = useState("");
+  const [thinking, setThinking] = useState(false);
   const [aiMessages, setAiMessages] = useState<Msg[]>([
-    { role: "ai", text: "I can search your project documents and meeting summaries. Ask me anything, or use the keywords below." },
+    { role: "ai", text: "I can answer questions about your project, documents, meeting notes, contract, and invoices. Ask me anything." },
   ]);
 
   useEffect(() => {
@@ -36,35 +39,44 @@ export function KnowledgeBase({ organizationId }: { organizationId?: string }) {
     let cancelled = false;
     setLoading(true);
     setError("");
-    fetchKnowledgeArticles(organizationId)
-      .then(result => { if (!cancelled) setArticles(result); })
+    Promise.all([
+      fetchKnowledgeArticles(organizationId),
+      fetchProjectDetail(organizationId),
+      fetchBillingData(organizationId),
+      fetchAllOrganizations(),
+    ])
+      .then(([articleResults, detail, billing, orgs]) => {
+        if (cancelled) return;
+        setArticles(articleResults);
+        const organizationName = orgs.find(o => o.id === organizationId)?.name ?? "your organization";
+        setSystemPrompt(buildKnowledgeBaseSystemPrompt({
+          organizationName,
+          project: detail.project,
+          changeRequests: detail.changeRequests,
+          articles: articleResults,
+          billing,
+        }));
+      })
       .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load knowledge base."); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [organizationId]);
 
-  const sendQuery = () => {
-    if (!aiQuery.trim()) return;
+  const sendQuery = async () => {
+    if (!aiQuery.trim() || thinking || !systemPrompt) return;
     const q = aiQuery;
     setAiQuery("");
+    const history: CopilotMessage[] = aiMessages.map(m => ({ role: m.role === "ai" ? "assistant" : "user", content: m.text }));
     setAiMessages(prev => [...prev, { role: "user", text: q }]);
-
-    // Grounded keyword search over the real documents/meeting summaries already
-    // loaded — no LLM backend is wired up for client-erp yet.
-    const lower = q.toLowerCase();
-    const matches = articles.filter(a =>
-      a.title.toLowerCase().includes(lower) || a.category.toLowerCase().includes(lower) || (a.content ?? "").toLowerCase().includes(lower)
-    );
-    let response: string;
-    if (matches.length === 0) {
-      response = "I couldn't find anything matching that in your documents or meeting notes.";
-    } else {
-      const withSummary = matches.find(m => m.content);
-      response = withSummary
-        ? `Found this in "${withSummary.title}" (${withSummary.dateLabel}):\n\n${withSummary.content}`
-        : `Found ${matches.length} matching document${matches.length === 1 ? "" : "s"}:\n\n${matches.slice(0, 5).map(m => `• ${m.title} (${m.category}, ${m.dateLabel})`).join("\n")}`;
+    setThinking(true);
+    try {
+      const reply = await askCopilot(systemPrompt, history, q);
+      setAiMessages(prev => [...prev, { role: "ai", text: reply }]);
+    } catch (err) {
+      setAiMessages(prev => [...prev, { role: "ai", text: err instanceof Error ? err.message : "Something went wrong reaching the AI assistant." }]);
+    } finally {
+      setThinking(false);
     }
-    setTimeout(() => setAiMessages(prev => [...prev, { role: "ai", text: response }]), 400);
   };
 
   const filtered = articles.filter(a =>
@@ -110,6 +122,14 @@ export function KnowledgeBase({ organizationId }: { organizationId?: string }) {
               </div>
             </div>
           ))}
+          {thinking && (
+            <div className="flex justify-start">
+              <div className="rounded-xl px-4 py-3 flex items-center gap-2" style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                <Loader2 size={14} color="#8891B8" className="animate-spin" />
+                <span style={{ color: "#8891B8", fontSize: 12 }}>Searching…</span>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex gap-2">
@@ -118,11 +138,17 @@ export function KnowledgeBase({ organizationId }: { organizationId?: string }) {
             onChange={(e) => setAiQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") sendQuery(); }}
             placeholder="e.g. contract, brand guidelines, scope"
+            disabled={thinking}
             className="flex-1 rounded-xl px-4 py-2.5 outline-none"
             style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "#E2E4F0", fontSize: 13 }}
           />
-          <button onClick={sendQuery} className="rounded-xl px-4 py-2.5 flex items-center gap-2" style={{ background: "linear-gradient(135deg, #7B5CF5, #4C6EF5)", color: "#fff", fontSize: 13, fontWeight: 600 }}>
-            <Search size={14} />
+          <button
+            onClick={sendQuery}
+            disabled={thinking || !aiQuery.trim()}
+            className="rounded-xl px-4 py-2.5 flex items-center gap-2"
+            style={{ background: "linear-gradient(135deg, #7B5CF5, #4C6EF5)", color: "#fff", fontSize: 13, fontWeight: 600, opacity: thinking || !aiQuery.trim() ? 0.6 : 1 }}
+          >
+            {thinking ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
             Search
           </button>
         </div>

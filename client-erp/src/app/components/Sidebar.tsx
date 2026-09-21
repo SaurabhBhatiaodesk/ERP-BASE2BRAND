@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-  LayoutDashboard, Briefcase, FolderOpen, Package,
+  LayoutDashboard, BarChart3, FolderOpen, Package,
   Activity, FileText, Video, Users, HeadphonesIcon, CreditCard,
   BookOpen, Bot, Bell, Settings, ChevronLeft, ChevronRight, LogOut
 } from "lucide-react";
@@ -9,7 +9,7 @@ const LOGO_SVG = `<svg width="120" height="18" viewBox="0 0 1152 172" fill="none
 
 const navItems = [
   { id: "command", label: "Command Center", icon: LayoutDashboard },
-  { id: "portfolio", label: "Portfolio", icon: Briefcase },
+  { id: "analytics", label: "Analytics", icon: BarChart3 },
   { id: "projects", label: "Projects", icon: FolderOpen },
   { id: "deliverables", label: "Deliverables", icon: Package },
   { id: "activity", label: "Activity Feed", icon: Activity },

@@ -6,7 +6,7 @@ import { getCurrentPerson, signOut, fetchAllOrganizations, fetchSidebarBadges, t
 import { AuthScreen } from "./components/AuthScreen";
 import { Sidebar } from "./components/Sidebar";
 import { CommandCenter } from "./components/CommandCenter";
-import { Portfolio } from "./components/Portfolio";
+import { Analytics } from "./components/Analytics";
 import { Projects } from "./components/Projects";
 import { Deliverables } from "./components/Deliverables";
 import { AIProjectManager } from "./components/AIProjectManager";
@@ -29,7 +29,7 @@ function buildPageMap(
   const personName = context.person.fullName;
   return {
     command: <CommandCenter organizationId={orgId} personName={personName} onSelectOrganization={onSelectOrganization} />,
-    portfolio: <Portfolio organizationId={orgId} />,
+    analytics: <Analytics organizationId={orgId} />,
     projects: <Projects organizationId={orgId} />,
     deliverables: <Deliverables organizationId={orgId} />,
     activity: <ActivityFeed organizationId={orgId} />,

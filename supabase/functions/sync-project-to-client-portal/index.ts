@@ -129,9 +129,17 @@ serve(async (req) => {
     if (orgError) throw orgError;
     const organizationId = org.id as string;
 
-    // 3. Ensure a client contact (people row + invited auth user) exists,
-    // and keep the display name current on every re-sync (the source lead's
-    // contact name can be corrected later even if the person row already exists).
+    // 3. Ensure a client contact (people row) exists, and keep the display name
+    // current on every re-sync (the source lead's contact name can be corrected
+    // later even if the person row already exists).
+    //
+    // This never sends an invite email. Data sync and client login access are
+    // deliberately decoupled: if the email already has an auth account (invited
+    // separately, e.g. by hand from the Supabase dashboard when the team is
+    // ready to onboard that client), we link it; otherwise auth_user_id stays
+    // null and the person simply can't log in yet. Auto-inviting here used to
+    // burn through Supabase's default auth email rate limit during any bulk
+    // backfill/resync, failing every project for every not-yet-invited client.
     const rawContact = lead.contact?.trim();
     const contactName = rawContact && !looksLikePhoneNumber(rawContact) ? rawContact : lead.name;
 
@@ -149,18 +157,8 @@ serve(async (req) => {
         .eq("id", existingPerson.id);
       if (updateError) throw updateError;
     } else {
-      let authUserId: string | null = null;
-      const { data: invited, error: inviteError } = await clientErp.auth.admin.inviteUserByEmail(lead.email);
-      if (inviteError && !inviteError.message?.toLowerCase().includes("already")) {
-        throw inviteError;
-      }
-      authUserId = invited?.user?.id ?? null;
-
-      if (!authUserId) {
-        // Already-registered case — invite doesn't return the existing user, so look it up.
-        const { data: usersPage } = await clientErp.auth.admin.listUsers({ perPage: 1000 });
-        authUserId = usersPage?.users.find(u => u.email?.toLowerCase() === lead.email.toLowerCase())?.id ?? null;
-      }
+      const { data: usersPage } = await clientErp.auth.admin.listUsers({ perPage: 1000 });
+      const authUserId = usersPage?.users.find(u => u.email?.toLowerCase() === lead.email.toLowerCase())?.id ?? null;
 
       const { error: personError } = await clientErp.from("people").insert({
         kind: "client",

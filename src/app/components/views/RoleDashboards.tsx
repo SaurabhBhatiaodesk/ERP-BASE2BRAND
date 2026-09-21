@@ -1584,6 +1584,11 @@ export function EmployeeDashboard({
                       <p className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8] mt-0.5">
                         Due {formatDueLabel(t.due)} · {t.project}
                       </p>
+                      {t.createdByName && t.createdByName !== t.assignee && (
+                        <p className="text-[10px] font-['Geist_Mono'] text-indigo-400/80 mt-0.5">
+                          Assigned by {t.createdByName}
+                        </p>
+                      )}
                     </div>
                     <Badge variant={taskPriorityVariant(t.priority)}>{taskPriorityLabel(t.priority)}</Badge>
                   </button>
