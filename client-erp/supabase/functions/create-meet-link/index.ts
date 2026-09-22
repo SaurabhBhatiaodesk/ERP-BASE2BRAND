@@ -6,68 +6,34 @@ const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-// Google service account with domain-wide delegation, impersonating a real
-// Workspace user (the Meet API needs a real human account behind the space —
-// see supabase secrets set GOOGLE_SERVICE_ACCOUNT_EMAIL / GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY
-// / GOOGLE_IMPERSONATE_USER on the CLIENT-ERP project.
-const googleServiceAccountEmail = Deno.env.get("GOOGLE_SERVICE_ACCOUNT_EMAIL")!;
-const googlePrivateKeyPem = (Deno.env.get("GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY") ?? "").replace(/\\n/g, "\n");
-const googleImpersonateUser = Deno.env.get("GOOGLE_IMPERSONATE_USER")!;
-
-const MEET_SCOPE = "https://www.googleapis.com/auth/meetings.space.created";
+// Standard OAuth refresh-token flow for a single Google account (no Workspace
+// admin / domain-wide delegation needed — works with a plain gmail.com account).
+// That account authorized this app once via Google's consent screen; we
+// exchange its long-lived refresh token for a fresh access token on every
+// call. See supabase secrets set GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET
+// / GOOGLE_OAUTH_REFRESH_TOKEN on the CLIENT-ERP project.
+const googleOAuthClientId = Deno.env.get("GOOGLE_OAUTH_CLIENT_ID")!;
+const googleOAuthClientSecret = Deno.env.get("GOOGLE_OAUTH_CLIENT_SECRET")!;
+const googleOAuthRefreshToken = Deno.env.get("GOOGLE_OAUTH_REFRESH_TOKEN")!;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-function base64url(input: Uint8Array | string): string {
-  const bytes = typeof input === "string" ? new TextEncoder().encode(input) : input;
-  let binary = "";
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-/** JWT-bearer flow for a Google service account, impersonating a Workspace user via domain-wide delegation. */
 async function getGoogleAccessToken(): Promise<string> {
-  const header = { alg: "RS256", typ: "JWT" };
-  const now = Math.floor(Date.now() / 1000);
-  const claims = {
-    iss: googleServiceAccountEmail,
-    scope: MEET_SCOPE,
-    aud: "https://oauth2.googleapis.com/token",
-    exp: now + 3600,
-    iat: now,
-    sub: googleImpersonateUser,
-  };
-  const signingInput = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(claims))}`;
-
-  const pemContents = googlePrivateKeyPem
-    .replace(/-----BEGIN PRIVATE KEY-----/, "")
-    .replace(/-----END PRIVATE KEY-----/, "")
-    .replace(/\s/g, "");
-  const binaryDer = Uint8Array.from(atob(pemContents), c => c.charCodeAt(0));
-
-  const cryptoKey = await crypto.subtle.importKey(
-    "pkcs8",
-    binaryDer.buffer,
-    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", cryptoKey, new TextEncoder().encode(signingInput));
-  const jwt = `${signingInput}.${base64url(new Uint8Array(signature))}`;
-
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion: jwt,
+      client_id: googleOAuthClientId,
+      client_secret: googleOAuthClientSecret,
+      refresh_token: googleOAuthRefreshToken,
+      grant_type: "refresh_token",
     }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(`Google token exchange failed: ${JSON.stringify(data)}`);
+  if (!res.ok) throw new Error(`Google token refresh failed: ${JSON.stringify(data)}`);
   return data.access_token as string;
 }
 
@@ -135,15 +101,58 @@ serve(async (req) => {
       return new Response(JSON.stringify({ meetLink }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    // Instant, ad-hoc meeting — a fresh space every time, nothing persisted.
+    // Instant, ad-hoc meeting. Whoever clicks "Start Meeting" first today creates
+    // the room and a real `meetings` row for it; whoever clicks it next (or clicks
+    // "Join" on that same row once it shows up in their list) gets the SAME link —
+    // never a fresh throwaway room per click. This is what makes the client and
+    // the team land in the same call without ever exchanging a URL.
     const organizationId = body.organizationId as string | undefined;
     if (!isAdmin) {
       if (!organizationId || organizationId !== person.organization_id) {
         return new Response(JSON.stringify({ error: "Not authorized for this organization" }), { status: 403, headers: corsHeaders });
       }
     }
+    if (!organizationId) return new Response(JSON.stringify({ error: "organizationId is required" }), { status: 400, headers: corsHeaders });
+
+    const { data: orgProjects, error: orgProjectsErr } = await supabase
+      .from("projects")
+      .select("id, status")
+      .eq("organization_id", organizationId)
+      .order("updated_at", { ascending: false });
+    if (orgProjectsErr) throw orgProjectsErr;
+    const project = (orgProjects ?? []).find(p => p.status === "active") ?? orgProjects?.[0];
+    if (!project) return new Response(JSON.stringify({ error: "No project found for this organization" }), { status: 404, headers: corsHeaders });
+
+    const todayDate = new Date().toISOString().slice(0, 10);
+    const recentCutoff = new Date(Date.now() - 4 * 3600000).toISOString();
+
+    const { data: existingInstant, error: existingErr } = await supabase
+      .from("meetings")
+      .select("id, meet_link")
+      .eq("project_id", project.id)
+      .eq("title", "Instant Meeting")
+      .eq("meeting_date", todayDate)
+      .gte("created_at", recentCutoff)
+      .not("meet_link", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (existingErr) throw existingErr;
+
+    if (existingInstant?.meet_link) {
+      return new Response(JSON.stringify({ meetLink: existingInstant.meet_link }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
 
     const meetLink = await createMeetSpace();
+    const { error: insertErr } = await supabase.from("meetings").insert({
+      project_id: project.id,
+      title: "Instant Meeting",
+      meeting_date: todayDate,
+      start_time: new Date().toISOString().slice(11, 19),
+      meet_link: meetLink,
+    });
+    if (insertErr) throw insertErr;
+
     return new Response(JSON.stringify({ meetLink }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (error) {
     console.error("create-meet-link error:", error);

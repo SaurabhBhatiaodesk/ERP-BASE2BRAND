@@ -927,6 +927,28 @@ export async function fetchMeetings(organizationId: string): Promise<MeetingItem
   });
 }
 
+/** Schedules a new meeting on the org's primary project. Attendees aren't collected here — the meeting shows up for the client (and team) as soon as it's created. */
+export async function scheduleMeeting(organizationId: string, input: {
+  title: string;
+  date: string;
+  time: string;
+  durationMinutes: number;
+  type: MeetingType;
+}): Promise<void> {
+  const project = await fetchPrimaryProject(organizationId);
+  if (!project) throw new Error("No project found to schedule this meeting on.");
+
+  const { error } = await supabase.from("meetings").insert({
+    project_id: project.id,
+    title: input.title,
+    meeting_date: input.date,
+    start_time: input.time,
+    duration_minutes: input.durationMinutes,
+    type: input.type,
+  });
+  if (error) throw error;
+}
+
 /** Lazily creates (once) and returns the Google Meet link for a scheduled meeting — same link every time it's called for that meeting, so the client and the team land in the same room without ever exchanging a URL. */
 export async function joinScheduledMeeting(meetingId: string): Promise<string> {
   const { data, error } = await supabase.functions.invoke("create-meet-link", { body: { mode: "scheduled", meetingId } });

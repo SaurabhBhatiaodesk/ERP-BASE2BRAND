@@ -120,7 +120,7 @@ export function Settings({ context }: { context: CurrentPersonContext }) {
           </GlassCard>
 
           {/* Appearance */}
-          <GlassCard className="p-5 col-span-2">
+          {/* <GlassCard className="p-5 col-span-2">
             <p style={{ color: "#E2E4F0", fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Appearance</p>
             <div className="flex items-center justify-between rounded-lg px-3 py-2.5">
               <span style={{ color: "#C4C8E0", fontSize: 13 }}>Theme</span>
@@ -142,7 +142,7 @@ export function Settings({ context }: { context: CurrentPersonContext }) {
                 ))}
               </div>
             </div>
-          </GlassCard>
+          </GlassCard> */}
         </div>
       )}
     </div>

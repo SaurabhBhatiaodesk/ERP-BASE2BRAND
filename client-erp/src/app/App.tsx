@@ -4,7 +4,7 @@ import { ChevronDown, Globe2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { getCurrentPerson, signOut, fetchAllOrganizations, fetchSidebarBadges, type CurrentPersonContext, type Organization, type SidebarBadgeCounts } from "@/lib/database";
 import { AuthScreen } from "./components/AuthScreen";
-import { Sidebar } from "./components/Sidebar";
+import { Sidebar, PAGE_IDS } from "./components/Sidebar";
 import { CommandCenter } from "./components/CommandCenter";
 import { Analytics } from "./components/Analytics";
 import { Projects } from "./components/Projects";
@@ -80,6 +80,17 @@ function ClientSwitcher({
   );
 }
 
+/** Keyed per-admin (not just a flat key) so two different admins sharing a browser don't inherit each other's last-picked client. */
+function viewingOrgStorageKey(personId: string): string {
+  return `client-erp:viewingOrg:${personId}`;
+}
+
+/** Maps the URL path to a known page id, defaulting to Command Center for "/" or anything unrecognized. */
+function pageIdFromPath(pathname: string): string {
+  const id = pathname.replace(/^\/+/, "").split("/")[0];
+  return PAGE_IDS.includes(id) ? id : "command";
+}
+
 function FullScreenMessage({ title, body }: { title: string; body: string }) {
   return (
     <div
@@ -101,7 +112,7 @@ function FullScreenMessage({ title, body }: { title: string; body: string }) {
 }
 
 export default function App() {
-  const [activePage, setActivePage] = useState("command");
+  const [activePage, setActivePage] = useState(() => pageIdFromPath(window.location.pathname));
   // undefined = still checking for an existing session; null = signed out.
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   const [context, setContext] = useState<CurrentPersonContext | null>(null);
@@ -121,6 +132,21 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // Normalizes "/" or an unrecognized path to the page actually rendered on load.
+    window.history.replaceState(null, "", `/${activePage}`);
+    // Browser back/forward buttons — keep in-app state in sync with the URL.
+    const onPopState = () => setActivePage(pageIdFromPath(window.location.pathname));
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const navigateToPage = (id: string) => {
+    setActivePage(id);
+    window.history.pushState(null, "", `/${id}`);
+  };
+
+  useEffect(() => {
     if (!session) {
       setContext(null);
       return;
@@ -137,9 +163,22 @@ export default function App() {
           return;
         }
         if (result.person.kind === "admin") {
-          // Admin: start on "All Clients"; fetch the switcher's options.
-          setViewingOrganizationId(null);
-          void fetchAllOrganizations().then(orgs => { if (!cancelled) setAllOrganizations(orgs); });
+          // Admin: restore whichever client they last had selected (survives a
+          // page refresh), falling back to "All Clients" if nothing was saved
+          // or the saved org no longer exists.
+          let stored: string | null = null;
+          try {
+            stored = window.localStorage.getItem(viewingOrgStorageKey(result.person.id));
+          } catch { /* localStorage unavailable (private mode etc.) — fall back to "All Clients" */ }
+          setViewingOrganizationId(stored);
+          void fetchAllOrganizations().then(orgs => {
+            if (cancelled) return;
+            setAllOrganizations(orgs);
+            if (stored && !orgs.some(o => o.id === stored)) {
+              setViewingOrganizationId(null);
+              try { window.localStorage.removeItem(viewingOrgStorageKey(result.person.id)); } catch { /* ignore */ }
+            }
+          });
         } else {
           // Normal client: fixed to their own org, no switcher.
           setViewingOrganizationId(result.organization?.id ?? null);
@@ -152,7 +191,13 @@ export default function App() {
         if (!cancelled) setContextLoading(false);
       });
     return () => { cancelled = true; };
-  }, [session]);
+    // Keyed on the user id, not the whole `session` object: Supabase silently
+    // re-validates and re-fires onAuthStateChange with a *new* session object for
+    // the same user whenever the tab regains focus (background token refresh).
+    // Depending on the full `session` reference would re-run this on every tab
+    // switch and reset the admin's client-switcher selection back to "All Clients".
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.user?.id]);
 
   useEffect(() => {
     if (!viewingOrganizationId || !context) {
@@ -193,8 +238,18 @@ export default function App() {
   const viewingOrganization = isAdmin
     ? allOrganizations.find(o => o.id === viewingOrganizationId) ?? null
     : context.organization;
-  const pageMap = buildPageMap(viewingOrganizationId, context, setViewingOrganizationId);
-  const page = pageMap[activePage] || <CommandCenter organizationId={viewingOrganizationId ?? undefined} personName={context.person.fullName} onSelectOrganization={setViewingOrganizationId} />;
+
+  const updateViewingOrganization = (id: string | null) => {
+    setViewingOrganizationId(id);
+    try {
+      const key = viewingOrgStorageKey(context.person.id);
+      if (id) window.localStorage.setItem(key, id);
+      else window.localStorage.removeItem(key);
+    } catch { /* localStorage unavailable — selection just won't survive a refresh */ }
+  };
+
+  const pageMap = buildPageMap(viewingOrganizationId, context, updateViewingOrganization);
+  const page = pageMap[activePage] || <CommandCenter organizationId={viewingOrganizationId ?? undefined} personName={context.person.fullName} onSelectOrganization={updateViewingOrganization} />;
   const isFullHeight = activePage === "ai" || activePage === "projects";
 
   return (
@@ -234,7 +289,7 @@ export default function App() {
       <div className="relative z-10 flex w-full h-full">
         <Sidebar
           active={activePage}
-          onNavigate={setActivePage}
+          onNavigate={navigateToPage}
           userName={context.person.fullName}
           userRole={context.person.role || "Client"}
           userInitials={context.person.initials || context.person.fullName.slice(0, 2).toUpperCase()}
@@ -252,7 +307,7 @@ export default function App() {
             <ClientSwitcher
               organizations={allOrganizations}
               value={viewingOrganizationId}
-              onChange={setViewingOrganizationId}
+              onChange={updateViewingOrganization}
             />
           )}
           {isFullHeight ? (

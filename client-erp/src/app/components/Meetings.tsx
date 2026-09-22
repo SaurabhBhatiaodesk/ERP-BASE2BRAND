@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Video, CalendarDays, Clock, PlayCircle, Sparkles, CheckSquare, Loader2, PhoneCall } from "lucide-react";
-import { fetchMeetings, joinScheduledMeeting, startInstantMeeting, type MeetingItem, type MeetingType } from "@/lib/database";
+import { Video, CalendarDays, Clock, PlayCircle, Sparkles, CheckSquare, Loader2, PhoneCall, X } from "lucide-react";
+import { fetchMeetings, scheduleMeeting, joinScheduledMeeting, startInstantMeeting, type MeetingItem, type MeetingType } from "@/lib/database";
 
 function GlassCard({ children, className = "", style = {} }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) {
   return (
@@ -17,6 +17,116 @@ const typeColors: Record<MeetingType, string> = {
   retro: "#10B981",
 };
 
+const typeLabels: Record<MeetingType, string> = {
+  planning: "Planning",
+  review: "Review",
+  design: "Design",
+  retro: "Retrospective",
+};
+
+function ScheduleMeetingDialog({ organizationId, onClose, onScheduled }: { organizationId: string; onClose: () => void; onScheduled: () => void }) {
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const [title, setTitle] = useState("");
+  const [date, setDate] = useState(todayIso);
+  const [time, setTime] = useState("10:00");
+  const [duration, setDuration] = useState(30);
+  const [type, setType] = useState<MeetingType>("planning");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    if (!title.trim() || !date || !time) return;
+    setSaving(true);
+    setError("");
+    try {
+      await scheduleMeeting(organizationId, { title: title.trim(), date, time, durationMinutes: duration, type });
+      onScheduled();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't schedule the meeting.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(7,9,26,0.85)", backdropFilter: "blur(8px)" }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="rounded-2xl p-5 flex flex-col gap-4" style={{ width: 420, background: "#0B0E28", border: "1px solid rgba(255,255,255,0.1)" }}>
+        <div className="flex items-center justify-between">
+          <h3 style={{ color: "#E2E4F0", fontSize: 15, fontWeight: 600 }}>Schedule a Meeting</h3>
+          <button onClick={onClose} style={{ color: "#8891B8" }}><X size={18} /></button>
+        </div>
+
+        <input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Meeting title…"
+          className="w-full rounded-lg p-3"
+          style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", color: "#E2E4F0", fontSize: 13, outline: "none" }}
+        />
+
+        <div className="flex gap-2">
+          <input
+            type="date"
+            value={date}
+            min={todayIso}
+            onChange={(e) => setDate(e.target.value)}
+            className="flex-1 rounded-lg p-2.5"
+            style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", color: "#E2E4F0", fontSize: 13, outline: "none" }}
+          />
+          <input
+            type="time"
+            value={time}
+            onChange={(e) => setTime(e.target.value)}
+            className="flex-1 rounded-lg p-2.5"
+            style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", color: "#E2E4F0", fontSize: 13, outline: "none" }}
+          />
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span style={{ color: "#8891B8", fontSize: 12 }}>Duration</span>
+          {[15, 30, 45, 60].map(d => (
+            <button
+              key={d}
+              onClick={() => setDuration(d)}
+              className="rounded-lg px-3 py-1"
+              style={{ background: duration === d ? "rgba(123,92,245,0.2)" : "rgba(255,255,255,0.05)", color: duration === d ? "#C4B5FD" : "#8891B8", fontSize: 12, fontWeight: 600 }}
+            >
+              {d}m
+            </button>
+          ))}
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <span style={{ color: "#8891B8", fontSize: 12 }}>Type</span>
+          {(Object.keys(typeLabels) as MeetingType[]).map(t => (
+            <button
+              key={t}
+              onClick={() => setType(t)}
+              className="rounded-lg px-3 py-1"
+              style={{ background: type === t ? `${typeColors[t]}25` : "rgba(255,255,255,0.05)", color: type === t ? typeColors[t] : "#8891B8", fontSize: 12, fontWeight: 600 }}
+            >
+              {typeLabels[t]}
+            </button>
+          ))}
+        </div>
+
+        {error && <p style={{ color: "#EF4444", fontSize: 12 }}>{error}</p>}
+
+        <button
+          onClick={submit}
+          disabled={!title.trim() || saving}
+          className="w-full rounded-lg py-2.5 flex items-center justify-center gap-2"
+          style={{ background: "linear-gradient(135deg, #7B5CF5, #4C6EF5)", color: "#fff", fontSize: 13, fontWeight: 600, opacity: !title.trim() || saving ? 0.6 : 1 }}
+        >
+          {saving ? <Loader2 size={15} className="animate-spin" /> : <CalendarDays size={15} />}
+          Schedule Meeting
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function Meetings({ organizationId }: { organizationId?: string }) {
   const [meetings, setMeetings] = useState<MeetingItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -24,22 +134,23 @@ export function Meetings({ organizationId }: { organizationId?: string }) {
   const [joiningId, setJoiningId] = useState<string | null>(null);
   const [startingInstant, setStartingInstant] = useState(false);
   const [meetingError, setMeetingError] = useState("");
+  const [showScheduleDialog, setShowScheduleDialog] = useState(false);
 
-  useEffect(() => {
+  const load = () => {
     if (!organizationId) {
       setMeetings([]);
       setLoading(false);
       return;
     }
-    let cancelled = false;
     setLoading(true);
     setError("");
     fetchMeetings(organizationId)
-      .then(result => { if (!cancelled) setMeetings(result); })
-      .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load meetings."); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [organizationId]);
+      .then(result => setMeetings(result))
+      .catch(err => setError(err instanceof Error ? err.message : "Failed to load meetings."))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(load, [organizationId]);
 
   if (!organizationId) {
     return (
@@ -80,6 +191,10 @@ export function Meetings({ organizationId }: { organizationId?: string }) {
 
   return (
     <div className="flex flex-col gap-6 p-6 overflow-y-auto">
+      {showScheduleDialog && (
+        <ScheduleMeetingDialog organizationId={organizationId} onClose={() => setShowScheduleDialog(false)} onScheduled={load} />
+      )}
+
       <div className="flex items-center justify-between">
         <div>
           <h1 style={{ color: "#E2E4F0", fontSize: 22, fontWeight: 700 }}>Meeting Center</h1>
@@ -96,6 +211,7 @@ export function Meetings({ organizationId }: { organizationId?: string }) {
             Start Meeting
           </button>
           <button
+            onClick={() => setShowScheduleDialog(true)}
             className="flex items-center gap-2 rounded-xl px-4 py-2.5"
             style={{ background: "linear-gradient(135deg, #7B5CF5, #4C6EF5)", color: "#fff", fontSize: 13, fontWeight: 600 }}
           >

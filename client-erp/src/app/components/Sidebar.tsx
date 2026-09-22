@@ -24,6 +24,8 @@ const navItems = [
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
+export const PAGE_IDS = navItems.map(item => item.id);
+
 export type SidebarBadges = { approvals: number; actionItems: number; notifications: number };
 
 interface SidebarProps {
