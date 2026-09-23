@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { Plus, MessageSquare, Clock, CheckCircle, AlertCircle, Sparkles, Send, Loader2, X } from "lucide-react";
+import { Plus, Clock, CheckCircle, AlertCircle, Sparkles, Send, Loader2, X } from "lucide-react";
 import {
-  fetchSupportTickets, createSupportTicket,
+  fetchSupportTickets, createSupportTicket, fetchProjectDetail, fetchBillingData, fetchAllOrganizations,
   type SupportCenterData, type SupportTicketPriority, type SupportTicketStatus,
 } from "@/lib/database";
+import { askCopilot, buildSupportSystemPrompt, type CopilotMessage } from "@/lib/copilotAi";
 
 function GlassCard({ children, className = "", style = {} }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) {
   return (
@@ -92,10 +93,12 @@ function NewTicketDialog({ projectId, onClose, onCreated }: { projectId: string;
 
 export function SupportCenter({ organizationId, personName }: { organizationId?: string; personName?: string }) {
   const [data, setData] = useState<SupportCenterData | null>(null);
+  const [systemPrompt, setSystemPrompt] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showNewTicket, setShowNewTicket] = useState(false);
   const [aiInput, setAiInput] = useState("");
+  const [thinking, setThinking] = useState(false);
   const [aiMessages, setAiMessages] = useState<AiMsg[]>([]);
 
   const load = () => {
@@ -117,31 +120,37 @@ export function SupportCenter({ organizationId, personName }: { organizationId?:
     setAiMessages([
       { role: "ai", text: `Hi ${personName ?? "there"}! I'm your Support Assistant. Ask me about your tickets, or raise a new one with the button above.` },
     ]);
+    if (!organizationId) {
+      setSystemPrompt("");
+      return;
+    }
+    let cancelled = false;
+    Promise.all([fetchProjectDetail(organizationId), fetchBillingData(organizationId), fetchSupportTickets(organizationId), fetchAllOrganizations()])
+      .then(([detail, billing, support, orgs]) => {
+        if (cancelled) return;
+        const organizationName = orgs.find(o => o.id === organizationId)?.name ?? "your organization";
+        setSystemPrompt(buildSupportSystemPrompt({ organizationName, personName, project: detail.project, support, billing }));
+      })
+      .catch(() => { /* chat just won't be grounded yet — ticket list/stats above still load independently */ });
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [organizationId]);
 
-  const sendAiMessage = () => {
-    if (!aiInput.trim() || !data) return;
+  const sendAiMessage = async () => {
+    if (!aiInput.trim() || thinking || !systemPrompt) return;
     const msg = aiInput;
     setAiInput("");
+    const history: CopilotMessage[] = aiMessages.map(m => ({ role: m.role === "ai" ? "assistant" : "user", content: m.text }));
     setAiMessages(prev => [...prev, { role: "user", text: msg }]);
-
-    // Grounded in the real tickets already loaded — no LLM backend wired up yet.
-    const lower = msg.toLowerCase();
-    let response: string;
-    const matched = data.tickets.find(t => lower.includes(t.ticketNumber.toLowerCase()) || (t.title.length > 8 && lower.includes(t.title.toLowerCase().split(" ").slice(0, 3).join(" "))));
-    if (matched) {
-      response = `${matched.ticketNumber} — "${matched.title}" is currently ${statusConfig[matched.status].label.toLowerCase()}${matched.assigneeName ? `, assigned to ${matched.assigneeName}` : ""}.${matched.slaLabel ? ` SLA: ${matched.slaLabel}.` : ""}`;
-    } else if (lower.includes("open") || lower.includes("status")) {
-      response = `You have ${data.openCount} open ticket${data.openCount === 1 ? "" : "s"} and ${data.inProgressCount} in progress. ${data.resolvedLast30dCount} resolved in the last 30 days.`;
-    } else if (lower.includes("resolution") || lower.includes("how long")) {
-      response = data.avgResolutionHours !== null
-        ? `Your average resolution time is ${data.avgResolutionHours.toFixed(1)} hours.`
-        : "No resolved tickets yet to calculate an average resolution time.";
-    } else {
-      response = "I can answer questions about your existing tickets (mention a ticket number or title), or you can raise a new one with the button above.";
+    setThinking(true);
+    try {
+      const reply = await askCopilot(systemPrompt, history, msg);
+      setAiMessages(prev => [...prev, { role: "ai", text: reply }]);
+    } catch (err) {
+      setAiMessages(prev => [...prev, { role: "ai", text: err instanceof Error ? err.message : "Something went wrong reaching the AI assistant." }]);
+    } finally {
+      setThinking(false);
     }
-    setTimeout(() => setAiMessages(prev => [...prev, { role: "ai", text: response }]), 500);
   };
 
   if (!organizationId) {
@@ -257,6 +266,14 @@ export function SupportCenter({ organizationId, personName }: { organizationId?:
                     </div>
                   </div>
                 ))}
+                {thinking && (
+                  <div className="flex justify-start">
+                    <div className="rounded-xl px-3 py-2 flex items-center gap-2" style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                      <Loader2 size={13} color="#8891B8" className="animate-spin" />
+                      <span style={{ color: "#8891B8", fontSize: 11 }}>Thinking…</span>
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="p-3" style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}>
                 <div className="flex gap-2">
@@ -265,11 +282,17 @@ export function SupportCenter({ organizationId, personName }: { organizationId?:
                     onChange={(e) => setAiInput(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") sendAiMessage(); }}
                     placeholder="Ask a question…"
+                    disabled={thinking}
                     className="flex-1 rounded-lg px-3 py-2 outline-none"
                     style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#E2E4F0", fontSize: 12 }}
                   />
-                  <button onClick={sendAiMessage} className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: "rgba(123,92,245,0.2)", color: "#C4B5FD" }}>
-                    <Send size={13} />
+                  <button
+                    onClick={sendAiMessage}
+                    disabled={thinking || !aiInput.trim()}
+                    className="w-8 h-8 rounded-lg flex items-center justify-center"
+                    style={{ background: "rgba(123,92,245,0.2)", color: "#C4B5FD", opacity: thinking || !aiInput.trim() ? 0.6 : 1 }}
+                  >
+                    {thinking ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
                   </button>
                 </div>
               </div>

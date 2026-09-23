@@ -6,7 +6,7 @@
 // Unlike the main ERP's copilot (internal staff, sees the whole company), every
 // snapshot built here is already scoped to a single client's own organization —
 // never fetch or include another client's data.
-import type { AiManagerContext, ChangeRequest, KnowledgeArticle, Project, BillingData } from "./database";
+import type { AiManagerContext, ChangeRequest, KnowledgeArticle, Project, BillingData, SupportCenterData } from "./database";
 
 const OPENAI_API_KEY = import.meta.env.VITE_OPENAI_API_KEY as string | undefined;
 const MODEL = "gpt-4o-mini";
@@ -114,6 +114,48 @@ export function buildAiManagerSystemPrompt(personName: string | undefined, ctx: 
   return `You are ${personName ? `${personName}'s` : "the client's"} AI Project Manager at Base2Brand${ctx.project ? `, for the project "${ctx.project.name}"` : ""}. You have real-time access to the live project data below — never invent facts. Be direct, proactive, and specific with the real numbers and dates provided.
 
 ### PROJECT DATA SNAPSHOT
+${JSON.stringify(snapshot)}
+
+${RESPONSE_STYLE}`;
+}
+
+/** Support Assistant: grounded in this client's own support tickets, project status, and billing — nothing else. Never creates or modifies a ticket itself; points the client at the "Raise Ticket" button for new issues. */
+export function buildSupportSystemPrompt(opts: {
+  organizationName: string;
+  personName?: string;
+  project: Project | null;
+  support: SupportCenterData;
+  billing: BillingData;
+}): string {
+  const nextInvoiceDue = [...opts.billing.invoices]
+    .filter(i => i.status !== "paid")
+    .sort((a, b) => a.dueDateRaw.localeCompare(b.dueDateRaw))[0] ?? null;
+
+  const snapshot = {
+    project: opts.project ? {
+      name: opts.project.name,
+      status: opts.project.status,
+      progressPct: opts.project.progressPct,
+      startDate: opts.project.startDate,
+      launchDate: opts.project.launchDate,
+    } : null,
+    supportTickets: opts.support.tickets.map(t => ({
+      number: t.ticketNumber, title: t.title, status: t.status, priority: t.priority,
+      assignee: t.assigneeName, sla: t.slaLabel, created: t.createdLabel,
+    })),
+    supportSummary: {
+      openCount: opts.support.openCount,
+      inProgressCount: opts.support.inProgressCount,
+      resolvedLast30dCount: opts.support.resolvedLast30dCount,
+      avgResolutionHours: opts.support.avgResolutionHours,
+    },
+    contract: opts.billing.contract,
+    nextInvoiceDue: nextInvoiceDue ? { number: nextInvoiceDue.invoiceNumber, amount: nextInvoiceDue.amount, due: nextInvoiceDue.dueDateLabel, status: nextInvoiceDue.status } : null,
+  };
+
+  return `You are ${opts.personName ? `${opts.personName}'s` : "the client's"} Support Assistant at Base2Brand for ${opts.organizationName}. You have real-time access to this client's own support tickets, project status, and billing data below — never invent facts, and never reference or imply knowledge of any other client's data. You cannot create or modify tickets yourself — if the client describes a new problem that isn't already one of the tickets below, tell them to use the "Raise Ticket" button.
+
+### CLIENT SUPPORT DATA SNAPSHOT
 ${JSON.stringify(snapshot)}
 
 ${RESPONSE_STYLE}`;
