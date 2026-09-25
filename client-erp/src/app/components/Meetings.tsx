@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Video, CalendarDays, Clock, PlayCircle, Sparkles, CheckSquare, Loader2, PhoneCall, X } from "lucide-react";
-import { fetchMeetings, scheduleMeeting, joinScheduledMeeting, startInstantMeeting, type MeetingItem, type MeetingType } from "@/lib/database";
+import { fetchMeetings, scheduleMeeting, getMeetingRoomName, startInstantMeeting, type MeetingItem, type MeetingType } from "@/lib/database";
+import { JitsiMeetEmbed } from "./JitsiMeetEmbed";
 
 function GlassCard({ children, className = "", style = {} }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) {
   return (
@@ -127,14 +128,14 @@ function ScheduleMeetingDialog({ organizationId, onClose, onScheduled }: { organ
   );
 }
 
-export function Meetings({ organizationId }: { organizationId?: string }) {
+export function Meetings({ organizationId, personName }: { organizationId?: string; personName?: string }) {
   const [meetings, setMeetings] = useState<MeetingItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [joiningId, setJoiningId] = useState<string | null>(null);
   const [startingInstant, setStartingInstant] = useState(false);
   const [meetingError, setMeetingError] = useState("");
   const [showScheduleDialog, setShowScheduleDialog] = useState(false);
+  const [activeMeeting, setActiveMeeting] = useState<{ roomName: string; title: string } | null>(null);
 
   const load = () => {
     if (!organizationId) {
@@ -163,25 +164,18 @@ export function Meetings({ organizationId }: { organizationId?: string }) {
   const upcoming = meetings.filter(m => !m.isPast);
   const past = meetings.filter(m => m.isPast);
 
-  const handleJoin = async (meetingId: string) => {
+  const handleJoin = (meet: MeetingItem) => {
     setMeetingError("");
-    setJoiningId(meetingId);
-    try {
-      const link = await joinScheduledMeeting(meetingId);
-      window.open(link, "_blank", "noopener,noreferrer");
-    } catch (err) {
-      setMeetingError(err instanceof Error ? err.message : "Couldn't start the meeting.");
-    } finally {
-      setJoiningId(null);
-    }
+    setActiveMeeting({ roomName: getMeetingRoomName(meet.id), title: meet.title });
   };
 
   const handleStartInstant = async () => {
     setMeetingError("");
     setStartingInstant(true);
     try {
-      const link = await startInstantMeeting(organizationId);
-      window.open(link, "_blank", "noopener,noreferrer");
+      const { roomName } = await startInstantMeeting(organizationId);
+      setActiveMeeting({ roomName, title: "Instant Meeting" });
+      load(); // so the client sees it appear in Upcoming Meetings once they're in the call
     } catch (err) {
       setMeetingError(err instanceof Error ? err.message : "Couldn't start the meeting.");
     } finally {
@@ -193,6 +187,15 @@ export function Meetings({ organizationId }: { organizationId?: string }) {
     <div className="flex flex-col gap-6 p-6 overflow-y-auto">
       {showScheduleDialog && (
         <ScheduleMeetingDialog organizationId={organizationId} onClose={() => setShowScheduleDialog(false)} onScheduled={load} />
+      )}
+
+      {activeMeeting && (
+        <JitsiMeetEmbed
+          roomName={activeMeeting.roomName}
+          title={activeMeeting.title}
+          displayName={personName ?? "Guest"}
+          onClose={() => { setActiveMeeting(null); load(); }}
+        />
       )}
 
       <div className="flex items-center justify-between">
@@ -284,12 +287,10 @@ export function Meetings({ organizationId }: { organizationId?: string }) {
                     ))}
                   </div>
                   <button
-                    onClick={() => handleJoin(meet.id)}
-                    disabled={joiningId === meet.id}
+                    onClick={() => handleJoin(meet)}
                     className="flex items-center gap-1.5 rounded-lg px-3 py-1.5"
-                    style={{ background: `${color}15`, border: `1px solid ${color}30`, color, fontSize: 12, fontWeight: 600, opacity: joiningId === meet.id ? 0.6 : 1 }}
+                    style={{ background: `${color}15`, border: `1px solid ${color}30`, color, fontSize: 12, fontWeight: 600 }}
                   >
-                    {joiningId === meet.id ? <Loader2 size={12} className="animate-spin" /> : null}
                     Join
                   </button>
                 </div>

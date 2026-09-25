@@ -71,7 +71,7 @@ function ProgressBar({ value, color }: { value: number; color: string }) {
   );
 }
 
-export function Analytics({ organizationId }: { organizationId?: string }) {
+export function Analytics({ organizationId, showFinancials = true }: { organizationId?: string; showFinancials?: boolean }) {
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -144,7 +144,7 @@ export function Analytics({ organizationId }: { organizationId?: string }) {
         </div>
         <div className="flex gap-3">
           {[
-            { label: "Total Value", value: formatMoneyK(totalBudget), color: "#7B5CF5" },
+            ...(showFinancials ? [{ label: "Total Value", value: formatMoneyK(totalBudget), color: "#7B5CF5" }] : []),
             { label: "Active", value: String(activeCount), color: "#10B981" },
             { label: "Completed", value: String(completedCount), color: "#4C6EF5" },
             { label: "Avg Health", value: avgHealth !== null ? `${avgHealth}` : "—", color: healthColor(avgHealth) },
@@ -169,18 +169,20 @@ export function Analytics({ organizationId }: { organizationId?: string }) {
       ) : (
         <>
           {/* Budget Utilization */}
-          <GlassCard className="p-5" style={{ background: "linear-gradient(135deg, rgba(123,92,245,0.12), rgba(76,110,245,0.08))", border: "1px solid rgba(123,92,245,0.2)" }}>
-            <div className="flex items-center justify-between mb-3">
-              <p style={{ color: "#E2E4F0", fontSize: 14, fontWeight: 600 }}>Budget Utilization Across Projects</p>
-              <span style={{ color: "#10B981", fontSize: 13, fontWeight: 600 }}>
-                {formatMoneyK(usedBudget)} / {formatMoneyK(totalBudget)}
-              </span>
-            </div>
-            <div className="w-full rounded-full overflow-hidden mb-2" style={{ height: 8, background: "rgba(255,255,255,0.08)" }}>
-              <div className="h-full rounded-full" style={{ width: `${utilizedPct}%`, background: "linear-gradient(90deg, #7B5CF5, #4C6EF5)" }} />
-            </div>
-            <p style={{ color: "#8891B8", fontSize: 12 }}>{utilizedPct}% utilized across all projects</p>
-          </GlassCard>
+          {showFinancials && (
+            <GlassCard className="p-5" style={{ background: "linear-gradient(135deg, rgba(123,92,245,0.12), rgba(76,110,245,0.08))", border: "1px solid rgba(123,92,245,0.2)" }}>
+              <div className="flex items-center justify-between mb-3">
+                <p style={{ color: "#E2E4F0", fontSize: 14, fontWeight: 600 }}>Budget Utilization Across Projects</p>
+                <span style={{ color: "#10B981", fontSize: 13, fontWeight: 600 }}>
+                  {formatMoneyK(usedBudget)} / {formatMoneyK(totalBudget)}
+                </span>
+              </div>
+              <div className="w-full rounded-full overflow-hidden mb-2" style={{ height: 8, background: "rgba(255,255,255,0.08)" }}>
+                <div className="h-full rounded-full" style={{ width: `${utilizedPct}%`, background: "linear-gradient(90deg, #7B5CF5, #4C6EF5)" }} />
+              </div>
+              <p style={{ color: "#8891B8", fontSize: 12 }}>{utilizedPct}% utilized across all projects</p>
+            </GlassCard>
+          )}
 
           {/* Charts row 1: health + budget per project */}
           <div className="grid grid-cols-2 gap-4">
@@ -200,27 +202,29 @@ export function Analytics({ organizationId }: { organizationId?: string }) {
               </div>
             </GlassCard>
 
-            <GlassCard className="p-5">
-              <p style={{ color: "#E2E4F0", fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Budget Used by Project</p>
-              {budgetChartData.length === 0 ? (
-                <div className="flex items-center justify-center" style={{ height: 220 }}>
-                  <p style={{ color: "#8891B8", fontSize: 13 }}>No budgets set yet.</p>
-                </div>
-              ) : (
-                <div style={{ height: 220 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={budgetChartData} barSize={22}>
-                      <XAxis dataKey="name" tick={{ fill: "#8891B8", fontSize: 10 }} axisLine={false} tickLine={false} interval={0} angle={-20} textAnchor="end" height={50} />
-                      <YAxis domain={[0, 100]} tick={{ fill: "#8891B8", fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}%`} />
-                      <Tooltip contentStyle={{ background: "#0D1030", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, color: "#E2E4F0", fontSize: 12 }} formatter={(v: number) => [`${v}%`, "Used"]} />
-                      <Bar dataKey="pct" radius={[4, 4, 0, 0]}>
-                        {budgetChartData.map((d, i) => <Cell key={i} fill={d.pct >= 90 ? "#EF4444" : "#7B5CF5"} fillOpacity={0.85} />)}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-            </GlassCard>
+            {showFinancials && (
+              <GlassCard className="p-5">
+                <p style={{ color: "#E2E4F0", fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Budget Used by Project</p>
+                {budgetChartData.length === 0 ? (
+                  <div className="flex items-center justify-center" style={{ height: 220 }}>
+                    <p style={{ color: "#8891B8", fontSize: 13 }}>No budgets set yet.</p>
+                  </div>
+                ) : (
+                  <div style={{ height: 220 }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={budgetChartData} barSize={22}>
+                        <XAxis dataKey="name" tick={{ fill: "#8891B8", fontSize: 10 }} axisLine={false} tickLine={false} interval={0} angle={-20} textAnchor="end" height={50} />
+                        <YAxis domain={[0, 100]} tick={{ fill: "#8891B8", fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}%`} />
+                        <Tooltip contentStyle={{ background: "#0D1030", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, color: "#E2E4F0", fontSize: 12 }} formatter={(v: number) => [`${v}%`, "Used"]} />
+                        <Bar dataKey="pct" radius={[4, 4, 0, 0]}>
+                          {budgetChartData.map((d, i) => <Cell key={i} fill={d.pct >= 90 ? "#EF4444" : "#7B5CF5"} fillOpacity={0.85} />)}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </GlassCard>
+            )}
           </div>
 
           {/* Charts row 2: deliverables + tasks distribution */}
@@ -320,12 +324,14 @@ export function Analytics({ organizationId }: { organizationId?: string }) {
                       </div>
                     </div>
                     <div className="flex flex-col items-end gap-3">
-                      <div className="text-right">
-                        <p style={{ color: "#E2E4F0", fontSize: 13, fontWeight: 600 }}>
-                          {project.budgetTotal ? `${formatMoneyK(project.budgetUsed)} / ${formatMoneyK(project.budgetTotal)}` : "—"}
-                        </p>
-                        <p style={{ color: "#8891B8", fontSize: 11 }}>Budget</p>
-                      </div>
+                      {showFinancials && (
+                        <div className="text-right">
+                          <p style={{ color: "#E2E4F0", fontSize: 13, fontWeight: 600 }}>
+                            {project.budgetTotal ? `${formatMoneyK(project.budgetUsed)} / ${formatMoneyK(project.budgetTotal)}` : "—"}
+                          </p>
+                          <p style={{ color: "#8891B8", fontSize: 11 }}>Budget</p>
+                        </div>
+                      )}
                       <div className="px-3 py-1.5 rounded-lg text-center" style={{ background: (project.healthScore ?? 0) >= 90 ? "rgba(16,185,129,0.12)" : "rgba(245,158,11,0.12)" }}>
                         <p style={{ color: (project.healthScore ?? 0) >= 90 ? "#10B981" : "#F59E0B", fontSize: 16, fontWeight: 700 }}>{project.healthScore ?? "—"}</p>
                         <p style={{ color: "#8891B8", fontSize: 10 }}>Health</p>

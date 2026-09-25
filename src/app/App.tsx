@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
-import { resolveLoginUser, saveAppSession, clearAppSession, hasStoredAppSession, isAdminRole, isShiftTrackerRole } from "@/lib/auth";
+import { resolveLoginUser, saveAppSession, clearAppSession, hasStoredAppSession, isAdminRole, isShiftTrackerRole, canManageClientPortal } from "@/lib/auth";
 import { refreshSupabaseSessionIfNeeded, restoreSupabaseSession } from "@/lib/authSession";
 import { ImageWithFallback } from "@/app/components/figma/ImageWithFallback";
 import logo from "@/imports/image.png";
@@ -11,7 +11,7 @@ import {
   DollarSign, UserCheck, Plus, X, Send, Activity,
   Globe, Hash, ChevronRight, Building2, Award, Layers,
   Timer, Monitor, ChevronLeft, Settings, TrendingUp, LogOut, User, Calendar, Wallet, Video, Gauge, IndianRupee,
-  Rocket, Download, Rss, Ticket,
+  Rocket, Download, Rss, Ticket, ShieldCheck,
 } from "lucide-react";
 
 // Imported views
@@ -33,6 +33,7 @@ import { MeetingView } from "./components/views/MeetingView";
 import { FeedView } from "./components/views/FeedView";
 import { ClientProjectView } from "./components/views/ClientProjectView";
 import { TicketsView } from "./components/views/TicketsView";
+import { ClientPortalControlView } from "./components/views/ClientPortalControlView";
 import { ThemeSwitcher } from "./components/ThemeSwitcher";
 import { Toaster } from "./components/ui/sonner";
 import { findProfileForUser, isPersonalTaskRole, isScreenshotMonitoredRole, fetchLatestAppUpdate, reportInstalledAppVersion, type AppUpdateAnnouncement } from "@/lib/database";
@@ -87,6 +88,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "feed", label: "Feed", icon: Rss },
     { id: "tickets", label: "Tickets", icon: Ticket },
     { id: "chat", label: "Chat", icon: MessageSquare, badge: 4 },
+    { id: "clientportal", label: "Client Portal Control", icon: ShieldCheck },
     { id: "settings", label: "Settings", icon: Settings },
   ],
   ceo: [
@@ -115,6 +117,7 @@ const roleNavMap: Record<RoleId, NavItem[]> = {
     { id: "feed", label: "Feed", icon: Rss },
     { id: "tickets", label: "Tickets", icon: Ticket },
     { id: "chat", label: "Chat", icon: MessageSquare, badge: 4 },
+    { id: "clientportal", label: "Client Portal Control", icon: ShieldCheck },
     { id: "settings", label: "Settings", icon: Settings },
   ],
   teamlead: [
@@ -217,6 +220,7 @@ const viewTitles: Record<string, string> = {
   settings: "Settings", notifications: "Notifications",
   broadcast: "Broadcast", projectworkspace: "Project", projectdetail: "Project Details", invoices: "Invoices & Billing",
   copilot: "AI Copilot", meetings: "Meetings & Schedule", tickets: "Tickets",
+  clientportal: "Client Portal Control",
 };
 
 type ChatMessage = { role: "ai" | "user"; text: string };
@@ -962,6 +966,15 @@ export default function App() {
       case "payroll": return <PayrollView userRole={userRole} markerId={currentProfile?.id} markerName={currentProfile?.name || userName} />;
       case "feed": return <FeedView userRole={userRole} userId={currentProfile?.id} userName={currentProfile?.name || userName} />;
       case "tickets": return <TicketsView userRole={userRole} userName={currentProfile?.name || userName} currentUserId={currentProfile?.id} />;
+      case "clientportal":
+        if (!canManageClientPortal(userRole)) {
+          return (
+            <div className="p-8 text-center text-[#6b7fa8] font-['Plus_Jakarta_Sans']">
+              Client Portal Control is only available to CEO and Superadmin.
+            </div>
+          );
+        }
+        return <ClientPortalControlView />;
       case "profiles": return (
         <EmployeeProfilePage
           userName={userName}

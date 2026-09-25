@@ -61,7 +61,7 @@ function ProgressBar({ value, color }: { value: number; color: string }) {
   );
 }
 
-export function Projects({ organizationId }: { organizationId?: string }) {
+export function Projects({ organizationId, showFinancials = true }: { organizationId?: string; showFinancials?: boolean }) {
   const [activeTab, setActiveTab] = useState<"overview" | "changes">("overview");
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -160,13 +160,15 @@ export function Projects({ organizationId }: { organizationId?: string }) {
           </div>
         </div>
 
-        <div className="grid grid-cols-6 gap-3">
+        <div className={showFinancials ? "grid grid-cols-6 gap-3" : "grid grid-cols-5 gap-3"}>
           {[
             { label: "Project Manager", value: projectManagerName ?? "Unassigned", icon: Users, color: "#7B5CF5" },
             { label: "Start Date", value: formatDate(project.startDate), icon: Calendar, color: "#4C6EF5" },
             { label: "Launch Date", value: formatDate(project.launchDate), icon: Calendar, color: "#10B981" },
             { label: "Current Sprint", value: currentSprint?.label ?? "None active", icon: TrendingUp, color: "#F47B52" },
-            { label: "Budget Used", value: budgetUsedPct !== null ? `${budgetUsedPct}% (${formatMoneyK(project.budgetUsed)})` : "—", icon: DollarSign, color: "#F59E0B" },
+            ...(showFinancials
+              ? [{ label: "Budget Used", value: budgetUsedPct !== null ? `${budgetUsedPct}% (${formatMoneyK(project.budgetUsed)})` : "—", icon: DollarSign, color: "#F59E0B" }]
+              : []),
             { label: "Completion", value: `${project.progressPct}%`, icon: CheckCircle, color: "#10B981" },
           ].map(item => {
             const Icon = item.icon;

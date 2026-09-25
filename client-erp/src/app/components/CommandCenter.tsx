@@ -237,11 +237,12 @@ function AllClientsOverviewView({ onSelectOrganization }: { onSelectOrganization
 }
 
 export function CommandCenter({
-  organizationId, personName, onSelectOrganization,
+  organizationId, personName, onSelectOrganization, showFinancials = true,
 }: {
   organizationId?: string;
   personName?: string;
   onSelectOrganization?: (organizationId: string) => void;
+  showFinancials?: boolean;
 }) {
   const [aiExpanded, setAiExpanded] = useState(true);
   const [data, setData] = useState<CommandCenterData | null>(null);
@@ -346,12 +347,14 @@ export function CommandCenter({
           sub={support.nearestSlaDueAt ? `SLA due ${new Date(support.nearestSlaDueAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : "No open tickets"}
           icon={AlertTriangle} color="#EF4444"
         />
-        <MetricCard
-          label="Budget Used"
-          value={budgetUsedPct !== null ? `${budgetUsedPct}%` : "—"}
-          sub={budgetTotal ? `${formatMoneyK(budgetUsed)} of ${formatMoneyK(budgetTotal)}` : "No budget set"}
-          icon={DollarSign} color="#4C6EF5"
-        />
+        {showFinancials && (
+          <MetricCard
+            label="Budget Used"
+            value={budgetUsedPct !== null ? `${budgetUsedPct}%` : "—"}
+            sub={budgetTotal ? `${formatMoneyK(budgetUsed)} of ${formatMoneyK(budgetTotal)}` : "No budget set"}
+            icon={DollarSign} color="#4C6EF5"
+          />
+        )}
         <MetricCard
           label="Next Milestone"
           value={formatMilestoneDate(nextMilestone?.targetDate ?? null)}
@@ -402,12 +405,12 @@ export function CommandCenter({
               <p style={{ color: "#C4C8E0", fontSize: 14, lineHeight: 1.7, marginBottom: 20 }}>
                 {aiSummary.summaryText}
               </p>
-              <div className="grid grid-cols-5 gap-3">
+              <div className={showFinancials ? "grid grid-cols-5 gap-3" : "grid grid-cols-4 gap-3"}>
                 {[
                   { label: "Delivery Confidence", value: aiSummary.deliveryConfidencePct !== null ? `${aiSummary.deliveryConfidencePct}%` : "—", color: "#10B981" },
                   { label: "Health Score", value: aiSummary.healthGrade ?? "—", color: "#7B5CF5" },
                   { label: "Est. Launch", value: formatMilestoneDate(aiSummary.estimatedLaunchDate), color: "#4C6EF5" },
-                  { label: "Budget Status", value: aiSummary.budgetStatus ?? "—", color: "#10B981" },
+                  ...(showFinancials ? [{ label: "Budget Status", value: aiSummary.budgetStatus ?? "—", color: "#10B981" }] : []),
                   { label: "Risk Level", value: aiSummary.riskLevel ?? "—", color: "#10B981" },
                 ].map((item) => (
                   <div

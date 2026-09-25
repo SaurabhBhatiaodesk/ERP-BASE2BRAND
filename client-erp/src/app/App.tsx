@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { ChevronDown, Globe2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import { getCurrentPerson, signOut, fetchAllOrganizations, fetchSidebarBadges, type CurrentPersonContext, type Organization, type SidebarBadgeCounts } from "@/lib/database";
+import { getCurrentPerson, signOut, fetchAllOrganizations, fetchSidebarBadges, fetchPortalSettings, type CurrentPersonContext, type Organization, type SidebarBadgeCounts, type PortalSettings } from "@/lib/database";
 import { AuthScreen } from "./components/AuthScreen";
 import { Sidebar, PAGE_IDS } from "./components/Sidebar";
 import { CommandCenter } from "./components/CommandCenter";
@@ -24,17 +24,18 @@ function buildPageMap(
   organizationId: string | null,
   context: CurrentPersonContext,
   onSelectOrganization: (organizationId: string) => void,
+  showFinancials: boolean,
 ): Record<string, React.ReactNode> {
   const orgId = organizationId ?? undefined;
   const personName = context.person.fullName;
   return {
-    command: <CommandCenter organizationId={orgId} personName={personName} onSelectOrganization={onSelectOrganization} />,
-    analytics: <Analytics organizationId={orgId} />,
-    projects: <Projects organizationId={orgId} />,
+    command: <CommandCenter organizationId={orgId} personName={personName} onSelectOrganization={onSelectOrganization} showFinancials={showFinancials} />,
+    analytics: <Analytics organizationId={orgId} showFinancials={showFinancials} />,
+    projects: <Projects organizationId={orgId} showFinancials={showFinancials} />,
     deliverables: <Deliverables organizationId={orgId} />,
     activity: <ActivityFeed organizationId={orgId} />,
     documents: <Documents organizationId={orgId} />,
-    meetings: <Meetings organizationId={orgId} />,
+    meetings: <Meetings organizationId={orgId} personName={personName} />,
     team: <Team organizationId={orgId} />,
     support: <SupportCenter organizationId={orgId} personName={personName} />,
     invoices: <Billing organizationId={orgId} />,
@@ -122,6 +123,12 @@ export default function App() {
   // Fixed to the person's own org for a normal client; null ("All Clients") to start for an admin.
   const [viewingOrganizationId, setViewingOrganizationId] = useState<string | null>(null);
   const [badges, setBadges] = useState<SidebarBadgeCounts>({ approvals: 0, actionItems: 0, notifications: 0 });
+  // Set from the main ERP's Client Portal Control module — never restricts admin (Base2Brand staff) accounts.
+  const [portalSettings, setPortalSettings] = useState<PortalSettings | null>(null);
+
+  useEffect(() => {
+    void fetchPortalSettings().then(setPortalSettings);
+  }, []);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -248,9 +255,22 @@ export default function App() {
     } catch { /* localStorage unavailable — selection just won't survive a refresh */ }
   };
 
-  const pageMap = buildPageMap(viewingOrganizationId, context, updateViewingOrganization);
-  const page = pageMap[activePage] || <CommandCenter organizationId={viewingOrganizationId ?? undefined} personName={context.person.fullName} onSelectOrganization={updateViewingOrganization} />;
-  const isFullHeight = activePage === "ai" || activePage === "projects";
+  // Client Portal Control settings — never restrict an admin (Base2Brand
+  // staff) account. Command Center and Settings can never be hidden: a
+  // client needs at least one page to land on and a way to sign out/manage
+  // their account.
+  const showFinancials = portalSettings?.showFinancials ?? true;
+  const ALWAYS_VISIBLE_PAGES = new Set(["command", "settings"]);
+  const hiddenModuleIds = isAdmin || !portalSettings
+    ? []
+    : PAGE_IDS.filter(id => !ALWAYS_VISIBLE_PAGES.has(id) && !portalSettings.visibleModules.includes(id));
+  // Blocks direct/typed navigation to a hidden page, not just the sidebar
+  // link — the actual enforcement, not cosmetic hiding.
+  const effectiveActivePage = hiddenModuleIds.includes(activePage) ? "command" : activePage;
+
+  const pageMap = buildPageMap(viewingOrganizationId, context, updateViewingOrganization, showFinancials);
+  const page = pageMap[effectiveActivePage] || <CommandCenter organizationId={viewingOrganizationId ?? undefined} personName={context.person.fullName} onSelectOrganization={updateViewingOrganization} showFinancials={showFinancials} />;
+  const isFullHeight = effectiveActivePage === "ai" || effectiveActivePage === "projects";
 
   return (
     <div
@@ -288,7 +308,7 @@ export default function App() {
 
       <div className="relative z-10 flex w-full h-full">
         <Sidebar
-          active={activePage}
+          active={effectiveActivePage}
           onNavigate={navigateToPage}
           userName={context.person.fullName}
           userRole={context.person.role || "Client"}
@@ -297,6 +317,7 @@ export default function App() {
           organizationName={viewingOrganization?.name}
           organizationPlan={viewingOrganization?.planName ?? undefined}
           badges={badges}
+          hiddenIds={hiddenModuleIds}
         />
 
         <main

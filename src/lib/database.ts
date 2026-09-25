@@ -8177,3 +8177,99 @@ export async function deleteTicket(ticketId: string): Promise<void> {
   const { error } = await supabase.from("tickets").delete().eq("id", ticketId);
   if (error) throw error;
 }
+
+// ─── Client Portal Control (CEO/Superadmin only) ───────────────────────────
+// Controls what the separate client-erp web app shows — which sidebar
+// modules are visible, and whether budget/revenue figures are shown at all.
+// Read/written through the manage-portal-settings Edge Function (deployed on
+// this project), which re-checks the caller is CEO/Superadmin server-side
+// and is the only thing with write access to client-erp's portal_settings
+// table — never called directly from client-erp or written to from here.
+
+export const CLIENT_PORTAL_MODULES: { id: string; label: string }[] = [
+  { id: "analytics", label: "Analytics" },
+  { id: "projects", label: "Projects" },
+  { id: "deliverables", label: "Deliverables" },
+  { id: "activity", label: "Activity Feed" },
+  { id: "documents", label: "Documents" },
+  { id: "meetings", label: "Meetings" },
+  { id: "team", label: "Team" },
+  { id: "support", label: "Support Center" },
+  { id: "invoices", label: "Invoices" },
+  { id: "knowledge", label: "Knowledge Base" },
+  { id: "ai", label: "AI Project Manager" },
+  { id: "notifications", label: "Notifications" },
+];
+
+export type PortalSettings = {
+  visibleModules: string[];
+  showFinancials: boolean;
+  updatedAt: string | null;
+};
+
+function mapPortalSettings(row: any): PortalSettings {
+  return {
+    visibleModules: Array.isArray(row?.visible_modules)
+      ? row.visible_modules
+      : CLIENT_PORTAL_MODULES.map(m => m.id),
+    showFinancials: row?.show_financials ?? true,
+    updatedAt: row?.updated_at || null,
+  };
+}
+
+export async function fetchPortalSettings(): Promise<PortalSettings> {
+  const { data, error } = await supabase.functions.invoke("manage-portal-settings", {
+    body: { action: "get" },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return mapPortalSettings(data?.settings);
+}
+
+export async function updatePortalSettings(input: {
+  visibleModules: string[];
+  showFinancials: boolean;
+}): Promise<PortalSettings> {
+  const { data, error } = await supabase.functions.invoke("manage-portal-settings", {
+    body: {
+      action: "update",
+      visible_modules: input.visibleModules,
+      show_financials: input.showFinancials,
+    },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return mapPortalSettings(data?.settings);
+}
+
+/**
+ * "Enable Client Portal for this client" (Client Profiles, CEO/Superadmin
+ * only) — creates or resets their client-erp login via the
+ * enable-client-portal-access Edge Function (server-side, since it needs
+ * client-erp's service role key), and best-effort emails them the
+ * credentials via Gmail SMTP once GMAIL_SMTP_USER/GMAIL_SMTP_APP_PASSWORD
+ * secrets are set. Always returns the credentials so the caller can show
+ * them in the UI regardless of whether the email actually went out.
+ */
+export type ClientPortalAccessResult = {
+  email: string;
+  password: string;
+  portalUrl: string | null;
+  emailSent: boolean;
+  emailError?: string;
+};
+
+export async function enableClientPortalAccess(leadId: string | number): Promise<ClientPortalAccessResult> {
+  const { data, error } = await supabase.functions.invoke("enable-client-portal-access", {
+    body: { leadId },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return {
+    email: data.email,
+    password: data.password,
+    portalUrl: data.portalUrl ?? null,
+    emailSent: !!data.emailSent,
+    emailError: data.emailError,
+  };
+}

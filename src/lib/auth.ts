@@ -564,6 +564,11 @@ export function canTagAnyoneInTicket(role: string) {
   return role === "ceo" || role === "superadmin";
 }
 
+/** Client Portal Control module — controls the separate client-erp app. CEO/Superadmin only. */
+export function canManageClientPortal(role: string) {
+  return role === "ceo" || role === "superadmin";
+}
+
 export function isExecutiveProfile(profile: { name: string; role: string; dept: string }) {
   return (
     profile.dept === "Executive" ||

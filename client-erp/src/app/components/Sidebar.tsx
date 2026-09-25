@@ -38,14 +38,18 @@ interface SidebarProps {
   organizationName?: string;
   organizationPlan?: string;
   badges?: SidebarBadges;
+  /** Module ids to hide — driven by Client Portal Control settings. Never applied for admin accounts. */
+  hiddenIds?: string[];
 }
 
 export function Sidebar({
   active, onNavigate,
   userName = "—", userRole = "", userInitials = "?", onSignOut,
-  organizationName, organizationPlan, badges,
+  organizationName, organizationPlan, badges, hiddenIds,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
+  const hidden = new Set(hiddenIds ?? []);
+  const visibleNavItems = navItems.filter(item => !hidden.has(item.id));
 
   const badgeByNavId: Record<string, number | undefined> = {
     deliverables: badges?.approvals,
@@ -124,7 +128,7 @@ export function Sidebar({
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto py-2 px-2">
-        {navItems.map((item) => {
+        {visibleNavItems.map((item) => {
           const Icon = item.icon;
           const isActive = active === item.id;
           return (

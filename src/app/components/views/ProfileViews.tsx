@@ -2,8 +2,9 @@ import React, { useState, useEffect, useMemo } from "react";
 import {
   ChevronLeft, Mail, Phone, MapPin, Calendar, Plus, Camera,
   Target, Activity, Clock, Monitor, Users, Briefcase, Layers, ShieldAlert,
-  UserCog, UserX, UserCheck, Pencil, Search,
+  UserCog, UserX, UserCheck, Pencil, Search, KeyRound, Copy, X, Check,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Avatar, Badge } from "../ui";
 import { DataLoading, DataError, DataEmpty } from "../ui/DataStatus";
 import { useEmployeeProfiles, useLeadsAsClients, useProjectTasks, useProjects, useAttendance, useLeaveRequests } from "@/hooks/useSupabaseData";
@@ -11,11 +12,12 @@ import {
   createEmployee, createLead, createProject, assignProjectTeam,
   updateEmployeeProfile, getEmployeeProjects, getEmployeeRecentTasks,
   buildWeeklyHoursFromAttendance, initialsFromName, findProfileForUser,
+  enableClientPortalAccess, type ClientPortalAccessResult,
   type EmployeeProfile,
 } from "@/lib/database";
 import { SHIFT_START_OPTIONS, formatShiftStartLabel } from "@/lib/shiftTimeline";
 import { ProfilePhotoUpload } from "../ProfilePhotoUpload";
-import { APP_ROLE_OPTIONS, isAdminRole, isExecutiveProfile, signUpWithRole, canSeeClientRevenue } from "@/lib/auth";
+import { APP_ROLE_OPTIONS, isAdminRole, isExecutiveProfile, signUpWithRole, canSeeClientRevenue, canManageClientPortal } from "@/lib/auth";
 import { isPersonalTaskRole } from "@/lib/database";
 import {
   isValidEmail,
@@ -612,6 +614,80 @@ export function EmployeeProfilePage({
 
 const CLIENT_DETAIL_ROLES = new Set(["teamlead", "ceo", "hr", "superadmin"]);
 
+function CopyField({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      toast.error("Couldn't copy — select and copy manually.");
+    }
+  };
+  return (
+    <div>
+      <p className="text-[10px] font-['Geist_Mono'] text-[#6b7fa8] uppercase tracking-wide mb-1">{label}</p>
+      <div className="flex items-center gap-2 bg-[#131a35] border border-[rgba(99,102,241,0.15)] rounded-lg px-3 py-2">
+        <span className="flex-1 text-sm text-[#e2e8f7] font-['Geist_Mono'] break-all">{value}</span>
+        <button onClick={copy} className="text-[#6b7fa8] hover:text-white shrink-0" title="Copy">
+          {copied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ClientPortalCredentialsModal({
+  clientName, result, onClose,
+}: {
+  clientName: string;
+  result: ClientPortalAccessResult;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="bg-[#0d1326] border border-[rgba(99,102,241,0.2)] rounded-2xl p-6 w-full max-w-md shadow-2xl">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-base font-bold text-white font-['Plus_Jakarta_Sans'] flex items-center gap-2">
+            <KeyRound size={16} className="text-indigo-400" /> Portal Access Enabled
+          </h3>
+          <button onClick={onClose} className="text-[#6b7fa8] hover:text-white"><X size={18} /></button>
+        </div>
+        <p className="text-xs text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mb-4">{clientName} can now log in to the Client Portal.</p>
+
+        {result.emailSent ? (
+          <div className="mb-4 px-3 py-2.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-xs text-emerald-300 font-['Plus_Jakarta_Sans']">
+            Credentials emailed to {result.email}.
+          </div>
+        ) : (
+          <div className="mb-4 px-3 py-2.5 bg-amber-500/10 border border-amber-500/20 rounded-lg text-xs text-amber-300 font-['Plus_Jakarta_Sans']">
+            Email wasn't sent ({result.emailError || "no email provider configured yet"}) — copy the credentials below and share them with the client directly.
+          </div>
+        )}
+
+        <div className="space-y-3">
+          <CopyField label="Email" value={result.email} />
+          <CopyField label="Password" value={result.password} />
+          {result.portalUrl && <CopyField label="Portal Link" value={result.portalUrl} />}
+          {!result.portalUrl && (
+            <p className="text-[10px] text-[#6b7fa8] font-['Plus_Jakarta_Sans']">
+              Portal link not configured yet — set the CLIENT_ERP_PORTAL_URL secret once client-erp has a deployed URL.
+            </p>
+          )}
+        </div>
+
+        <button
+          onClick={onClose}
+          className="w-full mt-5 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-xl transition-colors"
+        >
+          Done
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function ClientDetailPage({
   onBack,
   onNavigate,
@@ -623,6 +699,8 @@ export function ClientDetailPage({
 }) {
   const { data: clientProfiles, loading, error } = useLeadsAsClients();
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [enablingPortal, setEnablingPortal] = useState(false);
+  const [portalResult, setPortalResult] = useState<ClientPortalAccessResult | null>(null);
 
   if (!CLIENT_DETAIL_ROLES.has(userRole)) {
     return (
@@ -672,6 +750,23 @@ export function ClientDetailPage({
     : "text-blue-400 bg-blue-500/10 border-blue-500/20";
 
   const stageColor = client.stage === "Closed Won" ? "green" : client.stage === "Negotiation" ? "yellow" : client.stage === "Proposal Sent" ? "blue" : "blue";
+
+  const handleEnablePortal = async () => {
+    if (!client.email || client.email === "—") {
+      toast.error("Add an email for this client before enabling portal access.");
+      return;
+    }
+    setEnablingPortal(true);
+    try {
+      const result = await enableClientPortalAccess(client.id);
+      setPortalResult(result);
+      toast.success(result.emailSent ? "Portal access enabled and emailed." : "Portal access enabled.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to enable client portal access.");
+    } finally {
+      setEnablingPortal(false);
+    }
+  };
 
   return (
     <div className="space-y-5">
@@ -756,6 +851,23 @@ export function ClientDetailPage({
                 </div>
               ))}
             </div>
+            {canManageClientPortal(userRole) && (
+              <div className="flex items-center justify-between mt-5 pt-5 border-t border-[rgba(99,102,241,0.08)]">
+                <div>
+                  <p className="text-xs font-semibold text-white font-['Plus_Jakarta_Sans']">Client Portal Access</p>
+                  <p className="text-[10px] text-[#6b7fa8] font-['Plus_Jakarta_Sans'] mt-0.5">
+                    Creates their client-erp login and emails the credentials (or shows them here to share manually).
+                  </p>
+                </div>
+                <button
+                  onClick={handleEnablePortal}
+                  disabled={enablingPortal}
+                  className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-semibold rounded-xl transition-all disabled:opacity-50 shrink-0"
+                >
+                  <KeyRound size={13} /> {enablingPortal ? "Enabling..." : "Enable Client Portal"}
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="grid lg:grid-cols-2 gap-4">
@@ -821,6 +933,14 @@ export function ClientDetailPage({
           </div>
         </div>
       </div>
+
+      {portalResult && (
+        <ClientPortalCredentialsModal
+          clientName={client.company}
+          result={portalResult}
+          onClose={() => setPortalResult(null)}
+        />
+      )}
     </div>
   );
 }

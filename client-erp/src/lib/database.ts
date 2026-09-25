@@ -104,6 +104,42 @@ export async function fetchAllOrganizations(): Promise<Organization[]> {
   }));
 }
 
+/**
+ * Global "what does the client portal show" config — set from the main ERP's
+ * Client Portal Control module (CEO/Superadmin), never written to here.
+ * Same for every client; not per-organization.
+ */
+export type PortalSettings = {
+  visibleModules: string[];
+  showFinancials: boolean;
+};
+
+const DEFAULT_PORTAL_SETTINGS: PortalSettings = {
+  visibleModules: [
+    "analytics", "projects", "deliverables", "activity", "documents",
+    "meetings", "team", "support", "invoices", "knowledge", "ai", "notifications",
+  ],
+  showFinancials: true,
+};
+
+/** Falls back to "everything visible" on any error — a broken settings fetch should never lock clients out of the whole portal. */
+export async function fetchPortalSettings(): Promise<PortalSettings> {
+  try {
+    const { data, error } = await supabase
+      .from("portal_settings")
+      .select("visible_modules, show_financials")
+      .eq("id", "global")
+      .maybeSingle();
+    if (error || !data) return DEFAULT_PORTAL_SETTINGS;
+    return {
+      visibleModules: Array.isArray(data.visible_modules) ? data.visible_modules : DEFAULT_PORTAL_SETTINGS.visibleModules,
+      showFinancials: data.show_financials ?? true,
+    };
+  } catch {
+    return DEFAULT_PORTAL_SETTINGS;
+  }
+}
+
 // ==========================================
 // Projects
 // ==========================================
@@ -851,7 +887,6 @@ export type MeetingItem = {
   decisions: string[];
   actionItems: string[];
   recordingUrl: string | null;
-  meetLink: string | null;
 };
 
 function formatDuration(minutes: number | null): string {
@@ -922,7 +957,6 @@ export async function fetchMeetings(organizationId: string): Promise<MeetingItem
       decisions: (row.decisions as string[]) ?? [],
       actionItems: actionItemsByMeeting.get(row.id as string) ?? [],
       recordingUrl: (row.recording_url as string) ?? null,
-      meetLink: (row.meet_link as string) ?? null,
     };
   });
 }
@@ -949,20 +983,56 @@ export async function scheduleMeeting(organizationId: string, input: {
   if (error) throw error;
 }
 
-/** Lazily creates (once) and returns the Google Meet link for a scheduled meeting — same link every time it's called for that meeting, so the client and the team land in the same room without ever exchanging a URL. */
-export async function joinScheduledMeeting(meetingId: string): Promise<string> {
-  const { data, error } = await supabase.functions.invoke("create-meet-link", { body: { mode: "scheduled", meetingId } });
-  if (error) throw error;
-  if (data?.error) throw new Error(data.error);
-  return data.meetLink as string;
+/**
+ * Jitsi (meet.jit.si) needs no API key, no server call, and no stored link at
+ * all — a room is just a name, created implicitly the moment the first person
+ * joins it. Deriving the name from the meeting's own id means the client and
+ * the team always land in the exact same room for that meeting, forever,
+ * with nothing to persist or look up.
+ */
+export function getMeetingRoomName(meetingId: string): string {
+  return `b2bcep-${meetingId.replace(/-/g, "")}`;
 }
 
-/** A fresh, ad-hoc Google Meet link for "start a meeting right now" — not persisted anywhere. */
-export async function startInstantMeeting(organizationId: string): Promise<string> {
-  const { data, error } = await supabase.functions.invoke("create-meet-link", { body: { mode: "instant", organizationId } });
-  if (error) throw error;
-  if (data?.error) throw new Error(data.error);
-  return data.meetLink as string;
+/**
+ * "Start Meeting" (instant, ad-hoc). Reuses today's "Instant Meeting" row for
+ * the org's primary project if one was already started (so whichever side
+ * clicks first, the other lands in the same room), otherwise creates one.
+ */
+export async function startInstantMeeting(organizationId: string): Promise<{ meetingId: string; roomName: string }> {
+  const project = await fetchPrimaryProject(organizationId);
+  if (!project) throw new Error("No project found to start a meeting on.");
+
+  const todayDate = new Date().toISOString().slice(0, 10);
+  const recentCutoff = new Date(Date.now() - 4 * 3600000).toISOString();
+
+  const { data: existing, error: existingErr } = await supabase
+    .from("meetings")
+    .select("id")
+    .eq("project_id", project.id)
+    .eq("title", "Instant Meeting")
+    .eq("meeting_date", todayDate)
+    .gte("created_at", recentCutoff)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (existingErr) throw existingErr;
+
+  if (existing) return { meetingId: existing.id as string, roomName: getMeetingRoomName(existing.id as string) };
+
+  const { data: created, error: insertErr } = await supabase
+    .from("meetings")
+    .insert({
+      project_id: project.id,
+      title: "Instant Meeting",
+      meeting_date: todayDate,
+      start_time: new Date().toISOString().slice(11, 19),
+    })
+    .select("id")
+    .single();
+  if (insertErr) throw insertErr;
+
+  return { meetingId: created.id as string, roomName: getMeetingRoomName(created.id as string) };
 }
 
 // ==========================================

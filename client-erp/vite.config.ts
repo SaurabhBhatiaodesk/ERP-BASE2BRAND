@@ -33,4 +33,14 @@ export default defineConfig({
 
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
   assetsInclude: ['**/*.svg', '**/*.csv'],
+
+  // Fixed, separate from the main ERP's dev server (also 5173 by default).
+  // Without this, whichever app's `npm run dev` starts second/restarts takes
+  // over port 5173, and the main ERP's Electron shell (which always loads
+  // http://localhost:5173 in dev) silently ends up showing client-erp's
+  // login screen instead of its own app.
+  server: {
+    port: 5174,
+    strictPort: true,
+  },
 })
