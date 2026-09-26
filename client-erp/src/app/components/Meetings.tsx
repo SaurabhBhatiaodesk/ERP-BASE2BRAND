@@ -1,6 +1,13 @@
-import { useEffect, useState } from "react";
-import { Video, CalendarDays, Clock, PlayCircle, Sparkles, CheckSquare, Loader2, PhoneCall, X } from "lucide-react";
-import { fetchMeetings, scheduleMeeting, getMeetingRoomName, startInstantMeeting, type MeetingItem, type MeetingType } from "@/lib/database";
+import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+import { Video, CalendarDays, Clock, PlayCircle, Sparkles, CheckSquare, Loader2, PhoneCall, X, FileText } from "lucide-react";
+import {
+  fetchMeetings, scheduleMeeting, getMeetingRoomName, startInstantMeeting,
+  saveMeetingRecordingUrl, transcribeMeetingRecording,
+  type MeetingItem, type MeetingType,
+} from "@/lib/database";
+import { canRecordTab, startMeetingRecording, stopMeetingRecording, type ActiveRecording } from "@/lib/meetingRecording";
+import { uploadMeetingRecording } from "@/lib/cloudinary";
 import { JitsiMeetEmbed } from "./JitsiMeetEmbed";
 
 function GlassCard({ children, className = "", style = {} }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) {
@@ -128,14 +135,16 @@ function ScheduleMeetingDialog({ organizationId, onClose, onScheduled }: { organ
   );
 }
 
-export function Meetings({ organizationId, personName }: { organizationId?: string; personName?: string }) {
+export function Meetings({ organizationId, personName, canRecord = false }: { organizationId?: string; personName?: string; canRecord?: boolean }) {
   const [meetings, setMeetings] = useState<MeetingItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [startingInstant, setStartingInstant] = useState(false);
   const [meetingError, setMeetingError] = useState("");
   const [showScheduleDialog, setShowScheduleDialog] = useState(false);
-  const [activeMeeting, setActiveMeeting] = useState<{ roomName: string; title: string } | null>(null);
+  const [activeMeeting, setActiveMeeting] = useState<{ meetingId: string; roomName: string; title: string } | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const recordingRef = useRef<ActiveRecording | null>(null);
 
   const load = () => {
     if (!organizationId) {
@@ -164,17 +173,68 @@ export function Meetings({ organizationId, personName }: { organizationId?: stri
   const upcoming = meetings.filter(m => !m.isPast);
   const past = meetings.filter(m => m.isPast);
 
-  const handleJoin = (meet: MeetingItem) => {
+  /**
+   * Must be the FIRST await in its caller (a direct button onClick) — Chrome
+   * only allows getDisplayMedia() while a user gesture is still "active",
+   * which an intervening await would consume. Never blocks joining the
+   * meeting: if the user declines the share prompt (or it errors), the
+   * meeting still opens, it's just not recorded this time.
+   */
+  const tryStartRecording = async () => {
+    if (!canRecord || !canRecordTab()) {
+      console.warn("[meetingRecording] skipped:", { canRecord, canRecordTab: canRecordTab(), isSecureContext: typeof window !== "undefined" && window.isSecureContext });
+      return;
+    }
+    try {
+      recordingRef.current = await startMeetingRecording();
+      setIsRecording(true);
+    } catch (err) {
+      console.error("[meetingRecording] failed to start:", err);
+      recordingRef.current = null;
+      const reason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      toast.info(`Meeting not recorded (${reason}).`, { duration: 8000 });
+    }
+  };
+
+  const processRecording = async (meetingId: string) => {
+    const active = recordingRef.current;
+    recordingRef.current = null;
+    setIsRecording(false);
+    if (!active) return;
+
+    const toastId = toast.loading("Saving meeting recording...");
+    try {
+      console.log("[meetingRecording] stopping...");
+      const blob = await stopMeetingRecording(active);
+      console.log("[meetingRecording] stopped, uploading...", blob.size, "bytes");
+      const recordingUrl = await uploadMeetingRecording(blob, meetingId);
+      console.log("[meetingRecording] uploaded:", recordingUrl);
+      await saveMeetingRecordingUrl(meetingId, recordingUrl);
+      console.log("[meetingRecording] saved recording_url, transcribing...");
+      toast.loading("Transcribing meeting...", { id: toastId });
+      await transcribeMeetingRecording(meetingId, recordingUrl);
+      console.log("[meetingRecording] transcribed.");
+      toast.success("Recording saved and transcribed.", { id: toastId });
+      load();
+    } catch (err) {
+      console.error("[meetingRecording] processRecording failed:", err);
+      toast.error(err instanceof Error ? err.message : "Failed to save/transcribe the recording.", { id: toastId });
+    }
+  };
+
+  const handleJoin = async (meet: MeetingItem) => {
     setMeetingError("");
-    setActiveMeeting({ roomName: getMeetingRoomName(meet.id), title: meet.title });
+    await tryStartRecording();
+    setActiveMeeting({ meetingId: meet.id, roomName: getMeetingRoomName(meet.id), title: meet.title });
   };
 
   const handleStartInstant = async () => {
     setMeetingError("");
     setStartingInstant(true);
     try {
-      const { roomName } = await startInstantMeeting(organizationId);
-      setActiveMeeting({ roomName, title: "Instant Meeting" });
+      await tryStartRecording();
+      const { meetingId, roomName } = await startInstantMeeting(organizationId);
+      setActiveMeeting({ meetingId, roomName, title: "Instant Meeting" });
       load(); // so the client sees it appear in Upcoming Meetings once they're in the call
     } catch (err) {
       setMeetingError(err instanceof Error ? err.message : "Couldn't start the meeting.");
@@ -194,7 +254,13 @@ export function Meetings({ organizationId, personName }: { organizationId?: stri
           roomName={activeMeeting.roomName}
           title={activeMeeting.title}
           displayName={personName ?? "Guest"}
-          onClose={() => { setActiveMeeting(null); load(); }}
+          recording={isRecording}
+          onClose={() => {
+            const meetingId = activeMeeting.meetingId;
+            setActiveMeeting(null);
+            load();
+            void processRecording(meetingId);
+          }}
         />
       )}
 
@@ -316,19 +382,33 @@ export function Meetings({ organizationId, personName }: { organizationId?: stri
                       <p style={{ color: "#8891B8", fontSize: 12 }}>{meet.dateLabel} · {meet.durationLabel}</p>
                     </div>
                   </div>
-                  {meet.recordingUrl && (
-                    <a
-                      href={meet.recordingUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex items-center gap-1.5 rounded-lg px-3 py-1.5"
-                      style={{ background: "rgba(255,255,255,0.06)", color: "#8891B8", fontSize: 12 }}
-                    >
-                      <PlayCircle size={13} />
-                      Recording
-                    </a>
-                  )}
                 </div>
+
+                {meet.recordingUrl && (
+                  <details className="rounded-lg mb-4" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                    <summary className="flex items-center justify-between gap-2 p-3 cursor-pointer select-none">
+                      <span className="flex items-center gap-2" style={{ color: "#8891B8", fontSize: 11, fontWeight: 600 }}>
+                        <PlayCircle size={12} /> View Recording
+                      </span>
+                      <a
+                        href={meet.recordingUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ color: "#8891B8", fontSize: 11 }}
+                      >
+                        Open Original
+                      </a>
+                    </summary>
+                    <video
+                      controls
+                      preload="metadata"
+                      src={meet.recordingUrl}
+                      className="w-full rounded-b-lg"
+                      style={{ maxHeight: 340, background: "#000" }}
+                    />
+                  </details>
+                )}
 
                 {meet.aiSummary && (
                   <div className="rounded-lg p-4 mb-4" style={{ background: "rgba(123,92,245,0.08)", border: "1px solid rgba(123,92,245,0.15)" }}>
@@ -338,6 +418,15 @@ export function Meetings({ organizationId, personName }: { organizationId?: stri
                     </div>
                     <p style={{ color: "#C4C8E0", fontSize: 12, lineHeight: 1.7 }}>{meet.aiSummary}</p>
                   </div>
+                )}
+
+                {meet.transcript && (
+                  <details className="rounded-lg mb-4" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                    <summary className="flex items-center gap-2 p-3 cursor-pointer select-none" style={{ color: "#8891B8", fontSize: 11, fontWeight: 600 }}>
+                      <FileText size={12} /> View Full Transcript
+                    </summary>
+                    <p className="px-3 pb-3" style={{ color: "#C4C8E0", fontSize: 12, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>{meet.transcript}</p>
+                  </details>
                 )}
 
                 {(meet.actionItems.length > 0 || meet.decisions.length > 0) && (

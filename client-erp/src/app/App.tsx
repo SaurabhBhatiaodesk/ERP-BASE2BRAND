@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
+import { Toaster } from "sonner";
 import { ChevronDown, Globe2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { getCurrentPerson, signOut, fetchAllOrganizations, fetchSidebarBadges, fetchPortalSettings, type CurrentPersonContext, type Organization, type SidebarBadgeCounts, type PortalSettings } from "@/lib/database";
@@ -35,7 +36,7 @@ function buildPageMap(
     deliverables: <Deliverables organizationId={orgId} />,
     activity: <ActivityFeed organizationId={orgId} />,
     documents: <Documents organizationId={orgId} />,
-    meetings: <Meetings organizationId={orgId} personName={personName} />,
+    meetings: <Meetings organizationId={orgId} personName={personName} canRecord={context.person.kind === "admin"} />,
     team: <Team organizationId={orgId} />,
     support: <SupportCenter organizationId={orgId} personName={personName} />,
     invoices: <Billing organizationId={orgId} />,
@@ -280,6 +281,7 @@ export default function App() {
         minHeight: "100vh",
       }}
     >
+      <Toaster theme="dark" position="top-right" richColors />
       {/* Background glow effects */}
       <div
         className="fixed pointer-events-none"

@@ -35,10 +35,11 @@ function loadJitsiScript(): Promise<void> {
  * Google Meet, which refuses to be framed at all (X-Frame-Options: SAMEORIGIN),
  * this actually renders the live call inside our own page, full-screen overlay.
  */
-export function JitsiMeetEmbed({ roomName, title, displayName, onClose }: {
+export function JitsiMeetEmbed({ roomName, title, displayName, recording = false, onClose }: {
   roomName: string;
   title: string;
   displayName: string;
+  recording?: boolean;
   onClose: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -77,7 +78,15 @@ export function JitsiMeetEmbed({ roomName, title, displayName, onClose }: {
   return (
     <div className="fixed inset-0 flex flex-col" style={{ zIndex: 100, background: "#000" }}>
       <div className="flex items-center justify-between px-4 py-3 flex-shrink-0" style={{ background: "#0B0E28", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-        <p style={{ color: "#E2E4F0", fontSize: 13, fontWeight: 600 }}>{title}</p>
+        <div className="flex items-center gap-2">
+          <p style={{ color: "#E2E4F0", fontSize: 13, fontWeight: 600 }}>{title}</p>
+          {recording && (
+            <span className="flex items-center gap-1.5 rounded-full px-2 py-0.5" style={{ background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)" }}>
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#EF4444", animation: "pulse 2s infinite" }} />
+              <span style={{ color: "#F87171", fontSize: 10, fontWeight: 600 }}>Recording</span>
+            </span>
+          )}
+        </div>
         <button onClick={onClose} className="rounded-lg p-1.5" style={{ color: "#8891B8" }}>
           <X size={18} />
         </button>

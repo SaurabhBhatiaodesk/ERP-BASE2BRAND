@@ -887,6 +887,7 @@ export type MeetingItem = {
   decisions: string[];
   actionItems: string[];
   recordingUrl: string | null;
+  transcript: string | null;
 };
 
 function formatDuration(minutes: number | null): string {
@@ -933,10 +934,16 @@ export async function fetchMeetings(organizationId: string): Promise<MeetingItem
   }
 
   const todayKey = new Date().toISOString().slice(0, 10);
+  // A meeting already recorded/transcribed (e.g. an ad-hoc call held ahead of
+  // its originally scheduled date) counts as "past" regardless of its
+  // meeting_date — otherwise its recording/transcript/summary would sit under
+  // "Upcoming", which never renders any of that, and look like it vanished.
+  const isRowPast = (r: (typeof meetingRows)[number]) =>
+    (r.meeting_date as string) < todayKey || Boolean(r.recording_url) || Boolean(r.transcript);
   const upcomingRows = meetingRows
-    .filter(r => (r.meeting_date as string) >= todayKey)
+    .filter(r => !isRowPast(r))
     .sort((a, b) => (a.meeting_date as string).localeCompare(b.meeting_date as string));
-  const pastRows = meetingRows.filter(r => (r.meeting_date as string) < todayKey); // already newest-first from the query order
+  const pastRows = meetingRows.filter(isRowPast); // already newest-first from the query order
 
   return [...upcomingRows, ...pastRows].map(row => {
     const attendeeRows = (row.meeting_attendees as unknown as { people: Record<string, unknown> | null }[]) ?? [];
@@ -952,11 +959,12 @@ export async function fetchMeetings(organizationId: string): Promise<MeetingItem
       durationLabel: formatDuration((row.duration_minutes as number) ?? null),
       type: (row.type as MeetingType) ?? null,
       attendeeInitials,
-      isPast: meetingDate < todayKey,
+      isPast: isRowPast(row),
       aiSummary: (row.ai_summary as string) ?? null,
       decisions: (row.decisions as string[]) ?? [],
       actionItems: actionItemsByMeeting.get(row.id as string) ?? [],
       recordingUrl: (row.recording_url as string) ?? null,
+      transcript: (row.transcript as string) ?? null,
     };
   });
 }
@@ -1033,6 +1041,32 @@ export async function startInstantMeeting(organizationId: string): Promise<{ mee
   if (insertErr) throw insertErr;
 
   return { meetingId: created.id as string, roomName: getMeetingRoomName(created.id as string) };
+}
+
+/** Called once the recorded blob is uploaded to Cloudinary — links it to the meeting row. */
+export async function saveMeetingRecordingUrl(meetingId: string, recordingUrl: string): Promise<void> {
+  const { error } = await supabase.from("meetings").update({ recording_url: recordingUrl }).eq("id", meetingId);
+  if (error) throw error;
+}
+
+export type MeetingTranscriptionResult = {
+  transcript: string;
+  aiSummary: string | null;
+  decisions: string[];
+};
+
+/** Transcribes the recording (OpenAI Whisper, via your API key) and derives a summary/decisions from it — both get saved onto the meeting row by the Edge Function itself. */
+export async function transcribeMeetingRecording(meetingId: string, recordingUrl: string): Promise<MeetingTranscriptionResult> {
+  const { data, error } = await supabase.functions.invoke("transcribe-meeting-recording", {
+    body: { meetingId, recordingUrl },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return {
+    transcript: data.transcript ?? "",
+    aiSummary: data.aiSummary ?? null,
+    decisions: Array.isArray(data.decisions) ? data.decisions : [],
+  };
 }
 
 // ==========================================
