@@ -8242,6 +8242,552 @@ export async function updatePortalSettings(input: {
   return mapPortalSettings(data?.settings);
 }
 
+// ─── Client Portal Control — per-client content (CEO/Superadmin only) ─────
+// Lets Base2Brand staff directly manage what an individual client sees in
+// client-erp (documents today; the same pattern extends to deliverables,
+// team, invoices, activity feed). Every read/write goes through an Edge
+// Function on THIS project that re-verifies CEO/Superadmin and holds the
+// only credentials that can reach client-erp's database — never called
+// directly from client-erp, and client-erp never talks back to this project.
+
+export type PortalClient = {
+  organizationId: string;
+  organizationName: string;
+  /** null when the org has no project yet — nothing to attach content to. */
+  projectId: string | null;
+  projectName: string | null;
+};
+
+export async function listPortalClients(): Promise<PortalClient[]> {
+  const { data, error } = await supabase.functions.invoke("list-portal-clients", { body: {} });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return ((data?.clients ?? []) as any[]).map(c => ({
+    organizationId: c.organizationId,
+    organizationName: c.organizationName,
+    projectId: c.projectId ?? null,
+    projectName: c.projectName ?? null,
+  }));
+}
+
+export type PortalDocumentCategory = "contracts" | "invoices" | "design" | "reports" | "meetings" | "brand";
+
+export const PORTAL_DOCUMENT_CATEGORIES: { id: PortalDocumentCategory; label: string }[] = [
+  { id: "contracts", label: "Contracts" },
+  { id: "invoices", label: "Invoices" },
+  { id: "design", label: "Design Files" },
+  { id: "reports", label: "Reports" },
+  { id: "meetings", label: "Meeting Notes" },
+  { id: "brand", label: "Brand Assets" },
+];
+
+export type PortalDocument = {
+  id: string;
+  name: string;
+  category: PortalDocumentCategory;
+  fileUrl: string | null;
+  fileType: string | null;
+  fileSizeBytes: number | null;
+  createdAt: string;
+};
+
+function mapPortalDocument(row: any): PortalDocument {
+  return {
+    id: row.id,
+    name: row.name,
+    category: row.category,
+    fileUrl: row.file_url ?? null,
+    fileType: row.file_type ?? null,
+    fileSizeBytes: row.file_size_bytes ?? null,
+    createdAt: row.created_at,
+  };
+}
+
+export async function fetchPortalDocuments(projectId: string): Promise<PortalDocument[]> {
+  const { data, error } = await supabase.functions.invoke("manage-client-documents", {
+    body: { action: "list", project_id: projectId },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return ((data?.documents ?? []) as any[]).map(mapPortalDocument);
+}
+
+export async function createPortalDocument(input: {
+  projectId: string;
+  name: string;
+  category: PortalDocumentCategory;
+  fileUrl?: string | null;
+  fileType?: string | null;
+  fileSizeBytes?: number | null;
+}): Promise<PortalDocument> {
+  const { data, error } = await supabase.functions.invoke("manage-client-documents", {
+    body: {
+      action: "create",
+      project_id: input.projectId,
+      name: input.name,
+      category: input.category,
+      file_url: input.fileUrl ?? null,
+      file_type: input.fileType ?? null,
+      file_size_bytes: input.fileSizeBytes ?? null,
+    },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return mapPortalDocument(data.document);
+}
+
+export async function updatePortalDocument(id: string, input: { name?: string; category?: PortalDocumentCategory }): Promise<PortalDocument> {
+  const { data, error } = await supabase.functions.invoke("manage-client-documents", {
+    body: { action: "update", id, ...input },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return mapPortalDocument(data.document);
+}
+
+export async function deletePortalDocument(id: string): Promise<void> {
+  const { data, error } = await supabase.functions.invoke("manage-client-documents", {
+    body: { action: "delete", id },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+}
+
+// ─── Client Portal Control — Projects ──────────────────────────────────────
+// Unlike the other per-client tabs (scoped to the org's one "primary"
+// project), Projects itself operates on ALL of an org's projects — it's
+// also the only way to give an org its first project, which every other
+// tab depends on existing. Coexists with the sync-project-to-client-portal
+// webhook (still auto-syncs a matched main-ERP project on every save) —
+// this just adds direct editing for fields the sync doesn't touch, and for
+// projects that never had a confident lead-name match to sync from.
+
+export type PortalProjectStatus = "active" | "completed" | "planning";
+export const PORTAL_PROJECT_STATUSES: PortalProjectStatus[] = ["active", "completed", "planning"];
+
+export type PortalProject = {
+  id: string;
+  name: string;
+  category: string | null;
+  status: PortalProjectStatus;
+  progressPct: number;
+  budgetTotal: number | null;
+  budgetUsed: number;
+  startDate: string | null;
+  launchDate: string | null;
+  description: string | null;
+  updatedAt: string;
+};
+
+function mapPortalProject(row: any): PortalProject {
+  return {
+    id: row.id,
+    name: row.name,
+    category: row.category ?? null,
+    status: row.status,
+    progressPct: row.progress_pct ?? 0,
+    budgetTotal: row.budget_total !== null && row.budget_total !== undefined ? Number(row.budget_total) : null,
+    budgetUsed: Number(row.budget_used ?? 0),
+    startDate: row.start_date ?? null,
+    launchDate: row.launch_date ?? null,
+    description: row.description ?? null,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function fetchPortalProjects(organizationId: string): Promise<PortalProject[]> {
+  const { data, error } = await supabase.functions.invoke("manage-client-projects", {
+    body: { action: "list", organization_id: organizationId },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return ((data?.projects ?? []) as any[]).map(mapPortalProject);
+}
+
+export async function createPortalProject(input: {
+  organizationId: string;
+  name: string;
+  category?: string;
+  status?: PortalProjectStatus;
+  description?: string;
+}): Promise<PortalProject> {
+  const { data, error } = await supabase.functions.invoke("manage-client-projects", {
+    body: {
+      action: "create",
+      organization_id: input.organizationId,
+      name: input.name,
+      category: input.category ?? null,
+      status: input.status ?? "planning",
+      description: input.description ?? null,
+    },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return mapPortalProject(data.project);
+}
+
+export async function updatePortalProject(
+  id: string,
+  input: {
+    name?: string;
+    category?: string;
+    status?: PortalProjectStatus;
+    progressPct?: number;
+    budgetTotal?: number | null;
+    budgetUsed?: number;
+    startDate?: string;
+    launchDate?: string;
+    description?: string;
+  }
+): Promise<PortalProject> {
+  const { data, error } = await supabase.functions.invoke("manage-client-projects", {
+    body: {
+      action: "update",
+      id,
+      name: input.name,
+      category: input.category,
+      status: input.status,
+      progress_pct: input.progressPct,
+      budget_total: input.budgetTotal,
+      budget_used: input.budgetUsed,
+      start_date: input.startDate,
+      launch_date: input.launchDate,
+      description: input.description,
+    },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return mapPortalProject(data.project);
+}
+
+export async function deletePortalProject(id: string): Promise<void> {
+  const { data, error } = await supabase.functions.invoke("manage-client-projects", {
+    body: { action: "delete", id },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+}
+
+export type PortalMilestoneStatus = "done" | "active" | "upcoming";
+export const PORTAL_MILESTONE_STATUSES: PortalMilestoneStatus[] = ["done", "active", "upcoming"];
+
+export type PortalMilestone = {
+  id: string;
+  label: string;
+  status: PortalMilestoneStatus;
+  sortOrder: number;
+};
+
+function mapPortalMilestone(row: any): PortalMilestone {
+  return { id: row.id, label: row.label, status: row.status, sortOrder: row.sort_order ?? 0 };
+}
+
+export async function fetchPortalMilestones(projectId: string): Promise<PortalMilestone[]> {
+  const { data, error } = await supabase.functions.invoke("manage-client-projects", {
+    body: { action: "list_milestones", project_id: projectId },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return ((data?.milestones ?? []) as any[]).map(mapPortalMilestone);
+}
+
+export async function createPortalMilestone(projectId: string, label: string): Promise<PortalMilestone> {
+  const { data, error } = await supabase.functions.invoke("manage-client-projects", {
+    body: { action: "create_milestone", project_id: projectId, label },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return mapPortalMilestone(data.milestone);
+}
+
+export async function updatePortalMilestone(id: string, input: { label?: string; status?: PortalMilestoneStatus }): Promise<PortalMilestone> {
+  const { data, error } = await supabase.functions.invoke("manage-client-projects", {
+    body: { action: "update_milestone", id, label: input.label, status: input.status },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return mapPortalMilestone(data.milestone);
+}
+
+export async function deletePortalMilestone(id: string): Promise<void> {
+  const { data, error } = await supabase.functions.invoke("manage-client-projects", {
+    body: { action: "delete_milestone", id },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+}
+
+// ─── Client Portal Control — Team (who's shown as assigned) ────────────────
+
+export type PortalStaffMember = {
+  id: string;
+  fullName: string;
+  initials: string | null;
+  role: string | null;
+  specialty: string | null;
+};
+
+export async function fetchPortalTeam(projectId: string): Promise<{ staff: PortalStaffMember[]; assignedPersonIds: string[] }> {
+  const { data, error } = await supabase.functions.invoke("manage-client-team", {
+    body: { action: "list", project_id: projectId },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return {
+    staff: ((data?.staff ?? []) as any[]).map(p => ({
+      id: p.id,
+      fullName: p.full_name,
+      initials: p.initials ?? null,
+      role: p.role ?? null,
+      specialty: p.specialty ?? null,
+    })),
+    assignedPersonIds: (data?.assignedPersonIds ?? []) as string[],
+  };
+}
+
+export async function assignPortalTeamMember(projectId: string, personId: string): Promise<void> {
+  const { data, error } = await supabase.functions.invoke("manage-client-team", {
+    body: { action: "assign", project_id: projectId, person_id: personId },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+}
+
+export async function unassignPortalTeamMember(projectId: string, personId: string): Promise<void> {
+  const { data, error } = await supabase.functions.invoke("manage-client-team", {
+    body: { action: "unassign", project_id: projectId, person_id: personId },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+}
+
+// ─── Client Portal Control — Deliverables ──────────────────────────────────
+
+export type PortalDeliverableType = "Design" | "Development" | "Report" | "Document";
+export type PortalDeliverableStatus = "pending" | "review" | "approved" | "changes";
+
+export const PORTAL_DELIVERABLE_TYPES: PortalDeliverableType[] = ["Design", "Development", "Report", "Document"];
+export const PORTAL_DELIVERABLE_STATUSES: PortalDeliverableStatus[] = ["pending", "review", "approved", "changes"];
+
+export type PortalDeliverable = {
+  id: string;
+  name: string;
+  type: PortalDeliverableType | null;
+  status: PortalDeliverableStatus;
+  currentVersion: string | null;
+  fileUrl: string | null;
+  fileSizeBytes: number | null;
+  createdAt: string;
+};
+
+function mapPortalDeliverable(row: any): PortalDeliverable {
+  return {
+    id: row.id,
+    name: row.name,
+    type: row.type ?? null,
+    status: row.status,
+    currentVersion: row.current_version ?? null,
+    fileUrl: row.file_url ?? null,
+    fileSizeBytes: row.file_size_bytes ?? null,
+    createdAt: row.created_at,
+  };
+}
+
+export async function fetchPortalDeliverables(projectId: string): Promise<PortalDeliverable[]> {
+  const { data, error } = await supabase.functions.invoke("manage-client-deliverables", {
+    body: { action: "list", project_id: projectId },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return ((data?.deliverables ?? []) as any[]).map(mapPortalDeliverable);
+}
+
+export async function createPortalDeliverable(input: {
+  projectId: string;
+  name: string;
+  type?: PortalDeliverableType;
+  status?: PortalDeliverableStatus;
+  currentVersion?: string;
+  fileUrl?: string | null;
+  fileSizeBytes?: number | null;
+}): Promise<PortalDeliverable> {
+  const { data, error } = await supabase.functions.invoke("manage-client-deliverables", {
+    body: {
+      action: "create",
+      project_id: input.projectId,
+      name: input.name,
+      type: input.type ?? null,
+      status: input.status ?? "pending",
+      current_version: input.currentVersion ?? null,
+      file_url: input.fileUrl ?? null,
+      file_size_bytes: input.fileSizeBytes ?? null,
+    },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return mapPortalDeliverable(data.deliverable);
+}
+
+export async function updatePortalDeliverable(
+  id: string,
+  input: { name?: string; type?: PortalDeliverableType; status?: PortalDeliverableStatus; currentVersion?: string }
+): Promise<PortalDeliverable> {
+  const { data, error } = await supabase.functions.invoke("manage-client-deliverables", {
+    body: { action: "update", id, name: input.name, type: input.type, status: input.status, current_version: input.currentVersion },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return mapPortalDeliverable(data.deliverable);
+}
+
+export async function deletePortalDeliverable(id: string): Promise<void> {
+  const { data, error } = await supabase.functions.invoke("manage-client-deliverables", {
+    body: { action: "delete", id },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+}
+
+// ─── Client Portal Control — Invoices ──────────────────────────────────────
+
+export type PortalInvoiceStatus = "paid" | "pending" | "overdue";
+export const PORTAL_INVOICE_STATUSES: PortalInvoiceStatus[] = ["paid", "pending", "overdue"];
+
+export type PortalInvoice = {
+  id: string;
+  invoiceNumber: string;
+  description: string | null;
+  amount: number;
+  paidAmount: number;
+  issueDate: string;
+  dueDate: string;
+  status: PortalInvoiceStatus;
+};
+
+function mapPortalInvoice(row: any): PortalInvoice {
+  return {
+    id: row.id,
+    invoiceNumber: row.invoice_number,
+    description: row.description ?? null,
+    amount: Number(row.amount),
+    paidAmount: Number(row.paid_amount ?? 0),
+    issueDate: row.issue_date,
+    dueDate: row.due_date,
+    status: row.status,
+  };
+}
+
+export async function fetchPortalInvoices(projectId: string): Promise<PortalInvoice[]> {
+  const { data, error } = await supabase.functions.invoke("manage-client-invoices", {
+    body: { action: "list", project_id: projectId },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return ((data?.invoices ?? []) as any[]).map(mapPortalInvoice);
+}
+
+export async function createPortalInvoice(input: {
+  projectId: string;
+  invoiceNumber: string;
+  description?: string;
+  amount: number;
+  paidAmount?: number;
+  issueDate: string;
+  dueDate: string;
+  status?: PortalInvoiceStatus;
+}): Promise<PortalInvoice> {
+  const { data, error } = await supabase.functions.invoke("manage-client-invoices", {
+    body: {
+      action: "create",
+      project_id: input.projectId,
+      invoice_number: input.invoiceNumber,
+      description: input.description ?? null,
+      amount: input.amount,
+      paid_amount: input.paidAmount ?? 0,
+      issue_date: input.issueDate,
+      due_date: input.dueDate,
+      status: input.status ?? "pending",
+    },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return mapPortalInvoice(data.invoice);
+}
+
+export async function updatePortalInvoice(
+  id: string,
+  input: { description?: string; amount?: number; paidAmount?: number; status?: PortalInvoiceStatus; dueDate?: string }
+): Promise<PortalInvoice> {
+  const { data, error } = await supabase.functions.invoke("manage-client-invoices", {
+    body: {
+      action: "update",
+      id,
+      description: input.description,
+      amount: input.amount,
+      paid_amount: input.paidAmount,
+      status: input.status,
+      due_date: input.dueDate,
+    },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return mapPortalInvoice(data.invoice);
+}
+
+export async function deletePortalInvoice(id: string): Promise<void> {
+  const { data, error } = await supabase.functions.invoke("manage-client-invoices", {
+    body: { action: "delete", id },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+}
+
+// ─── Client Portal Control — Activity Feed ─────────────────────────────────
+
+export type PortalActivityEntry = {
+  id: string;
+  actionType: string;
+  description: string;
+  actorName: string | null;
+  createdAt: string;
+};
+
+function mapPortalActivity(row: any): PortalActivityEntry {
+  return {
+    id: row.id,
+    actionType: row.action_type,
+    description: row.description,
+    actorName: row.people?.full_name ?? null,
+    createdAt: row.created_at,
+  };
+}
+
+export async function fetchPortalActivity(projectId: string): Promise<PortalActivityEntry[]> {
+  const { data, error } = await supabase.functions.invoke("manage-client-activity", {
+    body: { action: "list", project_id: projectId },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return ((data?.activity ?? []) as any[]).map(mapPortalActivity);
+}
+
+export async function createPortalActivity(input: { projectId: string; description: string; actionType?: string }): Promise<PortalActivityEntry> {
+  const { data, error } = await supabase.functions.invoke("manage-client-activity", {
+    body: { action: "create", project_id: input.projectId, description: input.description, action_type: input.actionType ?? "update" },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return mapPortalActivity(data.entry);
+}
+
+export async function deletePortalActivity(id: string): Promise<void> {
+  const { data, error } = await supabase.functions.invoke("manage-client-activity", {
+    body: { action: "delete", id },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+}
+
 /**
  * "Enable Client Portal for this client" (Client Profiles, CEO/Superadmin
  * only) — creates or resets their client-erp login via the
