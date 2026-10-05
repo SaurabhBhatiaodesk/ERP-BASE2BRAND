@@ -3383,6 +3383,13 @@ export async function fetchActiveClockSession(
   return hydrateClockSession(data);
 }
 
+// clock_session_segments.kind only allows 'working' | 'break' | 'meeting' | 'idle'
+// (a live DB check constraint) — this function used to insert 'lunch_break' and
+// 'work', which violate it. Every insert below silently failed (the result was
+// never checked), so this has likely been silently failing for every employee
+// whose attendance spans 2 PM, every day, since it shipped: their "working"
+// segment gets force-closed at 2 PM with nothing inserted to replace it,
+// leaving a permanent gap in their timeline for the rest of the day.
 async function enforceAutoLunchBreak(session: ClockSessionRecord): Promise<ClockSessionRecord> {
   const now = new Date();
   const twoPM = new Date(); twoPM.setHours(14, 0, 0, 0);
@@ -3392,20 +3399,22 @@ async function enforceAutoLunchBreak(session: ClockSessionRecord): Promise<Clock
   if (now.getTime() < twoPM.getTime()) return session;
   if (new Date(session.clockIn).getTime() >= twoPM.getTime()) return session;
 
-  const hasLunch = segments.some(s => s.kind === "lunch_break" || s.label?.toLowerCase().includes("lunch"));
-  
+  const hasLunch = segments.some(s => s.kind === "break" || s.label?.toLowerCase().includes("lunch"));
+
   if (hasLunch) {
-    const lunchSeg = segments.find(s => s.kind === "lunch_break" && !s.endedAt && new Date(s.startedAt).getTime() === twoPM.getTime());
+    const lunchSeg = segments.find(s => s.kind === "break" && !s.endedAt && new Date(s.startedAt).getTime() === twoPM.getTime());
     if (lunchSeg && now.getTime() >= twoFortyPM.getTime()) {
-      await supabase.from("clock_session_segments").update({ ended_at: twoFortyPM.toISOString() }).eq("id", lunchSeg.id);
+      const { error: closeLunchError } = await supabase.from("clock_session_segments").update({ ended_at: twoFortyPM.toISOString() }).eq("id", lunchSeg.id);
+      if (closeLunchError) { console.error("enforceAutoLunchBreak: failed to close lunch segment:", closeLunchError); return session; }
       lunchSeg.endedAt = twoFortyPM.toISOString();
-      const { data: newWork } = await supabase.from("clock_session_segments").insert({
+      const { data: newWork, error: newWorkError } = await supabase.from("clock_session_segments").insert({
         session_id: session.id,
-        kind: "work",
+        kind: "working",
         label: null,
         started_at: twoFortyPM.toISOString(),
         ended_at: null
       }).select().single();
+      if (newWorkError) console.error("enforceAutoLunchBreak: failed to insert post-lunch work segment:", newWorkError);
       if (newWork) segments.push(mapClockSegment(newWork));
     }
     return { ...session, segments };
@@ -3420,35 +3429,37 @@ async function enforceAutoLunchBreak(session: ClockSessionRecord): Promise<Clock
   // plain office attendance instead of "meeting".
   if (
     !activeNow ||
-    (activeNow.kind !== "working" && activeNow.kind !== "work") ||
+    activeNow.kind !== "working" ||
     new Date(activeNow.startedAt).getTime() > twoPM.getTime()
   ) {
     return session;
   }
 
-  await supabase.from("clock_session_segments").update({ ended_at: twoPM.toISOString() }).eq("id", activeNow.id);
+  const { error: closeWorkError } = await supabase.from("clock_session_segments").update({ ended_at: twoPM.toISOString() }).eq("id", activeNow.id);
+  if (closeWorkError) { console.error("enforceAutoLunchBreak: failed to close working segment at 2PM:", closeWorkError); return session; }
   activeNow.endedAt = twoPM.toISOString();
 
   const isPastLunch = now.getTime() >= twoFortyPM.getTime();
   const lunchEndedAt = isPastLunch ? twoFortyPM.toISOString() : null;
-  const { data: newLunch } = await supabase.from("clock_session_segments").insert({
+  const { data: newLunch, error: newLunchError } = await supabase.from("clock_session_segments").insert({
     session_id: session.id,
-    kind: "lunch_break",
+    kind: "break",
     label: "Lunch Break",
     started_at: twoPM.toISOString(),
     ended_at: lunchEndedAt
   }).select().single();
-  
+  if (newLunchError) console.error("enforceAutoLunchBreak: failed to insert lunch segment:", newLunchError);
   if (newLunch) segments.push(mapClockSegment(newLunch));
 
   if (isPastLunch) {
-    const { data: newWork } = await supabase.from("clock_session_segments").insert({
+    const { data: newWork, error: newWorkError } = await supabase.from("clock_session_segments").insert({
       session_id: session.id,
-      kind: "work",
+      kind: "working",
       label: null,
       started_at: twoFortyPM.toISOString(),
       ended_at: null
     }).select().single();
+    if (newWorkError) console.error("enforceAutoLunchBreak: failed to insert post-lunch work segment:", newWorkError);
     if (newWork) segments.push(mapClockSegment(newWork));
   }
 
